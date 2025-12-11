@@ -679,8 +679,20 @@ function setupRoutes(
         manychat_webhook_secret: (req.body.manychat_webhook_secret || '').trim(),
         contact_token: (req.body.contact_token || '').trim(),
         graph_api_access_token: (req.body.graph_api_access_token || '').trim(),
+        venice_api_key: (req.body.venice_api_key || '').trim(),
+        venice_model: (req.body.venice_model || '').trim(),
+        system_prompt: (req.body.system_prompt || '').trim(),
       };
       await updateBotSettings(payload);
+
+      const settings = await getBotSettings({ bypassCache: true });
+      global.veniceConfig = {
+        venice_api_key: settings.venice_api_key,
+        venice_model: settings.venice_model,
+        system_prompt: settings.system_prompt
+      };
+      console.log('[Venice] Configs atualizadas do DB para memória.');
+
       res.redirect('/admin/settings?ok=1');
     } catch (e) {
       console.error('[AdminSettings][POST] erro:', e);
