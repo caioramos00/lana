@@ -6,7 +6,7 @@ const session = require('express-session');
 const path = require('path');
 require('dotenv').config();
 
-const { initDatabase } = require('./db.js');
+const db = require('./db.js');
 const { inicializarEstado, processarMensagensPendentes } = require('./bot.js');
 const { setupRoutes } = require('./routes.js');
 
@@ -35,7 +35,7 @@ setupRoutes(
   path,
   processarMensagensPendentes,
   inicializarEstado,
-  require('./db.js').salvarContato,
+  db.salvarContato,
   process.env.VERIFY_TOKEN,
   estadoContatos
 );
@@ -57,8 +57,18 @@ server.listen(PORT, () => {
   let attempt = 0;
   while (attempt < 8) {
     try {
-      await initDatabase();
+      await db.initDatabase();
       console.log('[DB] pronto');
+
+      // Carrega Venice configs após init DB
+      const settings = await db.getBotSettings({ bypassCache: true });
+      global.veniceConfig = {
+        venice_api_key: settings.venice_api_key,
+        venice_model: settings.venice_model,
+        system_prompt: settings.system_prompt
+      };
+      console.log('[Venice] Configs carregadas do DB.');
+
       return;
     } catch (e) {
       const transientCodes = ['57P01', '57P03'];

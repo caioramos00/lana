@@ -104,6 +104,9 @@ async function initDatabase() {
         support_url TEXT,
         optout_hint_enabled BOOLEAN DEFAULT FALSE,
         optout_suffix TEXT,
+        venice_api_key TEXT,
+        venice_model TEXT,
+        system_prompt TEXT,
         updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
       );
     `);
@@ -114,6 +117,24 @@ async function initDatabase() {
       ADD COLUMN IF NOT EXISTS graph_api_access_token TEXT;
     `);
     console.log('[DB] Coluna graph_api_access_token adicionada ou já existe.');
+
+    await client.query(`
+      ALTER TABLE bot_settings
+      ADD COLUMN IF NOT EXISTS venice_api_key TEXT;
+    `);
+    console.log('[DB] Coluna venice_api_key adicionada ou já existe.');
+
+    await client.query(`
+      ALTER TABLE bot_settings
+      ADD COLUMN IF NOT EXISTS venice_model TEXT;
+    `);
+    console.log('[DB] Coluna venice_model adicionada ou já existe.');
+
+    await client.query(`
+      ALTER TABLE bot_settings
+      ADD COLUMN IF NOT EXISTS system_prompt TEXT;
+    `);
+    console.log('[DB] Coluna system_prompt adicionada ou já existe.');
 
     await client.query(`
       ALTER TABLE bot_settings ADD CONSTRAINT bot_settings_singleton CHECK (id = 1) NOT VALID;
@@ -147,6 +168,7 @@ async function getBotSettings({ bypassCache = false } = {}) {
       graph_api_access_token,
       identity_enabled, identity_label, support_email, support_phone, support_url,
       optout_hint_enabled, optout_suffix,
+      venice_api_key, venice_model, system_prompt,
       updated_at
     FROM bot_settings
     WHERE id = 1
@@ -182,7 +204,10 @@ async function updateBotSettings(payload) {
       twilio_account_sid, twilio_auth_token, twilio_messaging_service_sid, twilio_from,
       manychat_api_token, manychat_fallback_flow_id, manychat_webhook_secret,
       contact_token,
-      graph_api_access_token  // Novo campo
+      graph_api_access_token,
+      venice_api_key,
+      venice_model,
+      system_prompt
     } = payload;
 
     await client.query(`
@@ -203,7 +228,10 @@ async function updateBotSettings(payload) {
              manychat_fallback_flow_id = COALESCE($14, manychat_fallback_flow_id),
              manychat_webhook_secret = COALESCE($15, manychat_webhook_secret),
              contact_token = COALESCE($16, contact_token),
-             graph_api_access_token = COALESCE($17, graph_api_access_token)
+             graph_api_access_token = COALESCE($17, graph_api_access_token),
+             venice_api_key = COALESCE($18, venice_api_key),
+             venice_model = COALESCE($19, venice_model),
+             system_prompt = COALESCE($20, system_prompt)
        WHERE id = 1
     `, [
       (typeof identity_enabled === 'boolean') ? identity_enabled : null,
@@ -222,7 +250,10 @@ async function updateBotSettings(payload) {
       manychat_fallback_flow_id || null,
       manychat_webhook_secret || null,
       contact_token || null,
-      graph_api_access_token || null
+      graph_api_access_token || null,
+      venice_api_key || null,
+      venice_model || null,
+      system_prompt || null
     ]);
 
     _settingsCache = null;
