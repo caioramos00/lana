@@ -1,0 +1,276 @@
+{
+  "msg1": {
+    "msg1b1": [
+      "voltei",
+      "voltei aqui",
+      "voltei já",
+      "pronto"
+    ],
+    "msg1b2": [
+      "tive uma resposta dela aqui",
+      "já tive uma resposta dela",
+      "acabei de ter uma resposta dela aqui",
+      "já tive um retorno dela",
+      "acabei de ter um retorno dela"
+    ]
+  },
+  "msg2": {
+    "type": "image",
+    "images": [
+      "https://images2.imgbox.com/97/45/wNapwZad_o.jpg"
+    ],
+    "caption": [
+      "Comprovante de transferência"
+    ]
+  },
+  "msg3": {
+    "msg3b1": [
+      "ela mandou isso aí",
+      "ela me mandou isso aí",
+      "ela mandou isso",
+      "ela me respondeu isso",
+      "ela me respondeu assim"
+    ],
+    "msg3b2": [
+      "esse banco é gringo né",
+      "esse banco digital é gringo né",
+      "esse banco digital aí é gringo né"
+    ],
+    "msg3b3": [
+      "parece que essa validação é por causa da transferencia internacional",
+      "aí parece que essa validação é só porque é uma transferência internacional",
+      "parece q essa parte da validação é por causa da transferencia internacional"
+    ]
+  },
+  "msg4": {
+    "msg4b1": [
+      "pior que nao tem muito o que fazer quando pede validação",
+      "não tem muito o que fazer quando dá essa validação",
+      "pior que não tem mt oq fazer quando pede validação",
+      "pior que n dá pra fazer muita coisa quando pede validação",
+      "pior que não dá pra fazer muita coisa quando pede validação"
+    ],
+    "msg4b2": [
+      "pra transferir pro Brasil tem que validar",
+      "pra sacar via PIX tem que validar",
+      "pra sacar no Brasil tem que validar"
+    ],
+    "msg4b3": [
+      "é uma taxa de 1 dólar só",
+      "é só uma taxa de 1 dólar",
+      "é uma taxa de só 1 dólar"
+    ],
+    "msg4b4": [
+      "na conversão pro real sai uns 6, 7 reais",
+      "convertendo pra reais sai mais ou menos uns 6, 7 reais",
+      "quando converte pro real sai uns 6, 7 reais"
+    ],
+    "msg4b5": [
+      "e não esquece que tem que validar pela mesma conta que você vai receber o dinheiro",
+      "e lembra que tem que validar pela mesma conta que você vai receber o dinheiro",
+      "e não esquece que precisa validar com a mesma conta que você vai receber o dinheiro"
+    ]
+  },
+  "msg5": {
+    "msg5b1": [
+      "nem preciso falar isso",
+      "acho que nem preciso te falar isso",
+      "eu acho que nem preciso te falar isso"
+    ],
+    "msg5b2": [
+      "mas você não acha que eu ia te dar um golpe de menos de 10 reais né",
+      "mas você não acha que eu ia te dar um golpe de menos de 10 conto né",
+      "mas você não acha que eu ia te dar um golpe de menos de 10 reais assim né"
+    ],
+    "msg5b3": [
+      "ainda mais que isso não é quase nada perto do valor que vamos sacar",
+      "até porque isso não é quase nada perto do valor que podemos sacar",
+      "até porque isso não é nada perto do valor que você vai sacar"
+    ]
+  },
+  "msg6": {
+    "msg6b1": [
+      "Eu não consigo te mandar esse valor da taxa",
+      "Eu não consigo te passar esse valor da taxa",
+      "Eu não consigo te transferir esse valor da taxa"
+    ],
+    "msg6b2": [
+      "pra gente não ter nenhum vínculo",
+      "pra gente não ter nenhuma ligação",
+      "pra não ter nenhum vínculo entre a gente"
+    ],
+    "msg6b3": [
+      "pq é por isso to precisando de lara né kkkk",
+      "por isso que tô atrás de lara kkkkkk",
+      "é por isso que to atrás de 🍊 kkkkk"
+    ],
+    "msg6b4": [
+      "se não tiver esse valor aí dá um jeito de arrumar ou pede emprestado",
+      "se não tiver esse valor aí tenta arrumar ou pede emprestado",
+      "se não tiver esse valor aí vê se arruma ou pede emprestado"
+    ],
+    "msg6b5": [
+      "depois você devolve o dobro pra pessoa",
+      "depois você devolve até o triplo pra pessoa",
+      "depois você devolve o valor em dobro pra pessoa"
+    ],
+    "msg6b6": [
+      "Só não dá pra perder esse grana por causa de menos de 10 reais kkkkkk",
+      "Só não pode perder esse dinheiro por causa de menos de 10 reais kkkkk",
+      "Só não pode perder essa grana por causa de menos de 10 reais kkkkk"
+    ]
+  },
+  "msg7": {
+    "msg7b1": [
+      "sei que as vezes o valor tá em falta",
+      "sei q as vezes esse valor tá em falta",
+      "eu sei q as vezes falta esse dinheiro"
+    ],
+    "msg7b2": [
+      "sei como é a realidade do pessoal que faz os trampos com nós aqui…",
+      "sei como é a realidade de quem faz os trampos com nós aqui…",
+      "sei como é a vida de quem faz os trampos com nós aqui…"
+    ],
+    "msg7b3": [
+      "e eu só não te mando esse valor aí pq eu não posso ter vínculo nenhum mesmo",
+      "e eu só não te passo esse valor aí pq eu não posso ter vínculo nenhum mesmo",
+      "e eu só não te transfiro esse valor aí pq eu não posso ter vínculo nenhum mesmo"
+    ],
+    "msg7b4": [
+      "nem com você e nem com ninguém próximo",
+      "nem com você e nem com mais ninguém",
+      "nem com você e nem com qualquer outra pessoa"
+    ],
+    "msg7b5": [
+      "mas tenta dar um jeito de arrumar esse valor aí",
+      "mas tenta ver se arruma esse valor aí",
+      "mas tenta ver se consegue esse valor aí"
+    ]
+  },
+  "msg8": {
+    "msg8b1": [
+      "confia em mim que o trampo é garantido",
+      "confia que o trampo é garantido",
+      "pode confiar q o trampo é garantido",
+      "confia q esse trampo é garantido"
+    ],
+    "msg8b2": [
+      "vou precisar sair aqui rapidinho",
+      "vou ter que sair aqui rapidinho",
+      "vou precisar dar uma saída aqui rapidinho"
+    ],
+    "msg8b3": [
+      "em 15 minutos já te chamo aí de novo pra saber se deu certo",
+      "em 15 minutos já te chamo de novo pra saber se deu certo",
+      "daqui a 15 minutos já te chamo de novo pra saber se deu certo"
+    ]
+  },
+  "msg9": {
+    "msg9b1": [
+      "foi mal a demora",
+      "desculpa a demora",
+      "perdão pela demora"
+    ],
+    "msg9b2": [
+      "tava em ligação com o pessoal lá da mpay",
+      "tava em ligação com o pessoal da mpay",
+      "tava em contato com o pessoal lá da mpay"
+    ],
+    "msg9b3": [
+      "eu tô puto",
+      "tô puto",
+      "tô revoltado"
+    ],
+    "msg9b4": [
+      "hoje deu b.o em várias contas 🤦🏾‍♂",
+      "hoje deu problema em várias contas 🤦🏾‍♂",
+      "hoje teve esse problema em várias contas 🤦🏾‍♂"
+    ]
+  },
+  "msg10": {
+    "msg10b1": [
+      "eu não sei se você já validou a conta ou não"
+    ],
+    "msg10b2": [
+      "eu fico apagando as mensagens aqui toda hora pra não dar b.o"
+    ],
+    "msg10b3": [
+      "mas parece que o banco que faz as transações lá tá com problema hoje"
+    ],
+    "msg10b4": [
+      "aí as contas não tão liberando o saldo no mesmo dia"
+    ],
+    "msg10b5": [
+      "primeira vez que acontece isso, nunca mais uso essa merda de plataforma"
+    ]
+  },
+  "msg11": {
+    "msg11b1": [
+      "mas eles disseram que só tá com atraso mesmo"
+    ],
+    "msg11b2": [
+      "então se você tiver sacado é só esperar agora"
+    ],
+    "msg11b3": [
+      "se você ainda não sacou não perde essa chance de jeito nenhum kkk"
+    ],
+    "msg11b4": [
+      "e se não for sacar avisa que vou passar pra outro aqui"
+    ]
+  },
+  "msg12": {
+    "msg12b1": [
+      "qual seu nome? Vou salvar seu contato"
+    ],
+    "msg12b2": [
+      "amanhã vamos precisar de Lara pra outra plataforma e te chamo também"
+    ],
+    "msg12b3": [
+      "aí não tem isso de verificar nem nada"
+    ],
+    "msg12b4": [
+      "depois te chamo aí dmr?"
+    ]
+  },
+  "msg13": {
+    "msg13b1": [
+      "falei com a mina lá de dentro de novo"
+    ],
+    "msg13b2": [
+      "nenhuma conta que a gente fez desde manhã caiu o dinheiro ainda"
+    ]
+  },
+  "msg14": {
+    "msg14b1": [
+      "ela disse que é o sistema de pix deles"
+    ],
+    "msg14b2": [
+      "que ainda tá passando por atualização"
+    ],
+    "msg14b3": [
+      "é um sistema novo"
+    ]
+  },
+  "msg15": {
+    "msg15b1": [
+      "mas se o pix não cair"
+    ],
+    "msg15b2": [
+      "o valor da taxa é reembolsado do mesmo jeito"
+    ],
+    "msg15b3": [
+      "beleza"
+    ]
+  },
+  "msg16": {
+    "msg16b1": [
+      "e amanhã tem trampo em outra plataforma também como eu te falei"
+    ],
+    "msg16b2": [
+      "lá não tem nada desse negócio de validação"
+    ],
+    "msg16b3": [
+      "posso te chamar"
+    ]
+  }
+}

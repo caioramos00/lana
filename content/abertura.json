@@ -1,0 +1,45 @@
+{
+    "msg1": {
+        "grupo1": [
+            "Salveee",
+            "Eaee",
+            "Eai"
+        ],
+        "grupo2": [
+            "de boa?",
+            "tranquilo?",
+            "firmeza?"
+        ]
+    },
+    "msg2": {
+        "grupo1": [
+            "Carai",
+            "Slk",
+            "Porra"
+        ],
+        "grupo2": [
+            "acabei de postar o anúncio",
+            "postei o anúncio agora",
+            "postei o anúncio quase agora"
+        ]
+    },
+    "msg3": {
+        "grupo1": [
+            "Era pra ser você mesmo kkkkkk",
+            "Vc foi o primeiro q chamou kkkkk",
+            "Primeiro q chamou foi vc kkkkkk"
+        ]
+    },
+    "msg4": {
+        "grupo1": [
+            "Tô precisando de um 🍊 pra agora,",
+            "Preciso de um lara pra agora,",
+            "To precisando de um lara urgente,"
+        ],
+        "grupo2": [
+            "vai poder fazer o trampo?",
+            "vai fazer esse trampo?",
+            "vai querer fazer esse trampo?"
+        ]
+    }
+}

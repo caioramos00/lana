@@ -1,0 +1,49 @@
+{
+    "msg1": {
+        "msg1b1": [
+            "Porra",
+            "Pqp",
+            "Calma",
+            "Calma aí"
+        ],
+        "msg1b2": [
+            "tá pedindo pra validar o saque",
+            "pediu validação do saque",
+            "pediu pra validar o saque",
+            "travou na validação",
+            "pediu verificação do saque"
+        ],
+        "msg1b3": [
+            "confirma ai na tela e vai clicando em PRÓXIMO",
+            "confirma ai e vai clicando em PRÓXIMO",
+            "pode confirmar ai e vai clicando em PRÓXIMO"
+        ]
+    },
+    "msg2": {
+        "msg2b1": [
+            "vou falar com a menina que trabalha la",
+            "vou falar com a menina q trampa lá",
+            "vou mandar mensagem pra menina q trampa lá",
+            "vou chamar a menina que trabalha lá"
+        ],
+        "msg2b2": [
+            "pra ver o que pode ser",
+            "pra ver como resolver",
+            "pra ver o que fazer"
+        ],
+        "msg2b3": [
+            "em 5 minutos eu resolvo",
+            "em 5 minutos resolvemos isso"
+        ],
+        "msg2b4": [
+            "me espera aí que já te chamo blz",
+            "me espera aí q já te chamo beleza",
+            "espera aí q já te chamo blz",
+            "espera aí q já te chamo beleza",
+            "calma aí q já te chamo blz",
+            "calma aí q já te chamo beleza",
+            "calma aí que já te mando mensagem blz",
+            "calma aí que já te mando mensagem beleza"
+        ]
+    }
+}
