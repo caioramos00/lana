@@ -415,7 +415,7 @@ async function processInboundText({ wa_id, inboundPhoneNumberId, text, excludeWa
     return;
   }
 
-  // delay “humano” ANTES de responder (agora aplicado no BLOCO)
+  // delay humano ANTES de responder (aplicando o delay no bloco completo)
   await humanDelayForInboundText(text);
 
   const facts = buildFactsJson(st, inboundPhoneNumberId);
@@ -457,8 +457,8 @@ async function processInboundText({ wa_id, inboundPhoneNumberId, text, excludeWa
   for (let i = 0; i < outMessages.length; i++) {
     const msg = outMessages[i];
 
-    // micro-delay entre bolhas
-    if (i > 0) await new Promise(r => setTimeout(r, randInt(250, 750)));
+    // Micro-delay entre as mensagens do bloco
+    if (i > 0) await new Promise(r => setTimeout(r, randInt(250, 750))); // Ajuste o valor do delay para simular a leitura
 
     const r = await sendMessage(wa_id, msg, {
       meta_phone_number_id: inboundPhoneNumberId || null,
@@ -526,9 +526,7 @@ async function flushLead(wa_id) {
   clearLeadTimers(st);
   st.pending_first_ts = null;
 
-  const excludeWamids = new Set(
-    batch.map(b => b.wamid).filter(Boolean)
-  );
+  const excludeWamids = new Set(batch.map(b => b.wamid).filter(Boolean));
 
   // sempre responder com o phone_number_id que recebeu a msg (último do lote)
   const lastInboundPhoneNumberId =
@@ -542,15 +540,22 @@ async function flushLead(wa_id) {
   st.processing = true;
   st.flushRequested = false;
 
-  try {
+  // Aplicar delay entre as mensagens do bloco (entre cada "bolha")
+  for (let i = 0; i < batch.length; i++) {
+    const currentMessage = batch[i];
+    
+    // Atraso entre as mensagens
+    if (i > 0) {
+      const delay = randInt(250, 750);  // Micro-delay entre mensagens
+      await sleep(delay); // Ajuste o valor para simular um atraso mais realista
+    }
+
     await processInboundText({
       wa_id,
       inboundPhoneNumberId: lastInboundPhoneNumberId,
-      text: mergedText,
+      text: currentMessage.text,
       excludeWamids,
     });
-  } finally {
-    st.processing = false;
   }
 
   // Se chegou msg enquanto estava processando, agenda novo flush
@@ -566,7 +571,7 @@ async function flushLead(wa_id) {
       }, INBOUND_MAX_WAIT_MS);
     }
 
-    // agenda debounce normal (deixa o lead terminar o novo bloco)
+    // agenda debounce normal
     clearTimeout(st.pending_timer);
     const last = st.pending_inbound[st.pending_inbound.length - 1];
     st.pending_timer = setTimeout(() => {
