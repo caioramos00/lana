@@ -55,11 +55,32 @@ function getLead(wa_id) {
       meta_phone_number_id: null,
       last_user_ts: null,
       created_at: now(),
+
+      // ===== inbound batching =====
+      pending_inbound: [],            // [{ text, wamid, inboundPhoneNumberId, ts }]
+      pending_first_ts: null,
+      pending_timer: null,
+      pending_max_timer: null,
+      processing: false,              // single-flight por lead
+      flushRequested: false,
     };
     leadStore.set(key, st);
   }
+
   st.expiresAt = now() + TTL_MS;
   return st;
+}
+
+function clearLeadTimers(st) {
+  if (!st) return;
+  if (st.pending_timer) {
+    clearTimeout(st.pending_timer);
+    st.pending_timer = null;
+  }
+  if (st.pending_max_timer) {
+    clearTimeout(st.pending_max_timer);
+    st.pending_max_timer = null;
+  }
 }
 
 function pushHistory(wa_id, role, text, extra = {}) {
@@ -83,15 +104,26 @@ function pushHistory(wa_id, role, text, extra = {}) {
 setInterval(() => {
   const t = now();
   for (const [k, v] of leadStore.entries()) {
-    if (!v?.expiresAt || v.expiresAt <= t) leadStore.delete(k);
+    if (!v?.expiresAt || v.expiresAt <= t) {
+      try { clearLeadTimers(v); } catch {}
+      leadStore.delete(k);
+    }
   }
 }, 60 * 60 * 1000);
 
 // ===== Helpers =====
-function buildHistoryString(st) {
+function buildHistoryString(st, opts = {}) {
   const hist = Array.isArray(st?.history) ? st.history : [];
+  const excludeWamids = opts.excludeWamids; // Set
+
   return hist
     .slice(-MAX_MSGS)
+    .filter((m) => {
+      if (!excludeWamids || !(excludeWamids instanceof Set)) return true;
+      // Evita duplicar no HISTORICO as msgs que vão em MENSAGEM_ATUAL
+      if (m?.role === 'user' && m?.wamid && excludeWamids.has(m.wamid)) return false;
+      return true;
+    })
     .map((m) => {
       const who = m.role === 'assistant' ? 'ASSISTANT' : (m.role === 'user' ? 'USER' : 'SYSTEM');
       const t = String(m.text || '').replace(/\s+/g, ' ').trim();
@@ -168,7 +200,7 @@ function sleep(ms) {
  * - base: 900–1800ms
  * - + por caractere (simula leitura): 18–45ms/char (capado)
  * - + jitter: 400–1600ms
- * - min 1.6s / max 9.5s (ajuste se quiser mais lento)
+ * - min 1.6s / max 9.5s
  */
 async function humanDelayForInboundText(userText) {
   const t = String(userText || '');
@@ -176,12 +208,11 @@ async function humanDelayForInboundText(userText) {
 
   const base = randInt(900, 1800);
   const perChar = randInt(18, 45);
-  const reading = Math.min(chars * perChar, 5200); // cap
+  const reading = Math.min(chars * perChar, 5200);
   const jitter = randInt(400, 1600);
 
   let total = base + reading + jitter;
 
-  // se msg for muito curta tipo "oi", ainda assim dá uma segurada mínima
   const minMs = 1600;
   const maxMs = 9500;
 
@@ -189,6 +220,26 @@ async function humanDelayForInboundText(userText) {
   if (total > maxMs) total = maxMs;
 
   await sleep(total);
+}
+
+// ===== Inbound batching config =====
+// Debounce = espera o lead "parar de falar" por X ms antes de chamar a IA
+// Max-wait = garante resposta mesmo se lead ficar pingando msg sem parar
+const INBOUND_DEBOUNCE_MIN_MS = Number(process.env.INBOUND_DEBOUNCE_MIN_MS || 1200);
+const INBOUND_DEBOUNCE_MAX_MS = Number(process.env.INBOUND_DEBOUNCE_MAX_MS || 2400);
+const INBOUND_MAX_WAIT_MS = Number(process.env.INBOUND_MAX_WAIT_MS || 7000);
+
+function computeDebounceMs(lastText) {
+  const t = String(lastText || '').trim();
+  const len = t.length;
+
+  // msg muito curta: espera um pouco mais (usuário costuma mandar em “blocos”)
+  if (len > 0 && len <= 4) return randInt(Math.max(1600, INBOUND_DEBOUNCE_MIN_MS), Math.max(2800, INBOUND_DEBOUNCE_MAX_MS));
+
+  // se parece “fechamento” (pontuação), responde um pouco mais rápido
+  if (/[?.!…]$/.test(t)) return randInt(Math.max(900, INBOUND_DEBOUNCE_MIN_MS - 300), Math.max(1500, INBOUND_DEBOUNCE_MIN_MS));
+
+  return randInt(INBOUND_DEBOUNCE_MIN_MS, INBOUND_DEBOUNCE_MAX_MS);
 }
 
 // ===== Venice call =====
@@ -251,7 +302,7 @@ async function bootstrapDb() {
 }
 
 // ===== Login simples =====
-app.get(['/','/login'], (req, res) => res.sendFile(path.join(__dirname, 'public', 'login.html')));
+app.get(['/', '/login'], (req, res) => res.sendFile(path.join(__dirname, 'public', 'login.html')));
 
 app.post('/login', (req, res) => {
   const { password } = req.body;
@@ -348,7 +399,7 @@ app.get('/webhook', async (req, res) => {
 });
 
 // ===== Processor (IA + envio) =====
-async function processInboundText({ wa_id, inboundPhoneNumberId, text }) {
+async function processInboundText({ wa_id, inboundPhoneNumberId, text, excludeWamids }) {
   const st = getLead(wa_id);
   if (!st) return;
 
@@ -364,11 +415,11 @@ async function processInboundText({ wa_id, inboundPhoneNumberId, text }) {
     return;
   }
 
-  // delay “humano” ANTES de responder
+  // delay “humano” ANTES de responder (agora aplicado no BLOCO)
   await humanDelayForInboundText(text);
 
   const facts = buildFactsJson(st, inboundPhoneNumberId);
-  const historicoStr = buildHistoryString(st);
+  const historicoStr = buildHistoryString(st, { excludeWamids });
   const rendered = renderSystemPrompt(systemPromptTpl, facts, historicoStr, text);
 
   const venice = await callVeniceChat({
@@ -406,7 +457,7 @@ async function processInboundText({ wa_id, inboundPhoneNumberId, text }) {
   for (let i = 0; i < outMessages.length; i++) {
     const msg = outMessages[i];
 
-    // micro-delay entre bolhas (fica mais humano)
+    // micro-delay entre bolhas
     if (i > 0) await new Promise(r => setTimeout(r, randInt(250, 750)));
 
     const r = await sendMessage(wa_id, msg, {
@@ -420,6 +471,107 @@ async function processInboundText({ wa_id, inboundPhoneNumberId, text }) {
         phone_number_id: r.phone_number_id || inboundPhoneNumberId || null,
       });
     }
+  }
+}
+
+// ===== Inbound batching engine =====
+function enqueueInboundText({ wa_id, inboundPhoneNumberId, text, wamid }) {
+  const st = getLead(wa_id);
+  if (!st) return;
+
+  const cleanText = String(text || '').trim();
+  if (!cleanText) return;
+
+  st.pending_inbound.push({
+    text: cleanText,
+    wamid: wamid || '',
+    inboundPhoneNumberId: inboundPhoneNumberId || null,
+    ts: now(),
+  });
+
+  if (!st.pending_first_ts) {
+    st.pending_first_ts = now();
+
+    // max-wait: garante flush mesmo se ficar chegando msg
+    clearTimeout(st.pending_max_timer);
+    st.pending_max_timer = setTimeout(() => {
+      flushLead(wa_id).catch(() => {});
+    }, INBOUND_MAX_WAIT_MS);
+  }
+
+  // debounce: espera o lead “parar de falar”
+  clearTimeout(st.pending_timer);
+  st.pending_timer = setTimeout(() => {
+    flushLead(wa_id).catch(() => {});
+  }, computeDebounceMs(cleanText));
+}
+
+async function flushLead(wa_id) {
+  const st = getLead(wa_id);
+  if (!st) return;
+
+  if (st.processing) {
+    st.flushRequested = true;
+    return;
+  }
+
+  if (!st.pending_inbound || st.pending_inbound.length === 0) {
+    clearLeadTimers(st);
+    st.pending_first_ts = null;
+    return;
+  }
+
+  // pega o lote atual e limpa timers desse lote
+  const batch = st.pending_inbound.splice(0, st.pending_inbound.length);
+  clearLeadTimers(st);
+  st.pending_first_ts = null;
+
+  const excludeWamids = new Set(
+    batch.map(b => b.wamid).filter(Boolean)
+  );
+
+  // sempre responder com o phone_number_id que recebeu a msg (último do lote)
+  const lastInboundPhoneNumberId =
+    batch.map(b => b.inboundPhoneNumberId).filter(Boolean).slice(-1)[0] ||
+    st.meta_phone_number_id ||
+    null;
+
+  const mergedText = batch.map(b => b.text).join('\n').trim();
+  if (!mergedText) return;
+
+  st.processing = true;
+  st.flushRequested = false;
+
+  try {
+    await processInboundText({
+      wa_id,
+      inboundPhoneNumberId: lastInboundPhoneNumberId,
+      text: mergedText,
+      excludeWamids,
+    });
+  } finally {
+    st.processing = false;
+  }
+
+  // Se chegou msg enquanto estava processando, agenda novo flush
+  if ((st.pending_inbound && st.pending_inbound.length > 0) || st.flushRequested) {
+    st.flushRequested = false;
+
+    // Reativa max-wait se ainda não estiver ativo
+    if (!st.pending_first_ts && st.pending_inbound.length > 0) {
+      st.pending_first_ts = now();
+      clearTimeout(st.pending_max_timer);
+      st.pending_max_timer = setTimeout(() => {
+        flushLead(wa_id).catch(() => {});
+      }, INBOUND_MAX_WAIT_MS);
+    }
+
+    // agenda debounce normal (deixa o lead terminar o novo bloco)
+    clearTimeout(st.pending_timer);
+    const last = st.pending_inbound[st.pending_inbound.length - 1];
+    st.pending_timer = setTimeout(() => {
+      flushLead(wa_id).catch(() => {});
+    }, computeDebounceMs(last?.text || ''));
   }
 }
 
@@ -486,13 +638,14 @@ app.post('/webhook', async (req, res) => {
 
           publishState({ wa_id, etapa: 'RECEBIDO', vars: { kind: type }, ts: Date.now() });
 
-          // processa IA somente se for texto
+          // 🔥 agora não chama IA por msg: enfileira e agrupa por lead
           if (type === 'text') {
-            processInboundText({
+            enqueueInboundText({
               wa_id,
               inboundPhoneNumberId,
               text,
-            }).catch(() => {});
+              wamid,
+            });
           }
         }
       }
