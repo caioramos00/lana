@@ -261,6 +261,46 @@ function computeDebounceMs() {
 }
 
 // ===== Venice call =====
+function sha256Of(text) {
+  const crypto = require('crypto');
+  return crypto.createHash('sha256').update(String(text || ''), 'utf8').digest('hex');
+}
+
+function sanitizeVeniceBodyForLog(body) {
+  const clone = JSON.parse(JSON.stringify(body || {}));
+
+  if (Array.isArray(clone.messages)) {
+    clone.messages = clone.messages.map((m, idx) => {
+      const role = m?.role;
+      const content = String(m?.content || '');
+
+      // Omitir COMPLETAMENTE o system (e opcionalmente outras msgs longas)
+      if (role === 'system') {
+        const sha = sha256Of(content);
+        return {
+          role,
+          content: `[SYSTEM_PROMPT_OMITTED] chars=${content.length} sha256=${sha}`,
+        };
+      }
+
+      // Se quiser, também evita logar qualquer user longo (opcional)
+      const MAX_LOG_CHARS = 200;
+      if (content.length > MAX_LOG_CHARS) {
+        const sha = sha256Of(content);
+        return {
+          role,
+          content: `[TRUNCATED] first=${content.slice(0, MAX_LOG_CHARS)}... chars=${content.length} sha256=${sha}`,
+        };
+      }
+
+      return { role, content };
+    });
+  }
+
+  // Se você loga settings em algum lugar, também vale mascarar tokens etc (aqui não tem)
+  return clone;
+}
+
 async function callVeniceChat({ apiKey, model, systemPromptRendered, userId }) {
   const url = 'https://api.venice.ai/api/v1/chat/completions';
 
@@ -284,7 +324,7 @@ async function callVeniceChat({ apiKey, model, systemPromptRendered, userId }) {
   };
 
   aiLog('[AI][REQUEST]');
-  aiLog(JSON.stringify(body, null, 2));
+  aiLog(JSON.stringify(sanitizeVeniceBodyForLog(body), null, 2)); // ✅ agora não vaza o system
 
   const r = await axios.post(url, body, {
     headers: {
@@ -296,7 +336,16 @@ async function callVeniceChat({ apiKey, model, systemPromptRendered, userId }) {
   });
 
   aiLog(`[AI][RESPONSE] http=${r.status}`);
-  aiLog(JSON.stringify(r.data, null, 2));
+
+  // (Opcional) logar resposta completa pode ser pesado; dá pra resumir:
+  aiLog(JSON.stringify({
+    id: r.data?.id,
+    model: r.data?.model,
+    created: r.data?.created,
+    usage: r.data?.usage,
+    finish_reason: r.data?.choices?.[0]?.finish_reason,
+    content_chars: String(r.data?.choices?.[0]?.message?.content || '').length,
+  }, null, 2));
 
   return { status: r.status, data: r.data };
 }
