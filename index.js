@@ -68,7 +68,7 @@ function getLead(wa_id) {
       pending_first_ts: null,
       pending_timer: null,
       pending_max_timer: null,
-      processing: false,              // single-flight por lead
+      processing: false,              // serialização por lead
       flushRequested: false,
     };
     leadStore.set(key, st);
@@ -252,20 +252,11 @@ async function humanDelayForOutboundText(outText) {
 // ===== Inbound batching config =====
 // Debounce = espera o lead "parar de falar" por X ms antes de chamar a IA
 // Max-wait = garante resposta mesmo se lead ficar pingando msg sem parar
-const INBOUND_DEBOUNCE_MIN_MS = Number(process.env.INBOUND_DEBOUNCE_MIN_MS || 1200);
-const INBOUND_DEBOUNCE_MAX_MS = Number(process.env.INBOUND_DEBOUNCE_MAX_MS || 2400);
+const INBOUND_DEBOUNCE_MIN_MS = Number(process.env.INBOUND_DEBOUNCE_MIN_MS || 800);
+const INBOUND_DEBOUNCE_MAX_MS = Number(process.env.INBOUND_DEBOUNCE_MAX_MS || 1500);
 const INBOUND_MAX_WAIT_MS = Number(process.env.INBOUND_MAX_WAIT_MS || 7000);
 
-function computeDebounceMs(lastText) {
-  const t = String(lastText || '').trim();
-  const len = t.length;
-
-  // msg muito curta: espera um pouco mais (usuário costuma mandar em “blocos”)
-  if (len > 0 && len <= 4) return randInt(Math.max(1600, INBOUND_DEBOUNCE_MIN_MS), Math.max(2800, INBOUND_DEBOUNCE_MAX_MS));
-
-  // se parece “fechamento” (pontuação), responde um pouco mais rápido
-  if (/[?.!…]$/.test(t)) return randInt(Math.max(900, INBOUND_DEBOUNCE_MIN_MS - 300), Math.max(1500, INBOUND_DEBOUNCE_MIN_MS));
-
+function computeDebounceMs() {
   return randInt(INBOUND_DEBOUNCE_MIN_MS, INBOUND_DEBOUNCE_MAX_MS);
 }
 
@@ -432,7 +423,13 @@ app.get('/webhook', async (req, res) => {
 });
 
 // ===== Processor (IA + envio) =====
-async function processInboundText({ wa_id, inboundPhoneNumberId, text, excludeWamids }) {
+async function processInboundText({
+  wa_id,
+  inboundPhoneNumberId,
+  blocoText,
+  mensagemAtualBloco,
+  excludeWamids
+}) {
   const st = getLead(wa_id);
   if (!st) return;
 
@@ -448,16 +445,25 @@ async function processInboundText({ wa_id, inboundPhoneNumberId, text, excludeWa
     return;
   }
 
+  const bloco = String(blocoText || '').trim();
+  const atual = String(mensagemAtualBloco || '').trim();
+
   // delay humano ANTES de responder (aplicando o delay no bloco completo)
-  await humanDelayForInboundText(text);
+  await humanDelayForInboundText(bloco || atual);
 
   const facts = buildFactsJson(st, inboundPhoneNumberId);
   const historicoStr = buildHistoryString(st, { excludeWamids });
-  const rendered = renderSystemPrompt(systemPromptTpl, facts, historicoStr, text);
+
+  // ✅ Envia o BLOCO inteiro pra IA, mas mantendo a ÚLTIMA msg como MENSAGEM_ATUAL_BLOCO
+  const msgParaPrompt = (bloco && atual && bloco !== atual)
+    ? `BLOCO_USUARIO:\n${bloco}\n\nMENSAGEM_ATUAL_BLOCO:\n${atual}`
+    : (atual || bloco);
+
+  const rendered = renderSystemPrompt(systemPromptTpl, facts, historicoStr, msgParaPrompt);
 
   aiLog(`[AI][CTX][${wa_id}] phone_number_id=${inboundPhoneNumberId || ''}`);
   aiLog('[AI][MENSAGEM_ATUAL_BLOCO]');
-  aiLog(text);
+  aiLog(atual || '');
 
   aiLog('[AI][SYSTEM_PROMPT_RENDERED]');
   aiLog(rendered);
@@ -553,13 +559,14 @@ function enqueueInboundText({ wa_id, inboundPhoneNumberId, text, wamid }) {
   clearTimeout(st.pending_timer);
   st.pending_timer = setTimeout(() => {
     flushLead(wa_id).catch(() => { });
-  }, computeDebounceMs(cleanText));
+  }, computeDebounceMs());
 }
 
 async function flushLead(wa_id) {
   const st = getLead(wa_id);
   if (!st) return;
 
+  // ✅ serializa por lead
   if (st.processing) {
     st.flushRequested = true;
     return;
@@ -576,6 +583,14 @@ async function flushLead(wa_id) {
   clearLeadTimers(st);
   st.pending_first_ts = null;
 
+  const mergedText = batch.map(b => b.text).join('\n').trim();
+  if (!mergedText) return;
+
+  // ✅ última mensagem do buffer (MENSAGEM_ATUAL_BLOCO)
+  const lastMsg = batch[batch.length - 1] || null;
+  const mensagemAtualBloco = String(lastMsg?.text || '').trim();
+
+  // evita duplicar no HISTORICO as msgs que já vão no BLOCO do prompt
   const excludeWamids = new Set(batch.map(b => b.wamid).filter(Boolean));
 
   // sempre responder com o phone_number_id que recebeu a msg (último do lote)
@@ -584,28 +599,20 @@ async function flushLead(wa_id) {
     st.meta_phone_number_id ||
     null;
 
-  const mergedText = batch.map(b => b.text).join('\n').trim();
-  if (!mergedText) return;
-
   st.processing = true;
   st.flushRequested = false;
 
-  // Aplicar delay entre as mensagens do bloco (entre cada "bolha")
-  for (let i = 0; i < batch.length; i++) {
-    const currentMessage = batch[i];
-
-    // Atraso entre as mensagens
-    if (i > 0) {
-      const delay = randInt(250, 750);  // Micro-delay entre mensagens
-      await sleep(delay); // Ajuste o valor para simular um atraso mais realista
-    }
-
+  try {
+    // ✅ 1 chamada pra IA por BLOCO (não por msg)
     await processInboundText({
       wa_id,
       inboundPhoneNumberId: lastInboundPhoneNumberId,
-      text: currentMessage.text,
+      blocoText: mergedText,
+      mensagemAtualBloco,
       excludeWamids,
     });
+  } finally {
+    st.processing = false;
   }
 
   // Se chegou msg enquanto estava processando, agenda novo flush
@@ -623,10 +630,9 @@ async function flushLead(wa_id) {
 
     // agenda debounce normal
     clearTimeout(st.pending_timer);
-    const last = st.pending_inbound[st.pending_inbound.length - 1];
     st.pending_timer = setTimeout(() => {
       flushLead(wa_id).catch(() => { });
-    }, computeDebounceMs(last?.text || ''));
+    }, computeDebounceMs());
   }
 }
 
