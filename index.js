@@ -466,7 +466,15 @@ async function processInboundText({
   aiLog(atual || '');
 
   aiLog('[AI][SYSTEM_PROMPT_RENDERED]');
-  aiLog(rendered);
+
+  // não loga o prompt inteiro — só metadados
+  {
+    const crypto = require('crypto');
+    const text = rendered || '';
+    const sha256 = crypto.createHash('sha256').update(text, 'utf8').digest('hex');
+
+    aiLog(`[AI][SYSTEM_PROMPT_RENDERED] (omitted) chars=${text.length} sha256=${sha256}`);
+  }
 
   const venice = await callVeniceChat({
     apiKey: veniceApiKey,
