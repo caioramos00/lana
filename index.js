@@ -6,7 +6,7 @@ const session = require('express-session');
 const path = require('path');
 
 const db = require('./db.js');
-const { rememberInboundMetaPhoneNumberId } = require('./senders');
+const { rememberInboundMetaPhoneNumberId, sendMessage } = require('./senders');
 const { sseRouter } = require('./stream/sse-router');
 const { publishMessage, publishAck, publishState } = require('./stream/events-bus');
 
@@ -47,7 +47,7 @@ function getLead(wa_id) {
 
   let st = leadStore.get(key);
   if (!st) {
-    st = { wa_id: key, history: [], expiresAt: now() + TTL_MS };
+    st = { wa_id: key, history: [], expiresAt: now() + TTL_MS, meta_phone_number_id: null };
     leadStore.set(key, st);
   }
   st.expiresAt = now() + TTL_MS;
@@ -103,7 +103,7 @@ async function bootstrapDb() {
   throw new Error('Falha ao iniciar DB');
 }
 
-// ===== Login simples (reaproveita public/login.html) =====
+// ===== Login simples =====
 app.get(['/','/login'], (req, res) => res.sendFile(path.join(__dirname, 'public', 'login.html')));
 
 app.post('/login', (req, res) => {
@@ -135,7 +135,6 @@ app.get('/admin/settings', checkAuth, async (req, res) => {
 app.post('/admin/settings', checkAuth, async (req, res) => {
   try {
     await db.updateBotSettings(req.body || {});
-    // recarrega cache global
     global.botSettings = await db.getBotSettings({ bypassCache: true });
     global.veniceConfig = {
       venice_api_key: global.botSettings.venice_api_key,
@@ -212,15 +211,19 @@ app.post('/webhook', async (req, res) => {
   res.sendStatus(200);
 
   const body = req.body || {};
+  let loggedFullPayload = false;
+
   try {
     const entry = Array.isArray(body.entry) ? body.entry : [];
+
     for (const e of entry) {
       const changes = Array.isArray(e.changes) ? e.changes : [];
+
       for (const ch of changes) {
         const value = ch.value || {};
         const inboundPhoneNumberId = value?.metadata?.phone_number_id || null;
 
-        // statuses (acks)
+        // Acks/status
         const statuses = Array.isArray(value.statuses) ? value.statuses : [];
         for (const st of statuses) {
           publishAck({
@@ -231,22 +234,35 @@ app.post('/webhook', async (req, res) => {
           });
         }
 
-        // messages (inbound)
+        // Mensagens inbound
         const msgs = Array.isArray(value.messages) ? value.messages : [];
+        if (msgs.length && !loggedFullPayload) {
+          // LOG 1: payload COMPLETO recebido (apenas quando tem mensagens)
+          console.log('[WEBHOOK][INBOUND][PAYLOAD_FULL]\n' + JSON.stringify(body, null, 2));
+          loggedFullPayload = true;
+        }
+
         for (const m of msgs) {
           const wa_id = m.from;
+          const wamid = m.id;
+          const type = m.type;
+
+          // salva phone_number_id do inbound (multi-número)
           try {
             const stLead = getLead(wa_id);
             if (stLead && inboundPhoneNumberId) stLead.meta_phone_number_id = inboundPhoneNumberId;
             if (inboundPhoneNumberId) rememberInboundMetaPhoneNumberId(wa_id, inboundPhoneNumberId);
           } catch {}
-          const wamid = m.id;
-          const type = m.type;
 
+          // extrai texto
           let text = '';
           if (type === 'text') text = m.text?.body || '';
           else text = `[${type || 'msg'}]`;
 
+          // LOG 2: formato curto
+          console.log(`[${wa_id}] ${text}`);
+
+          // memória + SSE
           pushHistory(wa_id, 'user', text, { wamid, kind: type });
 
           publishMessage({
@@ -258,8 +274,29 @@ app.post('/webhook', async (req, res) => {
             ts: Number(m.timestamp) * 1000 || Date.now(),
           });
 
-          // placeholder de estado (só pra você ver no SSE/painel)
           publishState({ wa_id, etapa: 'RECEBIDO', vars: { kind: type }, ts: Date.now() });
+
+          // ✅ Resposta padrão de teste (Meta)
+          // Responde sempre usando o MESMO phone_number_id que recebeu a mensagem
+          try {
+            const reply = 'Teste OK (resposta automática)';
+            const sendRes = await sendMessage(wa_id, reply, {
+              meta_phone_number_id: inboundPhoneNumberId || null,
+            });
+
+            // opcional: guardar reply no histórico também (ajuda depois quando plugar LLM)
+            if (sendRes?.ok) {
+              pushHistory(wa_id, 'assistant', reply, {
+                kind: 'text',
+                phone_number_id: sendRes.phone_number_id || inboundPhoneNumberId || null,
+                wamid: sendRes.wamid || '',
+              });
+            } else {
+              console.warn(`[${wa_id}] falha ao responder teste: ${sendRes?.error || sendRes?.reason || 'unknown'}`);
+            }
+          } catch (errSend) {
+            console.warn(`[${wa_id}] erro ao enviar resposta teste: ${errSend?.message || errSend}`);
+          }
         }
       }
     }
