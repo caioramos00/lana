@@ -105,7 +105,7 @@ setInterval(() => {
   const t = now();
   for (const [k, v] of leadStore.entries()) {
     if (!v?.expiresAt || v.expiresAt <= t) {
-      try { clearLeadTimers(v); } catch {}
+      try { clearLeadTimers(v); } catch { }
       leadStore.delete(k);
     }
   }
@@ -215,6 +215,26 @@ async function humanDelayForInboundText(userText) {
 
   const minMs = 1600;
   const maxMs = 9500;
+
+  if (total < minMs) total = minMs;
+  if (total > maxMs) total = maxMs;
+
+  await sleep(total);
+}
+
+async function humanDelayForOutboundText(outText) {
+  const t = String(outText || '');
+  const chars = t.length;
+
+  const base = randInt(450, 1200);
+  const perChar = randInt(22, 55);
+  const typing = Math.min(chars * perChar, 6500); // cap
+  const jitter = randInt(250, 1200);
+
+  let total = base + typing + jitter;
+
+  const minMs = 900;
+  const maxMs = 12000;
 
   if (total < minMs) total = minMs;
   if (total > maxMs) total = maxMs;
@@ -458,7 +478,7 @@ async function processInboundText({ wa_id, inboundPhoneNumberId, text, excludeWa
     const msg = outMessages[i];
 
     // Micro-delay entre as mensagens do bloco
-    if (i > 0) await new Promise(r => setTimeout(r, randInt(250, 750))); // Ajuste o valor do delay para simular a leitura
+    if (i > 0) await humanDelayForOutboundText(msg);
 
     const r = await sendMessage(wa_id, msg, {
       meta_phone_number_id: inboundPhoneNumberId || null,
@@ -495,14 +515,14 @@ function enqueueInboundText({ wa_id, inboundPhoneNumberId, text, wamid }) {
     // max-wait: garante flush mesmo se ficar chegando msg
     clearTimeout(st.pending_max_timer);
     st.pending_max_timer = setTimeout(() => {
-      flushLead(wa_id).catch(() => {});
+      flushLead(wa_id).catch(() => { });
     }, INBOUND_MAX_WAIT_MS);
   }
 
   // debounce: espera o lead “parar de falar”
   clearTimeout(st.pending_timer);
   st.pending_timer = setTimeout(() => {
-    flushLead(wa_id).catch(() => {});
+    flushLead(wa_id).catch(() => { });
   }, computeDebounceMs(cleanText));
 }
 
@@ -543,7 +563,7 @@ async function flushLead(wa_id) {
   // Aplicar delay entre as mensagens do bloco (entre cada "bolha")
   for (let i = 0; i < batch.length; i++) {
     const currentMessage = batch[i];
-    
+
     // Atraso entre as mensagens
     if (i > 0) {
       const delay = randInt(250, 750);  // Micro-delay entre mensagens
@@ -567,7 +587,7 @@ async function flushLead(wa_id) {
       st.pending_first_ts = now();
       clearTimeout(st.pending_max_timer);
       st.pending_max_timer = setTimeout(() => {
-        flushLead(wa_id).catch(() => {});
+        flushLead(wa_id).catch(() => { });
       }, INBOUND_MAX_WAIT_MS);
     }
 
@@ -575,7 +595,7 @@ async function flushLead(wa_id) {
     clearTimeout(st.pending_timer);
     const last = st.pending_inbound[st.pending_inbound.length - 1];
     st.pending_timer = setTimeout(() => {
-      flushLead(wa_id).catch(() => {});
+      flushLead(wa_id).catch(() => { });
     }, computeDebounceMs(last?.text || ''));
   }
 }
@@ -619,7 +639,7 @@ app.post('/webhook', async (req, res) => {
             const stLead = getLead(wa_id);
             if (stLead && inboundPhoneNumberId) stLead.meta_phone_number_id = inboundPhoneNumberId;
             if (inboundPhoneNumberId) rememberInboundMetaPhoneNumberId(wa_id, inboundPhoneNumberId);
-          } catch {}
+          } catch { }
 
           // extrai texto
           let text = '';
@@ -664,5 +684,5 @@ app.post('/webhook', async (req, res) => {
 (async () => {
   await bootstrapDb();
   const PORT = process.env.PORT || 3000;
-  app.listen(PORT, () => {});
+  app.listen(PORT, () => { });
 })();
