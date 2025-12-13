@@ -67,7 +67,7 @@ function pushHistory(wa_id, role, text, extra = {}) {
   if (!st) return;
 
   st.history.push({
-    role, // "user" | "assistant" | "system"
+    role,
     text: String(text || ''),
     ts: new Date().toISOString(),
     ...extra,
@@ -85,12 +85,11 @@ setInterval(() => {
   for (const [k, v] of leadStore.entries()) {
     if (!v?.expiresAt || v.expiresAt <= t) leadStore.delete(k);
   }
-}, 60 * 60 * 1000); // limpa 1x/h
+}, 60 * 60 * 1000);
 
-// ===== Helpers (prompt render + parse JSON) =====
+// ===== Helpers =====
 function buildHistoryString(st) {
   const hist = Array.isArray(st?.history) ? st.history : [];
-  // formato simples e barato pro LLM
   return hist
     .slice(-MAX_MSGS)
     .map((m) => {
@@ -131,40 +130,71 @@ function renderSystemPrompt(template, factsObj, historicoStr, msgAtual) {
 
 function extractJsonObject(str) {
   const s = String(str || '').trim();
-
-  // se vier só JSON, perfeito
   if (s.startsWith('{') && s.endsWith('}')) return s;
 
-  // tenta extrair o primeiro objeto JSON de dentro do texto
   const first = s.indexOf('{');
   const last = s.lastIndexOf('}');
-  if (first >= 0 && last > first) {
-    return s.slice(first, last + 1);
-  }
+  if (first >= 0 && last > first) return s.slice(first, last + 1);
   return null;
 }
 
 function safeParseAgentJson(raw) {
   const jsonStr = extractJsonObject(raw);
-  if (!jsonStr) return { ok: false, reason: 'no-json-found', data: null };
+  if (!jsonStr) return { ok: false, data: null };
 
   try {
     const obj = JSON.parse(jsonStr);
-    if (!obj || typeof obj !== 'object') return { ok: false, reason: 'not-an-object', data: null };
-    if (!Array.isArray(obj.messages)) return { ok: false, reason: 'missing-messages-array', data: obj };
+    if (!obj || typeof obj !== 'object') return { ok: false, data: null };
+    if (!Array.isArray(obj.messages)) return { ok: false, data: obj };
     return { ok: true, data: obj };
-  } catch (e) {
-    return { ok: false, reason: 'json-parse-error', error: e?.message || String(e), data: null };
+  } catch {
+    return { ok: false, data: null };
   }
+}
+
+// ===== Delay humano =====
+function randInt(min, max) {
+  const lo = Math.min(min, max);
+  const hi = Math.max(min, max);
+  return Math.floor(lo + Math.random() * (hi - lo + 1));
+}
+
+function sleep(ms) {
+  return new Promise((r) => setTimeout(r, ms));
+}
+
+/**
+ * Delay “humano” baseado no tamanho do que o usuário mandou.
+ * - base: 900–1800ms
+ * - + por caractere (simula leitura): 18–45ms/char (capado)
+ * - + jitter: 400–1600ms
+ * - min 1.6s / max 9.5s (ajuste se quiser mais lento)
+ */
+async function humanDelayForInboundText(userText) {
+  const t = String(userText || '');
+  const chars = t.length;
+
+  const base = randInt(900, 1800);
+  const perChar = randInt(18, 45);
+  const reading = Math.min(chars * perChar, 5200); // cap
+  const jitter = randInt(400, 1600);
+
+  let total = base + reading + jitter;
+
+  // se msg for muito curta tipo "oi", ainda assim dá uma segurada mínima
+  const minMs = 1600;
+  const maxMs = 9500;
+
+  if (total < minMs) total = minMs;
+  if (total > maxMs) total = maxMs;
+
+  await sleep(total);
 }
 
 // ===== Venice call =====
 async function callVeniceChat({ apiKey, model, systemPromptRendered, userId }) {
   const url = 'https://api.venice.ai/api/v1/chat/completions';
 
-  // Observação:
-  // - usamos response_format json_object pra forçar JSON
-  // - include_venice_system_prompt: false pra não misturar prompt da Venice com o seu
   const body = {
     model,
     messages: [
@@ -184,8 +214,6 @@ async function callVeniceChat({ apiKey, model, systemPromptRendered, userId }) {
     stream: false,
   };
 
-  const started = now();
-
   const r = await axios.post(url, body, {
     headers: {
       Authorization: `Bearer ${apiKey}`,
@@ -195,9 +223,7 @@ async function callVeniceChat({ apiKey, model, systemPromptRendered, userId }) {
     validateStatus: () => true,
   });
 
-  const tookMs = now() - started;
-
-  return { status: r.status, data: r.data, tookMs, requestBodyPreview: body };
+  return { status: r.status, data: r.data };
 }
 
 // ===== Bootstrap DB + Settings em memória =====
@@ -215,11 +241,9 @@ async function bootstrapDb() {
         system_prompt: settings.system_prompt,
       };
 
-      console.log('[BOOT] DB ok + settings carregadas.');
       return;
     } catch (e) {
       attempt++;
-      console.warn(`[BOOT] tentativa ${attempt} falhou:`, e?.message || e);
       await new Promise(r => setTimeout(r, 1500 * attempt));
     }
   }
@@ -249,8 +273,7 @@ app.get('/admin/settings', checkAuth, async (req, res) => {
     const settings = await db.getBotSettings();
     const metaNumbers = await db.listMetaNumbers();
     res.render('settings', { settings, metaNumbers, ok: req.query.ok ? 1 : 0 });
-  } catch (e) {
-    console.error('[AdminSettings][GET]', e?.message || e);
+  } catch {
     res.status(500).send('Erro ao carregar settings.');
   }
 });
@@ -265,8 +288,7 @@ app.post('/admin/settings', checkAuth, async (req, res) => {
       system_prompt: global.botSettings.system_prompt,
     };
     res.redirect('/admin/settings?ok=1');
-  } catch (e) {
-    console.error('[AdminSettings][POST]', e?.message || e);
+  } catch {
     res.status(500).send('Erro ao salvar settings.');
   }
 });
@@ -291,8 +313,7 @@ app.post('/admin/settings/meta/save', checkAuth, async (req, res) => {
     else await db.createMetaNumber(payload);
 
     res.redirect('/admin/settings?ok=1');
-  } catch (e) {
-    console.error('[AdminSettings][MetaSave]', e?.message || e);
+  } catch {
     res.status(500).send('Erro ao salvar número Meta.');
   }
 });
@@ -302,8 +323,7 @@ app.post('/admin/settings/meta/delete', checkAuth, async (req, res) => {
     const id = (req.body.id || '').trim();
     if (id) await db.deleteMetaNumber(id);
     res.redirect('/admin/settings?ok=1');
-  } catch (e) {
-    console.error('[AdminSettings][MetaDelete]', e?.message || e);
+  } catch {
     res.status(500).send('Erro ao remover número Meta.');
   }
 });
@@ -316,83 +336,49 @@ app.get('/webhook', async (req, res) => {
 
   try {
     const settings = await db.getBotSettings();
-    const VERIFY_TOKEN = (settings?.contact_token || '').trim(); // (seu campo que renomeou pra verify token no UI)
+    const VERIFY_TOKEN = (settings?.contact_token || '').trim();
 
     if (mode === 'subscribe' && token && VERIFY_TOKEN && token === VERIFY_TOKEN) {
       return res.status(200).send(challenge);
     }
     return res.sendStatus(403);
-  } catch (e) {
-    console.error('[WEBHOOK][VERIFY][ERR]', e?.message || e);
+  } catch {
     return res.sendStatus(500);
   }
 });
 
 // ===== Processor (IA + envio) =====
-async function processInboundText({ wa_id, inboundPhoneNumberId, text, wamid, timestampMs }) {
+async function processInboundText({ wa_id, inboundPhoneNumberId, text }) {
   const st = getLead(wa_id);
   if (!st) return;
-
-  // facts + histórico
-  const facts = buildFactsJson(st, inboundPhoneNumberId);
-  const historicoStr = buildHistoryString(st);
 
   const settings = global.botSettings || await db.getBotSettings();
   const veniceApiKey = (settings?.venice_api_key || '').trim();
   const veniceModel = (settings?.venice_model || '').trim();
   const systemPromptTpl = (settings?.system_prompt || '').trim();
 
-  console.log(`[AI][START] wa_id=${wa_id} phone_number_id=${inboundPhoneNumberId || ''} model=${veniceModel || '(vazio)'}`);
-
-  publishState({ wa_id, etapa: 'AI_START', vars: { model: veniceModel || '' }, ts: now() });
-
   if (!veniceApiKey || !veniceModel || !systemPromptTpl) {
-    console.warn(`[AI][SKIP] settings incompletas (key=${!!veniceApiKey} model=${!!veniceModel} prompt=${!!systemPromptTpl})`);
-    publishState({ wa_id, etapa: 'AI_SKIP_SETTINGS_INCOMPLETE', vars: {}, ts: now() });
-
     await sendMessage(wa_id, 'Config incompleta no painel (venice key/model/prompt).', {
       meta_phone_number_id: inboundPhoneNumberId || null,
     });
     return;
   }
 
+  // delay “humano” ANTES de responder
+  await humanDelayForInboundText(text);
+
+  const facts = buildFactsJson(st, inboundPhoneNumberId);
+  const historicoStr = buildHistoryString(st);
   const rendered = renderSystemPrompt(systemPromptTpl, facts, historicoStr, text);
 
-  console.log(`[AI][PROMPT_RENDERED] len=${rendered.length} preview="${rendered.slice(0, 180).replace(/\s+/g,' ').trim()}..."`);
-  publishState({ wa_id, etapa: 'AI_PROMPT_RENDERED', vars: { len: rendered.length }, ts: now() });
-
-  // chamada Venice
-  publishState({ wa_id, etapa: 'AI_REQUEST', vars: {}, ts: now() });
-
-  let venice;
-  try {
-    // log request (sem vazar api key)
-    console.log(`[AI][REQUEST] url=https://api.venice.ai/api/v1/chat/completions messages=2 response_format=json_object max_tokens=700`);
-
-    venice = await callVeniceChat({
-      apiKey: veniceApiKey,
-      model: veniceModel,
-      systemPromptRendered: rendered,
-      userId: wa_id,
-    });
-
-    console.log(`[AI][HTTP] status=${venice.status} tookMs=${venice.tookMs}`);
-    publishState({ wa_id, etapa: 'AI_HTTP', vars: { status: venice.status, tookMs: venice.tookMs }, ts: now() });
-
-  } catch (e) {
-    console.error(`[AI][ERROR] request failed: ${e?.message || e}`);
-    publishState({ wa_id, etapa: 'AI_ERROR_REQUEST', vars: { error: e?.message || String(e) }, ts: now() });
-
-    await sendMessage(wa_id, 'Deu ruim aqui rapidinho. Manda de novo?', {
-      meta_phone_number_id: inboundPhoneNumberId || null,
-    });
-    return;
-  }
+  const venice = await callVeniceChat({
+    apiKey: veniceApiKey,
+    model: veniceModel,
+    systemPromptRendered: rendered,
+    userId: wa_id,
+  });
 
   if (!venice || venice.status < 200 || venice.status >= 300) {
-    console.error(`[AI][HTTP_ERROR] status=${venice?.status} bodyPreview=${JSON.stringify(venice?.data || {}).slice(0, 600)}`);
-    publishState({ wa_id, etapa: 'AI_HTTP_ERROR', vars: { status: venice?.status || 0 }, ts: now() });
-
     await sendMessage(wa_id, 'Tive um erro aqui. Manda de novo?', {
       meta_phone_number_id: inboundPhoneNumberId || null,
     });
@@ -400,15 +386,9 @@ async function processInboundText({ wa_id, inboundPhoneNumberId, text, wamid, ti
   }
 
   const content = venice?.data?.choices?.[0]?.message?.content || '';
-  console.log(`[AI][RAW] preview="${String(content).slice(0, 350).replace(/\s+/g,' ').trim()}..."`);
-  publishState({ wa_id, etapa: 'AI_RAW', vars: { chars: String(content).length }, ts: now() });
-
   const parsed = safeParseAgentJson(content);
 
   if (!parsed.ok) {
-    console.error(`[AI][PARSE_FAIL] reason=${parsed.reason} err=${parsed.error || ''}`);
-    publishState({ wa_id, etapa: 'AI_PARSE_FAIL', vars: { reason: parsed.reason }, ts: now() });
-
     await sendMessage(wa_id, 'Não entendi direito. Me manda de novo?', {
       meta_phone_number_id: inboundPhoneNumberId || null,
     });
@@ -416,68 +396,38 @@ async function processInboundText({ wa_id, inboundPhoneNumberId, text, wamid, ti
   }
 
   const agent = parsed.data;
-  console.log(`[AI][PARSE_OK] intent=${agent.intent_detectada} fase=${agent.proxima_fase} msgs=${(agent.messages || []).length}`);
-  publishState({
-    wa_id,
-    etapa: 'AI_PARSE_OK',
-    vars: { intent: agent.intent_detectada || '', fase: agent.proxima_fase || '' },
-    ts: now()
-  });
-
-  // envia até 3 mensagens curtas (como o prompt define)
   const outMessages = (agent.messages || [])
     .map(x => String(x || '').trim())
     .filter(Boolean)
     .slice(0, 3);
 
-  if (!outMessages.length) {
-    console.warn('[AI][NO_MESSAGES] agent retornou JSON sem messages válidas');
-    publishState({ wa_id, etapa: 'AI_NO_MESSAGES', vars: {}, ts: now() });
-    return;
-  }
+  if (!outMessages.length) return;
 
   for (let i = 0; i < outMessages.length; i++) {
     const msg = outMessages[i];
 
-    publishState({ wa_id, etapa: 'OUT_SEND_START', vars: { i: i + 1, total: outMessages.length }, ts: now() });
-    console.log(`[AI][SEND] (${i + 1}/${outMessages.length}) -> "${msg.replace(/\s+/g,' ').slice(0, 200)}"`);
+    // micro-delay entre bolhas (fica mais humano)
+    if (i > 0) await new Promise(r => setTimeout(r, randInt(250, 750)));
 
-    try {
-      const r = await sendMessage(wa_id, msg, {
-        meta_phone_number_id: inboundPhoneNumberId || null,
+    const r = await sendMessage(wa_id, msg, {
+      meta_phone_number_id: inboundPhoneNumberId || null,
+    });
+
+    if (r?.ok) {
+      pushHistory(wa_id, 'assistant', msg, {
+        kind: 'text',
+        wamid: r.wamid || '',
+        phone_number_id: r.phone_number_id || inboundPhoneNumberId || null,
       });
-
-      console.log(`[AI][SEND_OK] (${i + 1}/${outMessages.length}) ok=${!!r?.ok} phone_number_id=${r?.phone_number_id || inboundPhoneNumberId || ''}`);
-      publishState({ wa_id, etapa: 'OUT_SEND_OK', vars: { i: i + 1 }, ts: now() });
-
-      if (r?.ok) {
-        pushHistory(wa_id, 'assistant', msg, {
-          kind: 'text',
-          wamid: r.wamid || '',
-          phone_number_id: r.phone_number_id || inboundPhoneNumberId || null,
-        });
-      }
-
-    } catch (e) {
-      console.warn(`[AI][SEND_FAIL] (${i + 1}/${outMessages.length}) err=${e?.message || e}`);
-      publishState({ wa_id, etapa: 'OUT_SEND_FAIL', vars: { i: i + 1, error: e?.message || String(e) }, ts: now() });
-      break;
-    }
-
-    // micro-delay entre bolhas (evita rate-limit e fica "natural")
-    if (i < outMessages.length - 1) {
-      await new Promise(r => setTimeout(r, 350));
     }
   }
 }
 
 // ===== Webhook receiver (Meta) =====
 app.post('/webhook', async (req, res) => {
-  // ACK rápido
   res.sendStatus(200);
 
   const body = req.body || {};
-  let loggedFullPayload = false;
 
   try {
     const entry = Array.isArray(body.entry) ? body.entry : [];
@@ -502,12 +452,6 @@ app.post('/webhook', async (req, res) => {
 
         // Mensagens inbound
         const msgs = Array.isArray(value.messages) ? value.messages : [];
-        if (msgs.length && !loggedFullPayload) {
-          // LOG 1: payload COMPLETO recebido (apenas quando tem mensagens)
-          console.log('[WEBHOOK][INBOUND][PAYLOAD_FULL]\n' + JSON.stringify(body, null, 2));
-          loggedFullPayload = true;
-        }
-
         for (const m of msgs) {
           const wa_id = m.from;
           const wamid = m.id;
@@ -525,7 +469,7 @@ app.post('/webhook', async (req, res) => {
           if (type === 'text') text = m.text?.body || '';
           else text = `[${type || 'msg'}]`;
 
-          // LOG 2: formato curto
+          // ✅ ÚNICO LOG que fica
           console.log(`[${wa_id}] ${text}`);
 
           // memória + SSE inbound
@@ -542,32 +486,25 @@ app.post('/webhook', async (req, res) => {
 
           publishState({ wa_id, etapa: 'RECEBIDO', vars: { kind: type }, ts: Date.now() });
 
-          // ✅ Agora: processa IA somente se for texto
+          // processa IA somente se for texto
           if (type === 'text') {
-            // roda em "background" (sem travar webhook)
             processInboundText({
               wa_id,
               inboundPhoneNumberId,
               text,
-              wamid,
-              timestampMs: Number(m.timestamp) * 1000 || Date.now(),
-            }).catch((err) => {
-              console.error(`[AI][FATAL] wa_id=${wa_id} err=${err?.message || err}`);
-              publishState({ wa_id, etapa: 'AI_FATAL', vars: { error: err?.message || String(err) }, ts: now() });
-            });
+            }).catch(() => {});
           }
         }
       }
     }
-  } catch (err) {
-    console.error('[WEBHOOK][POST][ERR]', err?.message || err);
+  } catch {
+    // sem logs
   }
 });
 
 // ===== Start =====
 (async () => {
   await bootstrapDb();
-
   const PORT = process.env.PORT || 3000;
-  app.listen(PORT, () => console.log(`[✅ Servidor rodando na porta ${PORT}]`));
+  app.listen(PORT, () => {});
 })();
