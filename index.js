@@ -6,6 +6,7 @@ const session = require('express-session');
 const path = require('path');
 
 const db = require('./db.js');
+const { rememberInboundMetaPhoneNumberId } = require('./senders');
 const { sseRouter } = require('./stream/sse-router');
 const { publishMessage, publishAck, publishState } = require('./stream/events-bus');
 
@@ -91,16 +92,15 @@ async function bootstrapDb() {
         system_prompt: settings.system_prompt,
       };
 
-      console.log('[DB] pronto | [Settings] carregadas');
+      console.log('[BOOT] DB ok + settings carregadas.');
       return;
     } catch (e) {
-      const wait = Math.min(10_000, 500 * 2 ** attempt);
-      console.warn(`[DB] init falhou (${e?.code || e?.message}); retry em ${wait}ms...`);
-      await new Promise(r => setTimeout(r, wait));
       attempt++;
+      console.warn(`[BOOT] tentativa ${attempt} falhou:`, e?.message || e);
+      await new Promise(r => setTimeout(r, 1500 * attempt));
     }
   }
-  throw new Error('DB não iniciou (settings são obrigatórias).');
+  throw new Error('Falha ao iniciar DB');
 }
 
 // ===== Login simples (reaproveita public/login.html) =====
@@ -120,45 +120,36 @@ app.get('/logout', (req, res) => {
   req.session.destroy(() => res.redirect('/login'));
 });
 
-// ===== Painel de settings =====
+// ===== Admin Settings =====
 app.get('/admin/settings', checkAuth, async (req, res) => {
   try {
-    const settings = await db.getBotSettings({ bypassCache: true });
-    const metaNumbers = await db.listMetaNumbers().catch(() => []);
-    res.render('settings.ejs', { settings, metaNumbers, ok: req.query.ok === '1' });
+    const settings = await db.getBotSettings();
+    const metaNumbers = await db.listMetaNumbers();
+    res.render('settings', { settings, metaNumbers, ok: req.query.ok ? 1 : 0 });
   } catch (e) {
     console.error('[AdminSettings][GET]', e?.message || e);
-    res.status(500).send('Erro ao carregar configurações.');
+    res.status(500).send('Erro ao carregar settings.');
   }
 });
 
 app.post('/admin/settings', checkAuth, async (req, res) => {
   try {
-    const payload = {
-      graph_api_access_token: (req.body.graph_api_access_token || '').trim(),
-      contact_token: (req.body.contact_token || '').trim(), // VERIFY TOKEN do webhook
-      venice_api_key: (req.body.venice_api_key || '').trim(),
-      venice_model: (req.body.venice_model || '').trim(),
-      system_prompt: (req.body.system_prompt || '').trim(),
-    };
-
-    await db.updateBotSettings(payload);
-
-    const settings = await db.getBotSettings({ bypassCache: true });
-    global.botSettings = settings;
+    await db.updateBotSettings(req.body || {});
+    // recarrega cache global
+    global.botSettings = await db.getBotSettings({ bypassCache: true });
     global.veniceConfig = {
-      venice_api_key: settings.venice_api_key,
-      venice_model: settings.venice_model,
-      system_prompt: settings.system_prompt,
+      venice_api_key: global.botSettings.venice_api_key,
+      venice_model: global.botSettings.venice_model,
+      system_prompt: global.botSettings.system_prompt,
     };
-
     res.redirect('/admin/settings?ok=1');
   } catch (e) {
     console.error('[AdminSettings][POST]', e?.message || e);
-    res.status(500).send('Erro ao salvar configurações.');
+    res.status(500).send('Erro ao salvar settings.');
   }
 });
 
+// ===== Admin Meta Numbers =====
 app.post('/admin/settings/meta/save', checkAuth, async (req, res) => {
   try {
     const id = (req.body.id || '').trim();
@@ -166,15 +157,15 @@ app.post('/admin/settings/meta/save', checkAuth, async (req, res) => {
       phone_number_id: (req.body.phone_number_id || '').trim(),
       display_phone_number: (req.body.display_phone_number || '').trim(),
       access_token: (req.body.access_token || '').trim(),
-      active: req.body.active === 'on',
       label: (req.body.label || '').trim(),
+      active: !!req.body.active,
     };
 
     if (!payload.phone_number_id || !payload.access_token) {
-      return res.status(400).send('phone_number_id e access_token são obrigatórios');
+      return res.status(400).send('phone_number_id e access_token são obrigatórios.');
     }
 
-    if (id) await db.updateMetaNumber(Number(id), payload);
+    if (id) await db.updateMetaNumber(id, payload);
     else await db.createMetaNumber(payload);
 
     res.redirect('/admin/settings?ok=1');
@@ -186,7 +177,7 @@ app.post('/admin/settings/meta/save', checkAuth, async (req, res) => {
 
 app.post('/admin/settings/meta/delete', checkAuth, async (req, res) => {
   try {
-    const id = Number((req.body.id || '').trim() || 0);
+    const id = (req.body.id || '').trim();
     if (id) await db.deleteMetaNumber(id);
     res.redirect('/admin/settings?ok=1');
   } catch (e) {
@@ -227,6 +218,7 @@ app.post('/webhook', async (req, res) => {
       const changes = Array.isArray(e.changes) ? e.changes : [];
       for (const ch of changes) {
         const value = ch.value || {};
+        const inboundPhoneNumberId = value?.metadata?.phone_number_id || null;
 
         // statuses (acks)
         const statuses = Array.isArray(value.statuses) ? value.statuses : [];
@@ -243,6 +235,11 @@ app.post('/webhook', async (req, res) => {
         const msgs = Array.isArray(value.messages) ? value.messages : [];
         for (const m of msgs) {
           const wa_id = m.from;
+          try {
+            const stLead = getLead(wa_id);
+            if (stLead && inboundPhoneNumberId) stLead.meta_phone_number_id = inboundPhoneNumberId;
+            if (inboundPhoneNumberId) rememberInboundMetaPhoneNumberId(wa_id, inboundPhoneNumberId);
+          } catch {}
           const wamid = m.id;
           const type = m.type;
 
