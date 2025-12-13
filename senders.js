@@ -1,428 +1,353 @@
+// senders.js (META-only + SSE publish)
+// - NÃO depende de ./lib/transport/meta.js
+// - Resolve credenciais via bot_meta_numbers (preferindo o phone_number_id do inbound)
+// - Publica no SSE via publishMessage
+
 const axios = require('axios');
-const { delayRange, extraGlobalDelay, tsNow, safeStr, BETWEEN_MIN_MS, BETWEEN_MAX_MS } = require('./utils.js');
-const { getActiveTransport } = require('./lib/transport/index.js');
+
+const { delayRange, extraGlobalDelay, BETWEEN_MIN_MS, BETWEEN_MAX_MS } = require('./utils.js');
 const { preflightOptOut } = require('./optout.js');
 const { ensureEstado } = require('./stateManager.js');
 const { publishMessage } = require('./stream/events-bus');
+
 const {
-    getContatoByPhone,
-    setManychatSubscriberId,
-    getMetaNumberByPhoneNumberId,
-    getDefaultMetaNumber,
+  getBotSettings,
+  getMetaNumberByPhoneNumberId,
+  getDefaultMetaNumber,
 } = require('./db');
 
-async function resolveManychatSubscriberId(contato, modOpt, settingsOpt) {
-    const phone = String(contato || '').replace(/\D/g, '');
-    const st = ensureEstado(phone);
-    let subscriberId = null;
-    try {
-        const c = await getContatoByPhone(phone);
-        if (c?.manychat_subscriber_id) subscriberId = String(c.manychat_subscriber_id);
-    } catch { }
-    if (!subscriberId && st?.manychat_subscriber_id) subscriberId = String(st.manychat_subscriber_id);
-    if (subscriberId) return subscriberId;
-    try {
-        const { mod, settings } = (modOpt && settingsOpt) ? { mod: modOpt, settings: settingsOpt } : await getActiveTransport();
-        const token = (settings && settings.manychat_api_token) || process.env.MANYCHAT_API_TOKEN || '';
-        if (!token) return null;
-        const phonePlus = phone.startsWith('+') ? phone : `+${phone}`;
-        const headers = { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' };
-        const call = async (method, url, data) => {
-            try {
-                return await axios({ method, url, data, headers, timeout: 12000, validateStatus: () => true });
-            } catch { return { status: 0, data: null }; }
-        };
-        const tries = [
-            { m: 'get', u: `https://api.manychat.com/whatsapp/subscribers/findByPhone?phone=${encodeURIComponent(phonePlus)}` },
-            { m: 'post', u: 'https://api.manychat.com/whatsapp/subscribers/findByPhone', p: { phone: phonePlus } },
-            { m: 'get', u: `https://api.manychat.com/fb/subscriber/findByPhone?phone=${encodeURIComponent(phonePlus)}` },
-            { m: 'post', u: 'https://api.manychat.com/fb/subscriber/findByPhone', p: { phone: phonePlus } },
-        ];
-        for (const t of tries) {
-            const r = await call(t.m, t.u, t.p);
-            const d = r?.data || {};
-            const id = d?.data?.id || d?.data?.subscriber_id || d?.subscriber?.id || d?.id || null;
-            if (r.status >= 200 && r.status < 300 && id) { subscriberId = String(id); break; }
-            console.log(`[${phone}] resolveManychatSubscriberId try fail: HTTP ${r.status}`);
-        }
-        if (subscriberId) {
-            await setManychatSubscriberId(phone, subscriberId);
-            st.manychat_subscriber_id = subscriberId;
-            console.log(`[${phone}] resolveManychatSubscriberId OK id=${subscriberId}`);
-        }
-    } catch (e) {
-        console.warn(`[${phone}] resolveManychatSubscriberId falhou: ${e?.message || e}`);
-    }
-    return subscriberId;
+function _isPausedByOptOut(st) {
+  return (
+    st.permanentlyBlocked === true ||
+    st.optOutCount >= 3 ||
+    (st.optOutCount > 0 && !st.reoptinActive)
+  );
 }
 
+/**
+ * Resolve credenciais Meta (phone_number_id + token) para um contato.
+ *
+ * Prioridade do phone_number_id:
+ *  1) opts.meta_phone_number_id (ex.: o mesmo phone_number_id do inbound)
+ *  2) st.meta_phone_number_id (memória)
+ *  3) settings.meta_phone_number_id (legado, se existir)
+ *  4) default ativo em bot_meta_numbers
+ *
+ * Token:
+ *  - Preferencialmente bot_meta_numbers.access_token
+ *  - Fallback legado: settings.meta_access_token / settings.graph_api_access_token
+ */
 async function resolveMetaCredentialsForContato(contato, settings, opts = {}) {
-    const st = ensureEstado(contato);
-    const explicitPhoneNumberId = opts.meta_phone_number_id;
-    const candidatePhoneNumberId =
-        explicitPhoneNumberId ||
-        st.meta_phone_number_id ||
-        settings?.meta_phone_number_id ||
-        null;
+  const st = ensureEstado(contato);
 
-    let metaNumber = null;
+  const explicitPhoneNumberId = opts.meta_phone_number_id;
+  const candidatePhoneNumberId =
+    explicitPhoneNumberId ||
+    st.meta_phone_number_id ||
+    settings?.meta_phone_number_id ||
+    null;
 
-    if (candidatePhoneNumberId) {
-        try {
-            metaNumber = await getMetaNumberByPhoneNumberId(candidatePhoneNumberId);
-        } catch (e) {
-            console.warn(
-                `[${contato}] resolveMetaCredentialsForContato getMetaNumberByPhoneNumberId erro: ${e?.message || e}`
-            );
-        }
+  let metaNumber = null;
+
+  if (candidatePhoneNumberId) {
+    try {
+      metaNumber = await getMetaNumberByPhoneNumberId(candidatePhoneNumberId);
+    } catch (e) {
+      console.warn(
+        `[${contato}] resolveMetaCredentialsForContato getMetaNumberByPhoneNumberId erro: ${e?.message || e}`
+      );
     }
+  }
 
-    if (!metaNumber) {
-        try {
-            metaNumber = await getDefaultMetaNumber();
-        } catch (e) {
-            console.warn(
-                `[${contato}] resolveMetaCredentialsForContato getDefaultMetaNumber erro: ${e?.message || e}`
-            );
-        }
+  if (!metaNumber) {
+    try {
+      metaNumber = await getDefaultMetaNumber();
+    } catch (e) {
+      console.warn(
+        `[${contato}] resolveMetaCredentialsForContato getDefaultMetaNumber erro: ${e?.message || e}`
+      );
     }
+  }
 
-    if (metaNumber && metaNumber.active !== false) {
-        return {
-            phoneNumberId: metaNumber.phone_number_id,
-            token: metaNumber.access_token,
-        };
-    }
-
-    // Fallback legado: usa os campos únicos do bot_settings
+  if (metaNumber && metaNumber.active !== false) {
     return {
-        phoneNumberId: settings?.meta_phone_number_id || null,
-        token: settings?.meta_access_token || null,
+      phoneNumberId: metaNumber.phone_number_id,
+      token: metaNumber.access_token,
     };
+  }
+
+  const legacyToken =
+    settings?.meta_access_token ||
+    settings?.graph_api_access_token ||
+    null;
+
+  return {
+    phoneNumberId: candidatePhoneNumberId || null,
+    token: legacyToken,
+  };
 }
 
+function _getMetaApiVersion(settings) {
+  // você pode guardar isso no settings depois; por enquanto default seguro
+  return (settings?.meta_api_version || 'v24.0').trim();
+}
+
+function _metaMessagesUrl(version, phoneNumberId) {
+  return `https://graph.facebook.com/${version}/${phoneNumberId}/messages`;
+}
+
+async function _metaSendText({ to, text }, { token, phoneNumberId, settings }) {
+  const version = _getMetaApiVersion(settings);
+  const url = _metaMessagesUrl(version, phoneNumberId);
+
+  const payload = {
+    messaging_product: 'whatsapp',
+    to,
+    type: 'text',
+    text: {
+      body: text,
+      preview_url: false,
+    },
+  };
+
+  const r = await axios.post(url, payload, {
+    headers: {
+      Authorization: `Bearer ${token}`,
+      'Content-Type': 'application/json',
+    },
+    timeout: 15000,
+    validateStatus: () => true,
+  });
+
+  // Meta retorna 2xx com body contendo "messages":[{"id":"wamid..."}]
+  if (r.status >= 200 && r.status < 300) return r.data || {};
+
+  const errBody = r.data || {};
+  const msg =
+    errBody?.error?.message ||
+    `HTTP ${r.status}`;
+
+  throw new Error(`meta_send_text_failed: ${msg}`);
+}
+
+async function _metaSendImage({ to, url: link, caption }, { token, phoneNumberId, settings }) {
+  const version = _getMetaApiVersion(settings);
+  const url = _metaMessagesUrl(version, phoneNumberId);
+
+  const payload = {
+    messaging_product: 'whatsapp',
+    to,
+    type: 'image',
+    image: { link },
+  };
+
+  if (caption && typeof caption === 'string' && caption.trim()) {
+    payload.image.caption = caption.trim();
+  }
+
+  const r = await axios.post(url, payload, {
+    headers: {
+      Authorization: `Bearer ${token}`,
+      'Content-Type': 'application/json',
+    },
+    timeout: 15000,
+    validateStatus: () => true,
+  });
+
+  if (r.status >= 200 && r.status < 300) return r.data || {};
+
+  const errBody = r.data || {};
+  const msg =
+    errBody?.error?.message ||
+    `HTTP ${r.status}`;
+
+  throw new Error(`meta_send_image_failed: ${msg}`);
+}
+
+/**
+ * Envia uma mensagem de TEXTO via Meta.
+ * opts:
+ *  - meta_phone_number_id: força responder pelo mesmo número do inbound
+ *  - force: ignora pausa por optout
+ *  - settings: (opcional) injeta settings já carregado, evita hit no DB
+ */
 async function sendMessage(contato, texto, opts = {}) {
-    await extraGlobalDelay();
-    const st = ensureEstado(contato);
-    if (await preflightOptOut(st)) {
-        console.log(`[${contato}] msg=cancelada por opt-out em tempo real`);
-        return { ok: false, reason: 'paused-by-optout' };
-    }
-    const paused = (st.permanentlyBlocked === true) || (st.optOutCount >= 3) || (st.optOutCount > 0 && !st.reoptinActive);
-    if (paused && !opts.force) {
-        return { ok: false, reason: 'paused-by-optout' };
-    }
-    const { mod, settings } = await getActiveTransport();
-    const provider = mod?.name || 'unknown';
+  await extraGlobalDelay();
+
+  const st = ensureEstado(contato);
+
+  if (await preflightOptOut(st)) {
+    console.log(`[${contato}] msg=cancelada por opt-out em tempo real`);
+    return { ok: false, reason: 'paused-by-optout' };
+  }
+
+  if (_isPausedByOptOut(st) && !opts.force) {
+    return { ok: false, reason: 'paused-by-optout' };
+  }
+
+  const body = String(texto ?? '');
+  if (!body.trim()) return { ok: false, reason: 'empty-text' };
+
+  const settings = opts.settings || global.botSettings || (await getBotSettings());
+
+  const { phoneNumberId, token } = await resolveMetaCredentialsForContato(contato, settings, opts);
+
+  if (!token || !phoneNumberId) {
+    console.warn(
+      `[${contato}] sendMessage: Meta credentials missing (token: ${!!token}, phoneNumberId: ${!!phoneNumberId})`
+    );
+    return { ok: false, reason: 'missing-meta-credentials' };
+  }
+
+  // cola no estado para próximas respostas
+  try { st.meta_phone_number_id = phoneNumberId; } catch { }
+
+  try {
+    const resp = await _metaSendText(
+      { to: contato, text: body },
+      { token, phoneNumberId, settings }
+    );
+
+    const wamid = resp?.messages?.[0]?.id || '';
+
     try {
-        if (provider === 'manychat') {
-            const subscriberId = await resolveManychatSubscriberId(contato, mod, settings);
-            if (!subscriberId) throw new Error('subscriber_id ausente');
-            const payload = {
-                subscriber_id: subscriberId,
-                data: { version: 'v2', content: { type: 'whatsapp', messages: [{ type: 'text', text: texto }] } },
-            };
-            const r = await axios.post('https://api.manychat.com/fb/sending/sendContent', payload, {
-                headers: { Authorization: `Bearer ${settings.manychat_api_token}`, 'Content-Type': 'application/json' },
-                timeout: 15000,
-                validateStatus: () => true
-            });
-            if (r.status >= 400 || r.data?.status === 'error') {
-                throw new Error(`sendContent falhou: ${JSON.stringify(r.data)}`);
-            }
+      publishMessage({
+        dir: 'out',
+        wa_id: contato,
+        wamid,
+        kind: 'text',
+        text: body,
+        media: null,
+        ts: Date.now(),
+      });
+    } catch { }
 
-            try {
-                publishMessage({
-                    dir: 'out',
-                    wa_id: contato,
-                    wamid: '',
-                    kind: 'text',
-                    text: texto || '',
-                    media: null,
-                    ts: Date.now()
-                });
-            } catch { }
-            return { ok: true, provider: 'manychat' };
-        } else if (provider === 'meta') {
-            const { phoneNumberId, token } = await resolveMetaCredentialsForContato(contato, settings, opts);
-
-            if (!token || !phoneNumberId) {
-                console.warn(
-                    `[${contato}] sendMessage: Meta credentials missing (token: ${!!token}, phoneNumberId: ${!!phoneNumberId})`
-                );
-                return { ok: false, reason: 'missing-meta-credentials' };
-            }
-
-            const metaSettings = {
-                ...settings,
-                meta_access_token: token,
-                meta_phone_number_id: phoneNumberId,
-            };
-
-            await mod.sendText({ to: contato, text: texto }, metaSettings);
-
-            try {
-                publishMessage({
-                    dir: 'out',
-                    wa_id: contato,
-                    wamid: '',
-                    kind: 'text',
-                    text: texto || '',
-                    media: null,
-                    ts: Date.now(),
-                });
-            } catch { }
-
-            return { ok: true, provider: 'meta', phone_number_id: phoneNumberId };
-
-        } else {
-            throw new Error(`provider "${provider}" não suportado`);
-        }
-    } catch (e) {
-        console.log(`[${contato}] Msg send fail: ${e.message}`);
-        return { ok: false, error: e.message };
-    }
+    return { ok: true, provider: 'meta', wamid, phone_number_id: phoneNumberId };
+  } catch (e) {
+    console.log(`[${contato}] Msg send fail (meta): ${e?.message || e}`);
+    return { ok: false, provider: 'meta', error: e?.message || String(e) };
+  }
 }
 
-async function updateManyChatCustomFieldByName(subscriberId, name, value, token) {
-    const payload = { field_name: name, field_value: value };
-    const r = await axios.post(`https://api.manychat.com/fb/subscriber/setCustomFieldByName`, payload, {
-        headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-        timeout: 15000,
-        validateStatus: () => true
-    });
-    return { ok: r.status >= 200 && r.status < 300 && r.data?.status === 'success', data: r.data };
-}
-
+/**
+ * Envia 1 imagem (url string) ou várias [{url, caption}] via Meta.
+ * Assinatura compatível com a antiga:
+ *   sendImage(contato, urlOrItems, captionOrOpts, opts?)
+ *
+ * opts:
+ *  - meta_phone_number_id: força responder pelo mesmo número do inbound
+ *  - delayBetweenMs: [min,max] delay entre itens (se batch)
+ *  - force: ignora pausa por optout
+ *  - settings: (opcional) injeta settings já carregado
+ */
 async function sendImage(contato, urlOrItems, captionOrOpts, opts = {}) {
-    if (typeof captionOrOpts === 'object') { opts = captionOrOpts; captionOrOpts = undefined; }
-    const st = ensureEstado(contato);
-    const items = Array.isArray(urlOrItems) ? urlOrItems : [{ url: urlOrItems, caption: captionOrOpts }];
-    const isArray = Array.isArray(urlOrItems);
-    opts = { delayBetweenMs: [BETWEEN_MIN_MS, BETWEEN_MAX_MS], ...opts };
-    await extraGlobalDelay();
-    if (await preflightOptOut(st)) return { ok: false, reason: 'paused-by-optout' };
-    const paused = (st.permanentlyBlocked === true) || (st.optOutCount >= 3) || (st.optOutCount > 0 && !st.reoptinActive);
-    if (paused) return { ok: false, reason: 'paused-by-optout' };
-    const { mod, settings } = await getActiveTransport();
-    const provider = mod?.name || 'unknown';
-    try {
-        if (provider === 'manychat') {
-            const token = settings?.manychat_api_token || process.env.MANYCHAT_API_TOKEN || '';
-            if (!token) throw new Error('ManyChat API token ausente');
-            const subscriberId = await resolveManychatSubscriberId(contato, mod, settings);
-            if (!subscriberId) throw new Error('subscriber_id ausente');
-            const sendOneByFields = async ({ url, caption }) => {
-                if (!opts.fields?.image) return { ok: false, reason: 'missing-field-name' };
-                const r = await updateManyChatCustomFieldByName(subscriberId, opts.fields.image, url, token);
-                if (!r.ok) return { ok: false, reason: 'set-field-failed' };
-                console.log(`[${contato}] ManyChat: ${opts.fields.image} atualizado -> fluxo disparado. url="${url}" caption_len=${(caption || '').length}`);
-                return { ok: true, provider: 'manychat', mechanism: 'manychat_fields' };
-            };
-            const sendOneByFlow = async ({ url, caption }) => {
-                if (!opts.flowNs) return { ok: false, reason: 'missing-flow-ns' };
-                const payload = {
-                    subscriber_id: subscriberId,
-                    flow_ns: opts.flowNs,
-                    variables: {
-                        contact_: contato,
-                        image_url_: url,
-                        caption_: caption || '',
-                        ...opts.flowVars,
-                    }
-                };
-                const r = await axios.post('https://api.manychat.com/fb/sending/sendFlow', payload, {
-                    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-                    timeout: 60000,
-                    validateStatus: () => true
-                });
-                console.log(`[ManyChat][sendFlow] http=${r.status} body=${JSON.stringify(r.data)}`);
-                if (r.status >= 200 && r.status < 300 && r.data?.status === 'success') {
-                    return { ok: true, provider: 'manychat', mechanism: 'flow', flowNs: opts.flowNs };
-                }
-                return { ok: false, reason: 'flow-send-failed', details: r.data };
-            };
-            const sender = (opts.mechanism === 'flow' || (!!opts.flowNs)) ? sendOneByFlow : sendOneByFields;
-            const results = [];
-            for (let i = 0; i < items.length; i++) {
-                const { url, caption } = items[i];
-                const r = await sender({ url: url || '', caption });
-                results.push(r);
-                try {
-                    if (r?.ok) {
-                        publishMessage({
-                            dir: 'out',
-                            wa_id: contato,
-                            wamid: '',
-                            kind: 'image',
-                            text: caption || '',
-                            media: { type: 'image' },
-                            ts: Date.now()
-                        });
-                    }
-                } catch { }
-                if (await preflightOptOut(st)) {
-                    results.push({ ok: false, reason: 'paused-by-optout-mid-batch' });
-                    break;
-                }
-                if (i < items.length - 1) {
-                    const [minMs, maxMs] = opts.delayBetweenMs;
-                    await delayRange(minMs, maxMs);
-                }
-            }
-            const okAll = results.every(r => r?.ok);
-            return isArray ? { ok: okAll, results } : results[0];
-        } else if (provider === 'meta') {
-            const { phoneNumberId, token } = await resolveMetaCredentialsForContato(contato, settings, opts);
+  if (typeof captionOrOpts === 'object') {
+    opts = captionOrOpts;
+    captionOrOpts = undefined;
+  }
 
-            if (!token || !phoneNumberId) {
-                console.warn(
-                    `[${contato}] sendImage: Meta credentials missing (token: ${!!token}, phoneNumberId: ${!!phoneNumberId})`
-                );
-                return { ok: false, reason: 'missing-meta-credentials' };
-            }
+  const st = ensureEstado(contato);
 
-            const version = settings?.meta_api_version || 'v24.0';
-            const apiUrl = `https://graph.facebook.com/${version}/${phoneNumberId}/messages`;
+  const items = Array.isArray(urlOrItems)
+    ? urlOrItems
+    : [{ url: urlOrItems, caption: captionOrOpts }];
 
-            const sendOneMeta = async ({ url, caption }) => {
-                if (!url || typeof url !== 'string' || !/^https?:\/\//i.test(url)) {
-                    console.warn(`[${contato}] sendImage: Invalid URL for meta`);
-                    return { ok: false, reason: 'invalid-url' };
-                }
+  const isArray = Array.isArray(urlOrItems);
+  const cfg = { delayBetweenMs: [BETWEEN_MIN_MS, BETWEEN_MAX_MS], ...opts };
 
-                const payload = {
-                    messaging_product: 'whatsapp',
-                    to: contato,
-                    type: 'image',
-                    image: { link: url },
-                };
+  await extraGlobalDelay();
 
-                if (caption && typeof caption === 'string' && caption.trim()) {
-                    payload.image.caption = caption.trim();
-                }
+  if (await preflightOptOut(st)) return { ok: false, reason: 'paused-by-optout' };
+  if (_isPausedByOptOut(st) && !cfg.force) return { ok: false, reason: 'paused-by-optout' };
 
-                try {
-                    const r = await axios.post(apiUrl, payload, {
-                        headers: {
-                            Authorization: `Bearer ${token}`,
-                            'Content-Type': 'application/json',
-                        },
-                        timeout: 15000,
-                        validateStatus: () => true,
-                    });
+  const settings = cfg.settings || global.botSettings || (await getBotSettings());
+  const { phoneNumberId, token } = await resolveMetaCredentialsForContato(contato, settings, cfg);
 
-                    console.log(
-                        `[${contato}] sendImage(meta) http=${r.status} body=${JSON.stringify(
-                            r.data || {}
-                        ).slice(0, 500)}`
-                    );
+  if (!token || !phoneNumberId) {
+    console.warn(
+      `[${contato}] sendImage: Meta credentials missing (token: ${!!token}, phoneNumberId: ${!!phoneNumberId})`
+    );
+    return { ok: false, reason: 'missing-meta-credentials' };
+  }
 
-                    if (r.status >= 200 && r.status < 300) {
-                        return { ok: true };
-                    }
-                    return { ok: false, reason: 'meta-http-error', status: r.status, body: r.data };
-                } catch (e) {
-                    console.warn(`[${contato}] sendImage(meta) error=${e?.message || e}`);
-                    return { ok: false, reason: 'meta-exception', error: e?.message || String(e) };
-                }
-            };
+  try { st.meta_phone_number_id = phoneNumberId; } catch { }
 
-            const results = [];
-            for (let i = 0; i < items.length; i++) {
-                const { url, caption } = items[i];
-                const r = await sendOneMeta({ url: url || '', caption });
-                results.push(r);
+  const results = [];
 
-                try {
-                    if (r?.ok) {
-                        publishMessage({
-                            dir: 'out',
-                            wa_id: contato,
-                            wamid: '',
-                            kind: 'image',
-                            text: caption || '',
-                            media: { type: 'image' },
-                            ts: Date.now(),
-                        });
-                    }
-                } catch { }
+  for (let i = 0; i < items.length; i++) {
+    const link = String(items[i]?.url || '');
+    const caption = items[i]?.caption != null ? String(items[i].caption) : '';
 
-                if (opts.delayBetweenMs && i < items.length - 1) {
-                    const [minMs, maxMs] = opts.delayBetweenMs;
-                    await delayRange(minMs, maxMs);
-                }
-            }
+    if (!/^https?:\/\//i.test(link)) {
+      results.push({ ok: false, reason: 'invalid-url', url: link });
+    } else {
+      try {
+        const resp = await _metaSendImage(
+          { to: contato, url: link, caption },
+          { token, phoneNumberId, settings }
+        );
 
-            const okAll = results.every((r) => r?.ok);
-            return isArray ? { ok: okAll, results } : results[0];
+        const wamid = resp?.messages?.[0]?.id || '';
+        results.push({ ok: true, wamid });
 
-        } else {
-            console.warn(`[${contato}] sendImage: provider=${provider} não suportado (esperado manychat ou meta).`);
-            return { ok: false, reason: 'unsupported-provider' };
-        }
-    } catch (e) {
-        console.error(`[${contato}] sendImage erro geral: ${e?.message || e}`);
-        return { ok: false, reason: 'general-error', error: e?.message || String(e) };
+        try {
+          publishMessage({
+            dir: 'out',
+            wa_id: contato,
+            wamid,
+            kind: 'image',
+            text: caption || '',
+            media: { type: 'image', link },
+            ts: Date.now(),
+          });
+        } catch { }
+      } catch (e) {
+        console.warn(`[${contato}] sendImage(meta) error=${e?.message || e}`);
+        results.push({ ok: false, reason: 'meta-exception', error: e?.message || String(e) });
+      }
     }
+
+    if (await preflightOptOut(st)) {
+      results.push({ ok: false, reason: 'paused-by-optout-mid-batch' });
+      break;
+    }
+
+    if (i < items.length - 1 && cfg.delayBetweenMs) {
+      const [minMs, maxMs] = cfg.delayBetweenMs;
+      await delayRange(minMs, maxMs);
+    }
+  }
+
+  const okAll = results.every((r) => r?.ok);
+  return isArray
+    ? { ok: okAll, results, provider: 'meta', phone_number_id: phoneNumberId }
+    : results[0];
 }
 
-async function sendManychatWaFlow(contato, flowNs, dataOpt = {}) {
-    await extraGlobalDelay();
-    const st = ensureEstado(contato);
-    if (await preflightOptOut(st)) {
-        console.log(`[${contato}] flow=cancelado por opt-out em tempo real`);
-        return { ok: false, reason: 'paused-by-optout' };
-    }
-    const paused = (st.permanentlyBlocked === true) || (st.optOutCount >= 3) || (st.optOutCount > 0 && !st.reoptinActive);
-    if (paused) {
-        return { ok: false, reason: 'paused-by-optout' };
-    }
-    const { mod, settings } = await getActiveTransport();
-    const provider = mod?.name || 'unknown';
-    if (provider !== 'manychat') {
-        console.warn(`[${contato}] sendManychatWaFlow: provider=${provider} não suportado (esperado manychat).`);
-        return { ok: false, reason: 'unsupported-provider' };
-    }
-    const token = (settings && settings.manychat_api_token) || process.env.MANYCHAT_API_TOKEN || '';
-    if (!token) {
-        console.warn(`[${contato}] sendManychatWaFlow: token Manychat ausente`);
-        return { ok: false, reason: 'no-token' };
-    }
-    const subscriberId = await resolveManychatSubscriberId(contato, mod, settings);
-    if (!subscriberId) {
-        console.warn(`[${contato}] sendManychatWaFlow: subscriber_id não encontrado`);
-        return { ok: false, reason: 'no-subscriber-id' };
-    }
-    const url = 'https://api.manychat.com/whatsapp/sending/sendFlow';
-    const body = {
-        subscriber_id: subscriberId,
-        flow_ns: flowNs,
-        data: dataOpt || {}
-    };
-    try {
-        const r = await axios.post(url, body, {
-            headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-            timeout: 15000,
-            validateStatus: () => true
-        });
-        const ok = r.status >= 200 && r.status < 300 && (r.data?.status || 'success') === 'success';
-        if (!ok) {
-            console.warn(`[${contato}] sendManychatWaFlow: HTTP ${r.status} body=${JSON.stringify(r.data).slice(0, 400)}`);
-            return { ok: false, status: r.status, body: r.data };
-        }
-        console.log(`[${contato}] sendManychatWaFlow OK flow_ns=${flowNs} subscriber_id=${subscriberId}`);
-        return { ok: true };
-    } catch (e) {
-        console.warn(`[${contato}] sendManychatWaFlow erro: ${e?.message || e}`);
-        return { ok: false, error: e?.message || String(e) };
-    }
+/* ===========================
+   STUBS (ManyChat desativado)
+   =========================== */
+
+async function resolveManychatSubscriberId() {
+  return null;
+}
+
+async function updateManyChatCustomFieldByName() {
+  return { ok: false, reason: 'manychat-disabled' };
+}
+
+async function sendManychatWaFlow() {
+  return { ok: false, reason: 'manychat-disabled' };
 }
 
 module.exports = {
-    resolveManychatSubscriberId,
-    sendMessage,
-    updateManyChatCustomFieldByName,
-    sendImage,
-    sendManychatWaFlow
+  // Meta-only
+  resolveMetaCredentialsForContato,
+  sendMessage,
+  sendImage,
+
+  // stubs (pra não quebrar imports antigos)
+  resolveManychatSubscriberId,
+  updateManyChatCustomFieldByName,
+  sendManychatWaFlow,
 };
