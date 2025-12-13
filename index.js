@@ -4,6 +4,7 @@ require('dotenv').config();
 const express = require('express');
 const session = require('express-session');
 const path = require('path');
+const axios = require('axios');
 
 const db = require('./db.js');
 const { rememberInboundMetaPhoneNumberId, sendMessage } = require('./senders');
@@ -47,7 +48,14 @@ function getLead(wa_id) {
 
   let st = leadStore.get(key);
   if (!st) {
-    st = { wa_id: key, history: [], expiresAt: now() + TTL_MS, meta_phone_number_id: null };
+    st = {
+      wa_id: key,
+      history: [],
+      expiresAt: now() + TTL_MS,
+      meta_phone_number_id: null,
+      last_user_ts: null,
+      created_at: now(),
+    };
     leadStore.set(key, st);
   }
   st.expiresAt = now() + TTL_MS;
@@ -65,6 +73,8 @@ function pushHistory(wa_id, role, text, extra = {}) {
     ...extra,
   });
 
+  if (role === 'user') st.last_user_ts = now();
+
   if (st.history.length > MAX_MSGS) {
     st.history.splice(0, st.history.length - MAX_MSGS);
   }
@@ -76,6 +86,119 @@ setInterval(() => {
     if (!v?.expiresAt || v.expiresAt <= t) leadStore.delete(k);
   }
 }, 60 * 60 * 1000); // limpa 1x/h
+
+// ===== Helpers (prompt render + parse JSON) =====
+function buildHistoryString(st) {
+  const hist = Array.isArray(st?.history) ? st.history : [];
+  // formato simples e barato pro LLM
+  return hist
+    .slice(-MAX_MSGS)
+    .map((m) => {
+      const who = m.role === 'assistant' ? 'ASSISTANT' : (m.role === 'user' ? 'USER' : 'SYSTEM');
+      const t = String(m.text || '').replace(/\s+/g, ' ').trim();
+      return `${who}: ${t}`;
+    })
+    .join('\n');
+}
+
+function buildFactsJson(st, inboundPhoneNumberId) {
+  const lastTs = st?.last_user_ts ? st.last_user_ts : null;
+  const hoursSince = lastTs ? Math.max(0, (now() - lastTs) / 3600000) : 0;
+
+  const totalUserMsgs = (st?.history || []).filter(x => x.role === 'user').length;
+  const status_lead = totalUserMsgs <= 1 ? 'NOVO' : 'EM_CONVERSA';
+
+  return {
+    status_lead,
+    horas_desde_ultima_mensagem_usuario: Math.round(hoursSince * 100) / 100,
+    motivo_interacao: 'RESPOSTA_USUARIO',
+    ja_comprou_vip: false,
+    lead_pediu_pra_parar: false,
+    meta_phone_number_id: inboundPhoneNumberId || st?.meta_phone_number_id || null,
+  };
+}
+
+function renderSystemPrompt(template, factsObj, historicoStr, msgAtual) {
+  const safeFacts = JSON.stringify(factsObj || {}, null, 2);
+  const safeHist = String(historicoStr || '');
+  const safeMsg = String(msgAtual || '');
+
+  return String(template || '')
+    .replace(/\{FACTS_JSON\}/g, safeFacts)
+    .replace(/\{HISTORICO\}/g, safeHist)
+    .replace(/\{MENSAGEM_ATUAL\}/g, safeMsg);
+}
+
+function extractJsonObject(str) {
+  const s = String(str || '').trim();
+
+  // se vier só JSON, perfeito
+  if (s.startsWith('{') && s.endsWith('}')) return s;
+
+  // tenta extrair o primeiro objeto JSON de dentro do texto
+  const first = s.indexOf('{');
+  const last = s.lastIndexOf('}');
+  if (first >= 0 && last > first) {
+    return s.slice(first, last + 1);
+  }
+  return null;
+}
+
+function safeParseAgentJson(raw) {
+  const jsonStr = extractJsonObject(raw);
+  if (!jsonStr) return { ok: false, reason: 'no-json-found', data: null };
+
+  try {
+    const obj = JSON.parse(jsonStr);
+    if (!obj || typeof obj !== 'object') return { ok: false, reason: 'not-an-object', data: null };
+    if (!Array.isArray(obj.messages)) return { ok: false, reason: 'missing-messages-array', data: obj };
+    return { ok: true, data: obj };
+  } catch (e) {
+    return { ok: false, reason: 'json-parse-error', error: e?.message || String(e), data: null };
+  }
+}
+
+// ===== Venice call =====
+async function callVeniceChat({ apiKey, model, systemPromptRendered, userId }) {
+  const url = 'https://api.venice.ai/api/v1/chat/completions';
+
+  // Observação:
+  // - usamos response_format json_object pra forçar JSON
+  // - include_venice_system_prompt: false pra não misturar prompt da Venice com o seu
+  const body = {
+    model,
+    messages: [
+      { role: 'system', content: systemPromptRendered },
+      { role: 'user', content: 'Responda exatamente no formato JSON especificado.' },
+    ],
+    temperature: 0.7,
+    max_tokens: 700,
+    response_format: { type: 'json_object' },
+    user: userId || undefined,
+    venice_parameters: {
+      enable_web_search: 'off',
+      include_venice_system_prompt: false,
+      enable_web_citations: false,
+      enable_web_scraping: false,
+    },
+    stream: false,
+  };
+
+  const started = now();
+
+  const r = await axios.post(url, body, {
+    headers: {
+      Authorization: `Bearer ${apiKey}`,
+      'Content-Type': 'application/json',
+    },
+    timeout: 60000,
+    validateStatus: () => true,
+  });
+
+  const tookMs = now() - started;
+
+  return { status: r.status, data: r.data, tookMs, requestBodyPreview: body };
+}
 
 // ===== Bootstrap DB + Settings em memória =====
 async function bootstrapDb() {
@@ -193,7 +316,7 @@ app.get('/webhook', async (req, res) => {
 
   try {
     const settings = await db.getBotSettings();
-    const VERIFY_TOKEN = (settings?.contact_token || '').trim();
+    const VERIFY_TOKEN = (settings?.contact_token || '').trim(); // (seu campo que renomeou pra verify token no UI)
 
     if (mode === 'subscribe' && token && VERIFY_TOKEN && token === VERIFY_TOKEN) {
       return res.status(200).send(challenge);
@@ -204,6 +327,149 @@ app.get('/webhook', async (req, res) => {
     return res.sendStatus(500);
   }
 });
+
+// ===== Processor (IA + envio) =====
+async function processInboundText({ wa_id, inboundPhoneNumberId, text, wamid, timestampMs }) {
+  const st = getLead(wa_id);
+  if (!st) return;
+
+  // facts + histórico
+  const facts = buildFactsJson(st, inboundPhoneNumberId);
+  const historicoStr = buildHistoryString(st);
+
+  const settings = global.botSettings || await db.getBotSettings();
+  const veniceApiKey = (settings?.venice_api_key || '').trim();
+  const veniceModel = (settings?.venice_model || '').trim();
+  const systemPromptTpl = (settings?.system_prompt || '').trim();
+
+  console.log(`[AI][START] wa_id=${wa_id} phone_number_id=${inboundPhoneNumberId || ''} model=${veniceModel || '(vazio)'}`);
+
+  publishState({ wa_id, etapa: 'AI_START', vars: { model: veniceModel || '' }, ts: now() });
+
+  if (!veniceApiKey || !veniceModel || !systemPromptTpl) {
+    console.warn(`[AI][SKIP] settings incompletas (key=${!!veniceApiKey} model=${!!veniceModel} prompt=${!!systemPromptTpl})`);
+    publishState({ wa_id, etapa: 'AI_SKIP_SETTINGS_INCOMPLETE', vars: {}, ts: now() });
+
+    await sendMessage(wa_id, 'Config incompleta no painel (venice key/model/prompt).', {
+      meta_phone_number_id: inboundPhoneNumberId || null,
+    });
+    return;
+  }
+
+  const rendered = renderSystemPrompt(systemPromptTpl, facts, historicoStr, text);
+
+  console.log(`[AI][PROMPT_RENDERED] len=${rendered.length} preview="${rendered.slice(0, 180).replace(/\s+/g,' ').trim()}..."`);
+  publishState({ wa_id, etapa: 'AI_PROMPT_RENDERED', vars: { len: rendered.length }, ts: now() });
+
+  // chamada Venice
+  publishState({ wa_id, etapa: 'AI_REQUEST', vars: {}, ts: now() });
+
+  let venice;
+  try {
+    // log request (sem vazar api key)
+    console.log(`[AI][REQUEST] url=https://api.venice.ai/api/v1/chat/completions messages=2 response_format=json_object max_tokens=700`);
+
+    venice = await callVeniceChat({
+      apiKey: veniceApiKey,
+      model: veniceModel,
+      systemPromptRendered: rendered,
+      userId: wa_id,
+    });
+
+    console.log(`[AI][HTTP] status=${venice.status} tookMs=${venice.tookMs}`);
+    publishState({ wa_id, etapa: 'AI_HTTP', vars: { status: venice.status, tookMs: venice.tookMs }, ts: now() });
+
+  } catch (e) {
+    console.error(`[AI][ERROR] request failed: ${e?.message || e}`);
+    publishState({ wa_id, etapa: 'AI_ERROR_REQUEST', vars: { error: e?.message || String(e) }, ts: now() });
+
+    await sendMessage(wa_id, 'Deu ruim aqui rapidinho. Manda de novo?', {
+      meta_phone_number_id: inboundPhoneNumberId || null,
+    });
+    return;
+  }
+
+  if (!venice || venice.status < 200 || venice.status >= 300) {
+    console.error(`[AI][HTTP_ERROR] status=${venice?.status} bodyPreview=${JSON.stringify(venice?.data || {}).slice(0, 600)}`);
+    publishState({ wa_id, etapa: 'AI_HTTP_ERROR', vars: { status: venice?.status || 0 }, ts: now() });
+
+    await sendMessage(wa_id, 'Tive um erro aqui. Manda de novo?', {
+      meta_phone_number_id: inboundPhoneNumberId || null,
+    });
+    return;
+  }
+
+  const content = venice?.data?.choices?.[0]?.message?.content || '';
+  console.log(`[AI][RAW] preview="${String(content).slice(0, 350).replace(/\s+/g,' ').trim()}..."`);
+  publishState({ wa_id, etapa: 'AI_RAW', vars: { chars: String(content).length }, ts: now() });
+
+  const parsed = safeParseAgentJson(content);
+
+  if (!parsed.ok) {
+    console.error(`[AI][PARSE_FAIL] reason=${parsed.reason} err=${parsed.error || ''}`);
+    publishState({ wa_id, etapa: 'AI_PARSE_FAIL', vars: { reason: parsed.reason }, ts: now() });
+
+    await sendMessage(wa_id, 'Não entendi direito. Me manda de novo?', {
+      meta_phone_number_id: inboundPhoneNumberId || null,
+    });
+    return;
+  }
+
+  const agent = parsed.data;
+  console.log(`[AI][PARSE_OK] intent=${agent.intent_detectada} fase=${agent.proxima_fase} msgs=${(agent.messages || []).length}`);
+  publishState({
+    wa_id,
+    etapa: 'AI_PARSE_OK',
+    vars: { intent: agent.intent_detectada || '', fase: agent.proxima_fase || '' },
+    ts: now()
+  });
+
+  // envia até 3 mensagens curtas (como o prompt define)
+  const outMessages = (agent.messages || [])
+    .map(x => String(x || '').trim())
+    .filter(Boolean)
+    .slice(0, 3);
+
+  if (!outMessages.length) {
+    console.warn('[AI][NO_MESSAGES] agent retornou JSON sem messages válidas');
+    publishState({ wa_id, etapa: 'AI_NO_MESSAGES', vars: {}, ts: now() });
+    return;
+  }
+
+  for (let i = 0; i < outMessages.length; i++) {
+    const msg = outMessages[i];
+
+    publishState({ wa_id, etapa: 'OUT_SEND_START', vars: { i: i + 1, total: outMessages.length }, ts: now() });
+    console.log(`[AI][SEND] (${i + 1}/${outMessages.length}) -> "${msg.replace(/\s+/g,' ').slice(0, 200)}"`);
+
+    try {
+      const r = await sendMessage(wa_id, msg, {
+        meta_phone_number_id: inboundPhoneNumberId || null,
+      });
+
+      console.log(`[AI][SEND_OK] (${i + 1}/${outMessages.length}) ok=${!!r?.ok} phone_number_id=${r?.phone_number_id || inboundPhoneNumberId || ''}`);
+      publishState({ wa_id, etapa: 'OUT_SEND_OK', vars: { i: i + 1 }, ts: now() });
+
+      if (r?.ok) {
+        pushHistory(wa_id, 'assistant', msg, {
+          kind: 'text',
+          wamid: r.wamid || '',
+          phone_number_id: r.phone_number_id || inboundPhoneNumberId || null,
+        });
+      }
+
+    } catch (e) {
+      console.warn(`[AI][SEND_FAIL] (${i + 1}/${outMessages.length}) err=${e?.message || e}`);
+      publishState({ wa_id, etapa: 'OUT_SEND_FAIL', vars: { i: i + 1, error: e?.message || String(e) }, ts: now() });
+      break;
+    }
+
+    // micro-delay entre bolhas (evita rate-limit e fica "natural")
+    if (i < outMessages.length - 1) {
+      await new Promise(r => setTimeout(r, 350));
+    }
+  }
+}
 
 // ===== Webhook receiver (Meta) =====
 app.post('/webhook', async (req, res) => {
@@ -262,7 +528,7 @@ app.post('/webhook', async (req, res) => {
           // LOG 2: formato curto
           console.log(`[${wa_id}] ${text}`);
 
-          // memória + SSE
+          // memória + SSE inbound
           pushHistory(wa_id, 'user', text, { wamid, kind: type });
 
           publishMessage({
@@ -276,26 +542,19 @@ app.post('/webhook', async (req, res) => {
 
           publishState({ wa_id, etapa: 'RECEBIDO', vars: { kind: type }, ts: Date.now() });
 
-          // ✅ Resposta padrão de teste (Meta)
-          // Responde sempre usando o MESMO phone_number_id que recebeu a mensagem
-          try {
-            const reply = 'Teste OK (resposta automática)';
-            const sendRes = await sendMessage(wa_id, reply, {
-              meta_phone_number_id: inboundPhoneNumberId || null,
+          // ✅ Agora: processa IA somente se for texto
+          if (type === 'text') {
+            // roda em "background" (sem travar webhook)
+            processInboundText({
+              wa_id,
+              inboundPhoneNumberId,
+              text,
+              wamid,
+              timestampMs: Number(m.timestamp) * 1000 || Date.now(),
+            }).catch((err) => {
+              console.error(`[AI][FATAL] wa_id=${wa_id} err=${err?.message || err}`);
+              publishState({ wa_id, etapa: 'AI_FATAL', vars: { error: err?.message || String(err) }, ts: now() });
             });
-
-            // opcional: guardar reply no histórico também (ajuda depois quando plugar LLM)
-            if (sendRes?.ok) {
-              pushHistory(wa_id, 'assistant', reply, {
-                kind: 'text',
-                phone_number_id: sendRes.phone_number_id || inboundPhoneNumberId || null,
-                wamid: sendRes.wamid || '',
-              });
-            } else {
-              console.warn(`[${wa_id}] falha ao responder teste: ${sendRes?.error || sendRes?.reason || 'unknown'}`);
-            }
-          } catch (errSend) {
-            console.warn(`[${wa_id}] erro ao enviar resposta teste: ${errSend?.message || errSend}`);
           }
         }
       }
