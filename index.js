@@ -40,6 +40,13 @@ const leadStore = new Map();
 const MAX_MSGS = 50;
 const TTL_MS = 7 * 24 * 60 * 60 * 1000;
 
+const AI_DEBUG = true;
+
+function aiLog(...args) {
+  if (!AI_DEBUG) return;
+  console.log(...args);
+}
+
 function now() { return Date.now(); }
 
 function getLead(wa_id) {
@@ -285,9 +292,8 @@ async function callVeniceChat({ apiKey, model, systemPromptRendered, userId }) {
     stream: false,
   };
 
-  // ✅ LOG: payload completo enviado pra IA (sem headers)
-  console.log('[AI][REQUEST]');
-  console.log(JSON.stringify(body, null, 2));
+  aiLog('[AI][REQUEST]');
+  aiLog(JSON.stringify(body, null, 2));
 
   const r = await axios.post(url, body, {
     headers: {
@@ -298,9 +304,8 @@ async function callVeniceChat({ apiKey, model, systemPromptRendered, userId }) {
     validateStatus: () => true,
   });
 
-  // ✅ LOG: resposta completa da IA
-  console.log(`[AI][RESPONSE] http=${r.status}`);
-  console.log(JSON.stringify(r.data, null, 2));
+  aiLog(`[AI][RESPONSE] http=${r.status}`);
+  aiLog(JSON.stringify(r.data, null, 2));
 
   return { status: r.status, data: r.data };
 }
@@ -450,9 +455,12 @@ async function processInboundText({ wa_id, inboundPhoneNumberId, text, excludeWa
   const historicoStr = buildHistoryString(st, { excludeWamids });
   const rendered = renderSystemPrompt(systemPromptTpl, facts, historicoStr, text);
 
-  console.log(`[AI][CTX][${wa_id}] phone_number_id=${inboundPhoneNumberId || ''}`);
-  console.log('[AI][MENSAGEM_ATUAL_BLOCO]');
-  console.log(text);
+  aiLog(`[AI][CTX][${wa_id}] phone_number_id=${inboundPhoneNumberId || ''}`);
+  aiLog('[AI][MENSAGEM_ATUAL_BLOCO]');
+  aiLog(text);
+
+  aiLog('[AI][SYSTEM_PROMPT_RENDERED]');
+  aiLog(rendered);
 
   const venice = await callVeniceChat({
     apiKey: veniceApiKey,
@@ -471,14 +479,14 @@ async function processInboundText({ wa_id, inboundPhoneNumberId, text, excludeWa
   const content = venice?.data?.choices?.[0]?.message?.content || '';
   const parsed = safeParseAgentJson(content);
 
-  console.log(`[AI][RAW_CONTENT][${wa_id}]`);
-  console.log(content);
+  aiLog(`[AI][RAW_CONTENT][${wa_id}]`);
+  aiLog(content);
 
   if (parsed.ok) {
-    console.log(`[AI][PARSED_JSON][${wa_id}]`);
-    console.log(JSON.stringify(parsed.data, null, 2));
+    aiLog(`[AI][PARSED_JSON][${wa_id}]`);
+    aiLog(JSON.stringify(parsed.data, null, 2));
   } else {
-    console.log(`[AI][PARSE_FAIL][${wa_id}]`);
+    aiLog(`[AI][PARSE_FAIL][${wa_id}]`);
   }
 
   if (!parsed.ok) {
