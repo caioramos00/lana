@@ -2,336 +2,229 @@
 <html lang="pt-BR">
 
 <head>
-    <meta charset="utf-8" />
-    <title>Admin • Configurações do Bot</title>
-    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet" />
+  <meta charset="utf-8" />
+  <title>Admin • Configurações do Bot</title>
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet" />
 </head>
 
 <body class="container py-4">
-    <h1 class="mb-3">Configurações do Bot</h1>
+  <h1 class="mb-3">Configurações do Bot</h1>
 
-    <% if (ok) { %>
-        <div class="alert alert-success">Configurações salvas com sucesso.</div>
+  <% if (ok) { %>
+    <div class="alert alert-success">Configurações salvas com sucesso.</div>
+  <% } %>
+
+  <!-- FORM PRINCIPAL: settings do bot (somente o necessário) -->
+  <form method="POST" action="/admin/settings" class="row g-3">
+
+    <!-- Configurações Globais -->
+    <div class="col-12">
+      <h3 class="mt-3">Configurações Globais</h3>
+    </div>
+
+    <div class="col-12">
+      <label class="form-label">Graph API Access Token</label>
+      <input type="text" class="form-control" name="graph_api_access_token"
+        value="<%= settings?.graph_api_access_token || '' %>"
+        placeholder="EAAB...">
+      <div class="form-text">Token usado para chamadas na Graph API (se aplicável). Os números Meta podem ter token próprio.</div>
+    </div>
+
+    <div class="col-12">
+      <label class="form-label">Verify Token (Webhook)</label>
+      <!-- mantém name="contact_token" pq seu backend/db.js usa esse campo -->
+      <input type="text" class="form-control" name="contact_token"
+        value="<%= settings?.contact_token || '' %>"
+        placeholder="qualquer string (igual ao configurado no Meta)">
+      <div class="form-text">Esse valor precisa bater com o <code>hub.verify_token</code> configurado no Webhook da Meta.</div>
+    </div>
+
+    <hr class="my-3" />
+
+    <!-- Configurações Venice.ai -->
+    <div class="col-12">
+      <h3 class="mt-3">Configurações Venice.ai</h3>
+    </div>
+
+    <div class="col-12">
+      <label class="form-label">Venice API Key</label>
+      <input type="text" class="form-control" name="venice_api_key"
+        value="<%= settings?.venice_api_key || '' %>"
+        placeholder="vnc_...">
+    </div>
+
+    <div class="col-12">
+      <label class="form-label">Venice Model</label>
+      <input type="text" class="form-control" name="venice_model"
+        value="<%= settings?.venice_model || '' %>"
+        placeholder="ex.: llama-3.1-...">
+    </div>
+
+    <div class="col-12">
+      <label class="form-label">System Prompt</label>
+      <textarea class="form-control" name="system_prompt" rows="10"
+        placeholder="Cole aqui o prompt do agente..."><%= settings?.system_prompt || '' %></textarea>
+    </div>
+
+    <div class="col-12 mt-2">
+      <button class="btn btn-primary">Salvar</button>
+      <a class="btn btn-outline-secondary" href="/logout">Sair</a>
+    </div>
+  </form>
+
+  <hr class="my-4" />
+
+  <!-- NÚMEROS META -->
+  <div id="meta-settings">
+    <h3 class="mt-3">Números WhatsApp Cloud (Meta)</h3>
+
+    <div class="alert alert-info py-2">
+      O bot sempre responde usando o mesmo <strong>Phone Number ID</strong> que recebeu a mensagem.
+    </div>
+
+    <table class="table table-sm align-middle">
+      <thead>
+        <tr>
+          <th style="min-width: 170px;">Número</th>
+          <th style="min-width: 210px;">Phone Number ID</th>
+          <th>Access Token</th>
+          <th style="min-width: 140px;">Label (opcional)</th>
+          <th class="text-center" style="width: 70px;">Ativo?</th>
+          <th style="width: 160px;"></th>
+        </tr>
+      </thead>
+      <tbody>
+        <% const metaList = (typeof metaNumbers !== 'undefined' && metaNumbers) ? metaNumbers : []; %>
+
+        <% if (metaList.length) { %>
+          <% metaList.forEach(function(n) { %>
+            <tr>
+              <form method="post" action="/admin/settings/meta/save">
+                <td>
+                  <input type="hidden" name="id" value="<%= n.id %>">
+                  <input type="text" class="form-control form-control-sm"
+                    name="display_phone_number"
+                    value="<%= n.display_phone_number || '' %>"
+                    placeholder="+55 11 99999-9999">
+                </td>
+                <td>
+                  <input type="text" class="form-control form-control-sm"
+                    name="phone_number_id"
+                    value="<%= n.phone_number_id || '' %>"
+                    placeholder="phone_number_id"
+                    required>
+                </td>
+                <td>
+                  <input type="text" class="form-control form-control-sm"
+                    name="access_token"
+                    value="<%= n.access_token || '' %>"
+                    placeholder="Access Token"
+                    required>
+                </td>
+                <td>
+                  <input type="text" class="form-control form-control-sm"
+                    name="label"
+                    value="<%= n.label || '' %>"
+                    placeholder="ex.: Conta 1">
+                </td>
+                <td class="text-center">
+                  <input class="form-check-input" type="checkbox" name="active" <%= n.active ? 'checked' : '' %> />
+                </td>
+                <td class="text-end">
+                  <button type="submit" class="btn btn-sm btn-primary me-1">Salvar</button>
+                  <button type="submit" class="btn btn-sm btn-outline-danger"
+                    formaction="/admin/settings/meta/delete"
+                    onclick="return confirm('Remover este número?');">
+                    Remover
+                  </button>
+                </td>
+              </form>
+            </tr>
+          <% }); %>
+        <% } else { %>
+          <tr>
+            <td colspan="6" class="text-muted">Nenhum número cadastrado</td>
+          </tr>
         <% } %>
 
-            <!-- FORM PRINCIPAL: configurações gerais -->
-            <form method="POST" action="/admin/settings" class="row g-3">
-                <div class="col-12 form-check form-switch">
-                    <input class="form-check-input" type="checkbox" id="identity_enabled" name="identity_enabled"
-                        <%=settings?.identity_enabled ? 'checked' : '' %> />
-                    <label class="form-check-label" for="identity_enabled">Ativar selo de identidade na 1ª
-                        resposta</label>
-                </div>
+        <!-- Linha para adicionar novo número -->
+        <tr>
+          <form method="post" action="/admin/settings/meta/save">
+            <td>
+              <input type="hidden" name="id" value="">
+              <input type="text" class="form-control form-control-sm"
+                name="display_phone_number"
+                placeholder="+55 11 99999-9999">
+            </td>
+            <td>
+              <input type="text" class="form-control form-control-sm"
+                name="phone_number_id"
+                placeholder="phone_number_id"
+                required>
+            </td>
+            <td>
+              <input type="text" class="form-control form-control-sm"
+                name="access_token"
+                placeholder="Access Token"
+                required>
+            </td>
+            <td>
+              <input type="text" class="form-control form-control-sm"
+                name="label"
+                placeholder="ex.: Conta 2">
+            </td>
+            <td class="text-center">
+              <input class="form-check-input" type="checkbox" name="active" checked />
+            </td>
+            <td class="text-end">
+              <button type="submit" class="btn btn-sm btn-success">Adicionar</button>
+            </td>
+          </form>
+        </tr>
+      </tbody>
+    </table>
+  </div>
 
-                <div class="col-12">
-                    <label class="form-label">Texto do selo (linha única ou curta)</label>
-                    <input type="text" class="form-control" name="identity_label"
-                        value="<%= settings?.identity_label || '' %>"
-                        placeholder="Ex.: ACME • suporte: suporte@acme.com | acme.com/suporte">
-                    <div class="form-text">Se vazio, tentaremos montar com e-mail/telefone/site abaixo.</div>
-                </div>
+  <script>
+    // Máscara opcional para o campo "Número" (+55 11 99999-9999)
+    function formatNumero(value) {
+      let v = (value || '').replace(/\D/g, '');
+      v = v.slice(0, 13);
+      if (!v) return '';
 
-                <div class="col-md-4">
-                    <label class="form-label">E-mail de suporte</label>
-                    <input type="email" class="form-control" name="support_email"
-                        value="<%= settings?.support_email || '' %>">
-                </div>
-                <div class="col-md-4">
-                    <label class="form-label">Telefone</label>
-                    <input type="text" class="form-control" name="support_phone"
-                        value="<%= settings?.support_phone || '' %>">
-                </div>
-                <div class="col-md-4">
-                    <label class="form-label">URL (suporte)</label>
-                    <input type="url" class="form-control" name="support_url"
-                        value="<%= settings?.support_url || '' %>">
-                </div>
-                <hr class="my-3" />
+      let out = '+';
+      if (v.length <= 2) { out += v; return out; }
 
-                <div class="form-check form-switch mb-2">
-                    <input class="form-check-input" type="checkbox" id="optout_hint_enabled" name="optout_hint_enabled"
-                        <%=(settings?.optout_hint_enabled ?? true) ? 'checked' : '' %> />
-                    <label class="form-check-label" for="optout_hint_enabled">Mostrar dica de opt-out na 1ª resposta
-                        (anexa na 3ª linha)</label>
-                </div>
+      out += v.slice(0, 2) + ' ';
+      if (v.length <= 4) { out += v.slice(2); return out; }
 
-                <div class="mb-3">
-                    <label class="form-label">Texto do sufixo de opt-out</label>
-                    <input type="text" class="form-control" name="optout_suffix"
-                        value="<%= settings?.optout_suffix || '· se não quiser: NÃO QUERO' %>" />
-                    <div class="form-text">Ex.: <code>· se não quiser: NÃO QUERO</code>. Será anexado no fim da 3ª linha
-                        do primeiro pacote.</div>
-                </div>
+      out += v.slice(2, 4) + ' ';
+      if (v.length <= 9) { out += v.slice(4); return out; }
 
-                <label>Provedor de Mensagens</label>
-                <select name="message_provider">
-                    <option value="meta" <%=settings.message_provider==='meta' ? 'selected' : '' %>>Meta
-                    </option>
-                    <option value="twilio" <%=settings.message_provider==='twilio' ? 'selected' : '' %>>Twilio</option>
-                    <option value="manychat" <%=settings.message_provider==='manychat' ? 'selected' : '' %>>Manychat
-                    </option>
-                </select>
+      out += v.slice(4, 9) + '-' + v.slice(9);
+      return out;
+    }
 
-                <!-- Campos Twilio -->
-                <div id="twilio-settings" style="display: none;">
-                    <input name="twilio_account_sid" value="<%= settings.twilio_account_sid || '' %>"
-                        placeholder="TWILIO_ACCOUNT_SID" />
-                    <input name="twilio_auth_token" value="<%= settings.twilio_auth_token || '' %>"
-                        placeholder="TWILIO_AUTH_TOKEN" />
-                    <input name="twilio_messaging_service_sid"
-                        value="<%= settings.twilio_messaging_service_sid || '' %>"
-                        placeholder="TWILIO_MESSAGING_SERVICE_SID (opcional)" />
-                    <input name="twilio_from" value="<%= settings.twilio_from || '' %>"
-                        placeholder="TWILIO_FROM (whatsapp:+... se não usar service)" />
-                </div>
+    function attachNumeroMasks() {
+      const inputs = document.querySelectorAll('input[name="display_phone_number"]');
+      inputs.forEach((inp) => {
+        inp.addEventListener('input', (e) => {
+          const cursorPos = e.target.selectionStart;
+          const oldLength = e.target.value.length;
 
-                <!-- Campos Manychat -->
-                <div id="manychat-settings" style="display: none;">
-                    <input name="manychat_api_token" value="<%= settings.manychat_api_token || '' %>"
-                        placeholder="MANYCHAT_API_TOKEN" />
-                    <input name="manychat_fallback_flow_id" value="<%= settings.manychat_fallback_flow_id || '' %>"
-                        placeholder="MANYCHAT_FALLBACK_FLOW_ID (flow com template)" />
-                    <input name="manychat_webhook_secret" value="<%= settings.manychat_webhook_secret || '' %>"
-                        placeholder="MANYCHAT_WEBHOOK_SECRET" />
-                </div>
+          const formatted = formatNumero(e.target.value);
+          e.target.value = formatted;
 
-                <!-- Token global para Graph API -->
-                <div class="mt-3">
-                    <h3 class="mt-3">Configurações Globais</h3>
+          const newLength = formatted.length;
+          const diff = newLength - oldLength;
+          const newPos = Math.max(0, (cursorPos || 0) + diff);
+          try { e.target.setSelectionRange(newPos, newPos); } catch { }
+        });
+      });
+    }
 
-                    <div class="mb-3">
-                        <label class="form-label">Graph API Access Token</label>
-                        <input type="text" class="form-control" name="graph_api_access_token"
-                            value="<%= settings.graph_api_access_token || '' %>">
-                        <div class="form-text">
-                        </div>
-                    </div>
-
-                    <div class="mb-3">
-                        <label class="form-label">Contact Token</label>
-                        <input type="text" class="form-control" name="contact_token"
-                            value="<%= settings.contact_token || '' %>">
-                    </div>
-                </div>
-
-                <!-- Campos para Venice.ai -->
-                <div class="mt-3">
-                    <h3 class="mt-3">Configurações Venice.ai</h3>
-
-                    <div class="mb-3">
-                        <label class="form-label">Venice API Key</label>
-                        <input type="text" class="form-control" name="venice_api_key"
-                            value="<%= settings.venice_api_key || '' %>">
-                    </div>
-
-                    <div class="mb-3">
-                        <label class="form-label">Venice Model</label>
-                        <input type="text" class="form-control" name="venice_model"
-                            value="<%= settings.venice_model || '' %>">
-                    </div>
-
-                    <div class="mb-3">
-                        <label class="form-label">System Prompt</label>
-                        <textarea class="form-control" name="system_prompt" rows="10"><%= settings.system_prompt || '' %></textarea>
-                    </div>
-                </div>
-
-                <div class="col-12">
-                    <button class="btn btn-primary">Salvar</button>
-                    <a class="btn btn-outline-secondary" href="/logout">Sair</a>
-                </div>
-            </form>
-
-            <hr class="my-4" />
-
-            <!-- BLOCO SEPARADO PARA OS NÚMEROS META (fora do form principal) -->
-            <div id="meta-settings">
-                <h3 class="mt-3">Números WhatsApp Cloud (Meta)</h3>
-
-                <table class="table table-sm align-middle">
-                    <thead>
-                        <tr>
-                            <th>Número</th>
-                            <th>Phone Number ID</th>
-                            <th>Access Token</th>
-                            <th>Ativo?</th>
-                            <th style="width: 140px;"></th>
-                        </tr>
-                    </thead>
-                    <tbody>
-                        <% const metaList=(typeof metaNumbers !=='undefined' && metaNumbers) ? metaNumbers : []; %>
-                            <% if (metaList.length) { %>
-                                <% metaList.forEach(function (n) { %>
-                                    <tr>
-                                        <form method="post" action="/admin/settings/meta/save">
-                                            <td>
-                                                <input type="hidden" name="id" value="<%= n.id %>">
-                                                <input type="text" class="form-control form-control-sm"
-                                                    name="display_phone_number"
-                                                    value="<%= n.display_phone_number || '' %>"
-                                                    placeholder="+00 00 00000-0000">
-                                            </td>
-                                            <td>
-                                                <input type="text" class="form-control form-control-sm"
-                                                    name="phone_number_id" value="<%= n.phone_number_id || '' %>"
-                                                    placeholder="phone_number_id" required>
-                                            </td>
-                                            <td>
-                                                <input type="text" class="form-control form-control-sm"
-                                                    name="access_token" value="<%= n.access_token || '' %>"
-                                                    placeholder="Access Token" required>
-                                            </td>
-                                            <td class="text-center">
-                                                <input class="form-check-input" type="checkbox" name="active"
-                                                    <%=n.active ? 'checked' : '' %> />
-                                            </td>
-                                            <td class="text-end">
-                                                <button type="submit" class="btn btn-sm btn-primary me-1">
-                                                    Salvar
-                                                </button>
-                                                <button type="submit" class="btn btn-sm btn-outline-danger"
-                                                    formaction="/admin/settings/meta/delete"
-                                                    onclick="return confirm('Remover este número?');">
-                                                    Remover
-                                                </button>
-                                            </td>
-                                        </form>
-                                    </tr>
-                                    <% }); %>
-                                        <% } else { %>
-                                            <tr>
-                                                <td colspan="5" class="text-muted">
-                                                    Nenhum número cadastrado
-                                                </td>
-                                            </tr>
-                                            <% } %>
-
-                                                <!-- Linha para novo número -->
-                                                <tr>
-                                                    <form method="post" action="/admin/settings/meta/save">
-                                                        <td>
-                                                            <input type="hidden" name="id" value="">
-                                                            <input type="text" class="form-control form-control-sm"
-                                                                name="display_phone_number"
-                                                                placeholder="+00 00 00000-0000">
-                                                        </td>
-                                                        <td>
-                                                            <input type="text" class="form-control form-control-sm"
-                                                                name="phone_number_id" placeholder="phone_number_id"
-                                                                required>
-                                                        </td>
-                                                        <td>
-                                                            <input type="text" class="form-control form-control-sm"
-                                                                name="access_token" placeholder="Access Token" required>
-                                                        </td>
-                                                        <td class="text-center">
-                                                            <input class="form-check-input" type="checkbox"
-                                                                name="active" checked />
-                                                        </td>
-                                                        <td class="text-end">
-                                                            <button type="submit" class="btn btn-sm btn-success">
-                                                                Adicionar
-                                                            </button>
-                                                        </td>
-                                                    </form>
-                                                </tr>
-                    </tbody>
-                </table>
-            </div>
-
-            <div class="mt-4">
-                <h4>Apagar dados de contatos (por número)</h4>
-                <form method="post" action="/admin/settings/wipe-contacts"
-                    onsubmit="return confirm('Tem certeza que deseja apagar DEFINITIVAMENTE os dados desses contatos no banco?');">
-                    <div class="mb-2">
-                        <textarea class="form-control" name="numeros" rows="3" placeholder="5511999999999
-5511999999999"></textarea>
-                    </div>
-                    <button type="submit" class="btn btn-sm btn-danger">
-                        Apagar contatos do banco
-                    </button>
-                </form>
-            </div>
-
-            <div class="mt-4">
-                <form method="post" action="/admin/settings/reset-state"
-                    onsubmit="return confirm('Tem certeza que deseja resetar a memória do bot para TODOS os contatos? O bot vai recomeçar a conversa do zero com quem falar depois disso.');">
-                    <button type="submit" class="btn btn-sm btn-danger">
-                        Resetar conversas em memória
-                    </button>
-                </form>
-            </div>
-
-            <script>
-                const providerSelect = document.querySelector('select[name="message_provider"]');
-                const twilioDiv = document.getElementById('twilio-settings');
-                const manychatDiv = document.getElementById('manychat-settings');
-                const metaDiv = document.getElementById('meta-settings');
-
-                function toggleProviderSettings() {
-                    const val = providerSelect.value.toLowerCase();
-                    twilioDiv.style.display = val === 'twilio' ? 'block' : 'none';
-                    manychatDiv.style.display = val === 'manychat' ? 'block' : 'none';
-                    // metaDiv agora sempre visível, mas se quiser esconder quando não for meta:
-                    // metaDiv.style.display = val === 'meta' ? 'block' : 'none';
-                }
-
-                providerSelect.addEventListener('change', toggleProviderSettings);
-                toggleProviderSettings(); // Inicial
-
-                // Máscara para o campo "Número" (+00 00 00000-0000)
-                function formatNumero(value) {
-                    let v = (value || '').replace(/\D/g, '');
-                    v = v.slice(0, 13);
-
-                    if (!v) return '';
-
-                    let out = '+';
-
-                    if (v.length <= 2) {
-                        out += v;
-                        return out;
-                    }
-
-                    out += v.slice(0, 2) + ' ';
-
-                    if (v.length <= 4) {
-                        out += v.slice(2);
-                        return out;
-                    }
-
-                    out += v.slice(2, 4) + ' ';
-
-                    if (v.length <= 9) {
-                        out += v.slice(4);
-                        return out;
-                    }
-
-                    out += v.slice(4, 9) + '-' + v.slice(9);
-
-                    return out;
-                }
-
-                function attachNumeroMasks() {
-                    const inputs = document.querySelectorAll('input[name="display_phone_number"]');
-                    inputs.forEach((inp) => {
-                        inp.addEventListener('input', (e) => {
-                            const cursorPos = e.target.selectionStart;
-                            const oldLength = e.target.value.length;
-
-                            const formatted = formatNumero(e.target.value);
-                            e.target.value = formatted;
-
-                            const newLength = formatted.length;
-                            const diff = newLength - oldLength;
-                            const newPos = Math.max(0, (cursorPos || 0) + diff);
-                            e.target.setSelectionRange(newPos, newPos);
-                        });
-                    });
-                }
-
-                attachNumeroMasks();
-            </script>
+    attachNumeroMasks();
+  </script>
 </body>
 
 </html>
