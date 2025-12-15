@@ -449,7 +449,6 @@ async function sendImage(contato, urlOrItems, captionOrOpts, opts = {}) {
   }
 }
 
-// ======= SEND AUDIO (definitivo) =======
 async function sendAudioByMediaId(contato, mediaId, opts = {}) {
   const to = String(contato || '').trim();
   const id = String(mediaId || '').trim();
@@ -466,11 +465,18 @@ async function sendAudioByMediaId(contato, mediaId, opts = {}) {
 
     const replyTo = String(opts.reply_to_wamid || opts.replyToWamid || '').trim() || null;
 
+    const audioObj = { id };
+
+    // ✅ tenta forçar “voice note / ptt” (se a API ignorar, não quebra)
+    if (opts.voice_note === true || opts.voice === true || opts.ptt === true) {
+      audioObj.voice = true;
+    }
+
     const payload = {
       messaging_product: 'whatsapp',
       to,
       type: 'audio',
-      audio: { id },
+      audio: audioObj,
     };
 
     if (replyTo) payload.context = { message_id: replyTo };
@@ -489,7 +495,7 @@ async function sendAudioByMediaId(contato, mediaId, opts = {}) {
         wamid: (data?.messages && data.messages[0]?.id) ? String(data.messages[0].id) : '',
         kind: 'audio',
         text: '',
-        media: { type: 'audio', id },
+        media: { type: 'audio', id, voice: !!audioObj.voice },
         ts: Date.now(),
       });
     } catch { }
@@ -636,6 +642,21 @@ async function sendTtsVoiceNote(contato, text, opts = {}) {
 
   let tmpFile = null;
 
+  // acha response.opus em lugares comuns (Render/pm2/cwd variam)
+  function findResponseOpusPath() {
+    const candidates = [
+      opts.response_opus_path ? String(opts.response_opus_path) : null,
+      path.join(process.cwd(), 'response.opus'),
+      path.join(__dirname, 'response.opus'),
+      path.join(__dirname, '..', 'response.opus'),
+    ].filter(Boolean);
+
+    for (const p of candidates) {
+      try { if (fs.existsSync(p)) return p; } catch { }
+    }
+    return null;
+  }
+
   try {
     const settings = await getSettings();
     const { phoneNumberId, token } = await resolveMetaCredentialsForContato(to, settings, opts);
@@ -644,14 +665,15 @@ async function sendTtsVoiceNote(contato, text, opts = {}) {
       return { ok: false, reason: 'missing-meta-credentials', phone_number_id: phoneNumberId || null };
     }
 
-    // MODO DEBUG: enviar arquivo que você sabe que vira voice note
+    // ✅ DEBUG: enviar response.opus (o “correto”)
     if (opts && opts.send_response_opus) {
-      const respPath = path.join(process.cwd(), 'response.opus');
-      if (!fs.existsSync(respPath)) {
-        return { ok: false, reason: 'missing-response-opus', filePath: respPath };
+      const respPath = findResponseOpusPath();
+      if (!respPath) {
+        console.log('[AUDIO][response.opus] not found in cwd/dirname');
+        return { ok: false, reason: 'missing-response-opus', tried: { cwd: process.cwd(), dirname: __dirname } };
       }
 
-      logAudioInfo('response.opus', respPath, { source: 'project-root' });
+      logAudioInfo('response.opus', respPath, { source: 'project-root-or-cwd' });
 
       const up = await metaUploadMediaFromPath({
         phoneNumberId,
@@ -659,35 +681,38 @@ async function sendTtsVoiceNote(contato, text, opts = {}) {
         version: settings?.meta_api_version || 'v24.0',
         filePath: respPath,
         mimeType: 'audio/ogg',
-        filename: 'response.ogg', // força nome .ogg
+        filename: 'voice.ogg', // ✅ força nome “voice.ogg”
       });
 
       console.log('[AUDIO][META][UPLOAD]', JSON.stringify({ id: up.id, ...up.upload }));
 
-      const rSend = await sendAudioByMediaId(to, up.id, opts);
-      return { ...rSend, uploaded_media_id: up.id, sent_from: 'response.opus' };
+      const rSend = await sendAudioByMediaId(to, up.id, { ...opts, voice_note: true });
+      return { ...rSend, uploaded_media_id: up.id, sent_from: 'response.opus', filePath: respPath };
     }
 
     // 1) gera OGG (Ogg/Opus)
     tmpFile = await elevenTtsToTempFile(text, settings, opts);
 
-    // 2) loga de novo antes do upload (garante)
+    // (opcional, mas ajuda a “parecer” mais com voice note real)
+    try { patchOpusHeadInputSampleRate(tmpFile, 24000); } catch { }
+
+    // 2) loga antes do upload
     logAudioInfo('before-upload', tmpFile, { source: 'tmp-eleven' });
 
-    // 3) upload na Meta
+    // 3) upload
     const up = await metaUploadMediaFromPath({
       phoneNumberId,
       token,
       version: settings?.meta_api_version || 'v24.0',
       filePath: tmpFile,
-      mimeType: 'audio/ogg',        // <- sem codecs
-      filename: 'voice.ogg',        // <- força nome .ogg (ajuda MUITO)
+      mimeType: 'audio/ogg',
+      filename: 'voice.ogg',
     });
 
     console.log('[AUDIO][META][UPLOAD]', JSON.stringify({ id: up.id, ...up.upload }));
 
-    // 4) envia por media id
-    const rSend = await sendAudioByMediaId(to, up.id, opts);
+    // 4) envia por media id como “voice note”
+    const rSend = await sendAudioByMediaId(to, up.id, { ...opts, voice_note: true });
 
     const cfg = resolveElevenConfig(settings, opts);
     return {
@@ -699,7 +724,7 @@ async function sendTtsVoiceNote(contato, text, opts = {}) {
     return { ok: false, error: e?.message || String(e) };
   } finally {
     if (tmpFile) {
-      try { fs.unlinkSync(tmpFile); } catch { /* ignore */ }
+      try { fs.unlinkSync(tmpFile); } catch { }
     }
   }
 }
