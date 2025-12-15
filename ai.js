@@ -179,6 +179,7 @@ function createAiEngine({ db, sendMessage, aiLog = () => { } } = {}) {
         excludeWamids,
         lead,
     }) {
+        aiLog(`[AI][INBOUND] wa_id: ${wa_id} - Inbound message received: "${blocoText.substring(0, 100)}... (total ${blocoText.length} chars)"`);
         if (!lead || typeof lead.getLead !== 'function') {
             aiLog('[AI][ERROR] leadStore não foi injetado no handleInboundBlock');
             return;
