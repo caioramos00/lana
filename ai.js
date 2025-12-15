@@ -35,6 +35,22 @@ function createAiEngine({ db, sendMessage, aiLog = () => { } } = {}) {
         return r ? r : null;
     }
 
+    function previewText(s, max = 120) {
+        const t = String(s || '').replace(/\s+/g, ' ').trim();
+        if (t.length <= max) return t;
+        return t.slice(0, max) + `... (len=${t.length})`;
+    }
+
+    function extractAround(haystack, needle, radius = 800) {
+        const s = String(haystack || '');
+        const n = String(needle || '');
+        const idx = s.indexOf(n);
+        if (idx < 0) return null;
+        const start = Math.max(0, idx - 80);
+        const end = Math.min(s.length, idx + radius);
+        return s.slice(start, end);
+    }
+
     function normalizeAgentMessages(agent, { batchItems, fallbackReplyToWamid }) {
         const valid = new Set(
             (batchItems || [])
@@ -146,7 +162,7 @@ function createAiEngine({ db, sendMessage, aiLog = () => { } } = {}) {
         return t.slice(0, max) + `... (truncated chars=${t.length})`;
     }
 
-    function logAiRequest({ wa_id, inboundPhoneNumberId, facts, historicoStr, msgParaPrompt, rendered, model }) {
+    function logAiRequest({ wa_id, inboundPhoneNumberId, facts, historicoStr, msgParaPrompt, rendered, model, batchItems }) {
         const histMax = 2500;
         const msgMax = 2500;
         const factsMax = 4000;
@@ -159,6 +175,35 @@ function createAiEngine({ db, sendMessage, aiLog = () => { } } = {}) {
         aiLog(`[AI][REQUEST][${wa_id}] FACTS_JSON:\n${truncateForLog(JSON.stringify(facts || {}, null, 2), factsMax)}`);
         aiLog(`[AI][REQUEST][${wa_id}] HISTORICO_PREVIEW:\n${truncateForLog(historicoStr || '', histMax)}`);
         aiLog(`[AI][REQUEST][${wa_id}] MENSAGEM_PARA_PROMPT:\n${truncateForLog(msgParaPrompt || '', msgMax)}`);
+
+        const batchMax = 4000;
+        const batch = Array.isArray(batchItems) ? batchItems : [];
+        aiLog(`[AI][REQUEST][${wa_id}] BATCH_ITEMS count=${batch.length}`);
+        aiLog(`[AI][REQUEST][${wa_id}] BATCH_ITEMS_JSON:\n${truncateForLog(JSON.stringify(batch, null, 2), batchMax)}`);
+
+        // resumo rápido pra bater o olho
+        const batchMini = batch.map((b, i) => ({
+            i,
+            wamid: String(b?.wamid || '').slice(0, 28) + '...',
+            text: previewText(b?.text || '', 80),
+            ts_ms: b?.ts_ms ?? null,
+        }));
+        aiLog(`[AI][REQUEST][${wa_id}] BATCH_ITEMS_MINI:\n${truncateForLog(JSON.stringify(batchMini, null, 2), 2200)}`);
+
+        // prova de que o rendered está carregando wamid (ou não)
+        const renderedStr = String(rendered || '');
+        const hasPlaceholder = renderedStr.includes('{BATCH_ITEMS_JSON}');
+        const anyWamidInRendered = batch.some(b => {
+            const w = String(b?.wamid || '').trim();
+            return w && renderedStr.includes(w);
+        });
+        aiLog(`[AI][REQUEST][${wa_id}] RENDER_CHECK placeholderLeft=${hasPlaceholder} containsAnyWamid=${anyWamidInRendered}`);
+
+        // opcional: printa só um trecho perto da palavra "BATCH" (não o prompt inteiro)
+        const batchSnippet = extractAround(renderedStr, 'BATCH', 1200);
+        if (batchSnippet) {
+            aiLog(`[AI][REQUEST][${wa_id}] RENDER_SNIPPET_NEAR_BATCH:\n${truncateForLog(batchSnippet, 1800)}`);
+        }
 
         aiLog(`[AI][REQUEST][${wa_id}] VENICE_MESSAGES:`);
         aiLog(JSON.stringify([
@@ -287,6 +332,7 @@ function createAiEngine({ db, sendMessage, aiLog = () => { } } = {}) {
             msgParaPrompt,
             rendered,
             model: veniceModel,
+            batchItems: batch_items, // ✅ AQUI
         });
 
         const venice = await callVeniceChat({
