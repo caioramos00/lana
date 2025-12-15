@@ -126,7 +126,7 @@ async function initDatabase() {
     `);
 
     // ✅ garante colunas em bancos antigos
-    const alter = async (sql) => client.query(sql).catch(() => {});
+    const alter = async (sql) => client.query(sql).catch(() => { });
     await alter(`ALTER TABLE bot_settings ADD COLUMN IF NOT EXISTS inbound_debounce_min_ms INTEGER;`);
     await alter(`ALTER TABLE bot_settings ADD COLUMN IF NOT EXISTS inbound_debounce_max_ms INTEGER;`);
     await alter(`ALTER TABLE bot_settings ADD COLUMN IF NOT EXISTS inbound_max_wait_ms INTEGER;`);
@@ -156,11 +156,21 @@ async function initDatabase() {
     await alter(`ALTER TABLE bot_settings ADD COLUMN IF NOT EXISTS ai_error_msg_generic TEXT;`);
     await alter(`ALTER TABLE bot_settings ADD COLUMN IF NOT EXISTS ai_error_msg_parse TEXT;`);
 
+    await alter(`ALTER TABLE bot_settings ADD COLUMN IF NOT EXISTS elevenlabs_api_key TEXT;`);
+    await alter(`ALTER TABLE bot_settings ADD COLUMN IF NOT EXISTS eleven_voice_id TEXT;`);
+    await alter(`ALTER TABLE bot_settings ADD COLUMN IF NOT EXISTS eleven_model_id TEXT;`);
+    await alter(`ALTER TABLE bot_settings ADD COLUMN IF NOT EXISTS eleven_output_format TEXT;`);
+
+    await alter(`ALTER TABLE bot_settings ADD COLUMN IF NOT EXISTS eleven_stability DOUBLE PRECISION;`);
+    await alter(`ALTER TABLE bot_settings ADD COLUMN IF NOT EXISTS eleven_similarity_boost DOUBLE PRECISION;`);
+    await alter(`ALTER TABLE bot_settings ADD COLUMN IF NOT EXISTS eleven_style DOUBLE PRECISION;`);
+    await alter(`ALTER TABLE bot_settings ADD COLUMN IF NOT EXISTS eleven_use_speaker_boost BOOLEAN;`);
+
     const delayCols = [
-      'ai_in_delay_base_min_ms','ai_in_delay_base_max_ms','ai_in_delay_per_char_min_ms','ai_in_delay_per_char_max_ms',
-      'ai_in_delay_cap_ms','ai_in_delay_jitter_min_ms','ai_in_delay_jitter_max_ms','ai_in_delay_total_min_ms','ai_in_delay_total_max_ms',
-      'ai_out_delay_base_min_ms','ai_out_delay_base_max_ms','ai_out_delay_per_char_min_ms','ai_out_delay_per_char_max_ms',
-      'ai_out_delay_cap_ms','ai_out_delay_jitter_min_ms','ai_out_delay_jitter_max_ms','ai_out_delay_total_min_ms','ai_out_delay_total_max_ms',
+      'ai_in_delay_base_min_ms', 'ai_in_delay_base_max_ms', 'ai_in_delay_per_char_min_ms', 'ai_in_delay_per_char_max_ms',
+      'ai_in_delay_cap_ms', 'ai_in_delay_jitter_min_ms', 'ai_in_delay_jitter_max_ms', 'ai_in_delay_total_min_ms', 'ai_in_delay_total_max_ms',
+      'ai_out_delay_base_min_ms', 'ai_out_delay_base_max_ms', 'ai_out_delay_per_char_min_ms', 'ai_out_delay_per_char_max_ms',
+      'ai_out_delay_cap_ms', 'ai_out_delay_jitter_min_ms', 'ai_out_delay_jitter_max_ms', 'ai_out_delay_total_min_ms', 'ai_out_delay_total_max_ms',
     ];
     for (const c of delayCols) {
       await alter(`ALTER TABLE bot_settings ADD COLUMN IF NOT EXISTS ${c} INTEGER;`);
@@ -169,7 +179,7 @@ async function initDatabase() {
     await client.query(`
       ALTER TABLE bot_settings
       ADD CONSTRAINT bot_settings_singleton CHECK (id = 1) NOT VALID;
-    `).catch(() => {});
+    `).catch(() => { });
 
     await client.query(`
       INSERT INTO bot_settings (id)
@@ -228,6 +238,10 @@ async function initDatabase() {
              ai_out_delay_jitter_max_ms = COALESCE(ai_out_delay_jitter_max_ms, 1200),
              ai_out_delay_total_min_ms = COALESCE(ai_out_delay_total_min_ms, 900),
              ai_out_delay_total_max_ms = COALESCE(ai_out_delay_total_max_ms, 12000)
+
+             eleven_model_id = COALESCE(eleven_model_id, 'eleven_v3'),
+             eleven_output_format = COALESCE(eleven_output_format, 'ogg_opus'),
+             eleven_use_speaker_boost = COALESCE(eleven_use_speaker_boost, FALSE),
        WHERE id = 1;
     `);
 
@@ -314,6 +328,15 @@ async function getBotSettings({ bypassCache = false } = {}) {
       ai_out_delay_total_min_ms,
       ai_out_delay_total_max_ms,
 
+      elevenlabs_api_key,
+      eleven_voice_id,
+      eleven_model_id,
+      eleven_output_format,
+      eleven_stability,
+      eleven_similarity_boost,
+      eleven_style,
+      eleven_use_speaker_boost,
+
       updated_at
     FROM bot_settings
     WHERE id = 1
@@ -385,6 +408,15 @@ async function updateBotSettings(payload) {
       ai_out_delay_jitter_max_ms,
       ai_out_delay_total_min_ms,
       ai_out_delay_total_max_ms,
+
+      elevenlabs_api_key,
+      eleven_voice_id,
+      eleven_model_id,
+      eleven_output_format,
+      eleven_stability,
+      eleven_similarity_boost,
+      eleven_style,
+      eleven_use_speaker_boost,
     } = payload;
 
     let dMin = clampInt(toIntOrNull(inbound_debounce_min_ms), { min: 200, max: 15000 });
@@ -422,6 +454,15 @@ async function updateBotSettings(payload) {
       return clampInt(toIntOrNull(v), { min, max });
     }
 
+    function toFloatOpt(v) {
+      if (v === undefined || v === null) return null;
+      const s = String(v).trim();
+      if (!s) return null; // <-- evita '' virar 0
+      const n = Number(s);
+      if (!Number.isFinite(n)) return null;
+      return n;
+    }
+
     const inBaseMin = cDelay(ai_in_delay_base_min_ms, 0, 20000);
     const inBaseMax = cDelay(ai_in_delay_base_max_ms, 0, 20000);
     const inPcMin = cDelay(ai_in_delay_per_char_min_ms, 0, 500);
@@ -441,6 +482,17 @@ async function updateBotSettings(payload) {
     const outJMax = cDelay(ai_out_delay_jitter_max_ms, 0, 20000);
     const outTMin = cDelay(ai_out_delay_total_min_ms, 0, 60000);
     const outTMax = cDelay(ai_out_delay_total_max_ms, 0, 60000);
+
+    const elevenApiKey = (elevenlabs_api_key || '').trim() || null;
+    const elevenVoiceId = (eleven_voice_id || '').trim() || null;
+    const elevenModelId = (eleven_model_id || '').trim() || null;
+    const elevenOutputFormat = (eleven_output_format || '').trim() || null;
+
+    const elevenStability = clampFloat(toFloatOpt(eleven_stability), { min: 0, max: 1 });
+    const elevenSimilarity = clampFloat(toFloatOpt(eleven_similarity_boost), { min: 0, max: 1 });
+    const elevenStyle = clampFloat(toFloatOpt(eleven_style), { min: 0, max: 1 });
+
+    const elevenSpeakerBoost = toBoolOrNull(eleven_use_speaker_boost);
 
     await client.query(
       `
@@ -500,6 +552,16 @@ async function updateBotSettings(payload) {
              ai_out_delay_total_min_ms = COALESCE($45, ai_out_delay_total_min_ms),
              ai_out_delay_total_max_ms = COALESCE($46, ai_out_delay_total_max_ms),
 
+             elevenlabs_api_key = COALESCE($47, elevenlabs_api_key),
+             eleven_voice_id = COALESCE($48, eleven_voice_id),
+             eleven_model_id = COALESCE($49, eleven_model_id),
+             eleven_output_format = COALESCE($50, eleven_output_format),
+
+             eleven_stability = COALESCE($51, eleven_stability),
+             eleven_similarity_boost = COALESCE($52, eleven_similarity_boost),
+             eleven_style = COALESCE($53, eleven_style),
+             eleven_use_speaker_boost = COALESCE($54, eleven_use_speaker_boost),
+
              updated_at            = NOW()
        WHERE id = 1
       `,
@@ -558,6 +620,16 @@ async function updateBotSettings(payload) {
         Number.isFinite(outJMax) ? outJMax : null,
         Number.isFinite(outTMin) ? outTMin : null,
         Number.isFinite(outTMax) ? outTMax : null,
+
+        elevenApiKey,
+        elevenVoiceId,
+        elevenModelId,
+        elevenOutputFormat,
+
+        Number.isFinite(elevenStability) ? elevenStability : null,
+        Number.isFinite(elevenSimilarity) ? elevenSimilarity : null,
+        Number.isFinite(elevenStyle) ? elevenStyle : null,
+        elevenSpeakerBoost,
       ]
     );
 

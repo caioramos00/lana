@@ -392,42 +392,58 @@ async function sendAudioFromPath(contato, filePath, opts = {}) {
   }
 }
 
-// ======= ElevenLabs TTS -> OGG/Opus (Render-safe: usa /tmp) =======
+function numOpt(v) {
+  if (v === undefined || v === null) return null;
+  const s = String(v).trim();
+  if (!s) return null;
+  const n = Number(s);
+  return Number.isFinite(n) ? n : null;
+}
+
 function resolveElevenConfig(settings, opts = {}) {
+  // ✅ sem process.env
   const apiKey =
     String(opts.eleven_api_key || '').trim() ||
     String(settings?.elevenlabs_api_key || '').trim() ||
-    String(process.env.ELEVENLABS_API_KEY || '').trim() ||
     null;
 
   const voiceId =
     String(opts.eleven_voice_id || '').trim() ||
     String(settings?.eleven_voice_id || '').trim() ||
-    String(process.env.ELEVENLABS_VOICE_ID || '').trim() ||
     null;
 
   const modelId =
     String(opts.eleven_model_id || '').trim() ||
     String(settings?.eleven_model_id || '').trim() ||
-    String(process.env.ELEVENLABS_MODEL_ID || '').trim() ||
     'eleven_v3';
 
   const outputFormat =
     String(opts.eleven_output_format || '').trim() ||
     String(settings?.eleven_output_format || '').trim() ||
-    String(process.env.ELEVENLABS_OUTPUT_FORMAT || '').trim() ||
     'ogg_opus';
 
-  return { apiKey, voiceId, modelId, outputFormat };
+  // ✅ voice settings: opts sobrescreve; senão usa DB
+  const stability =
+    (opts.stability != null ? Number(opts.stability) : numOpt(settings?.eleven_stability));
+  const similarity_boost =
+    (opts.similarity_boost != null ? Number(opts.similarity_boost) : numOpt(settings?.eleven_similarity_boost));
+  const style =
+    (opts.style != null ? Number(opts.style) : numOpt(settings?.eleven_style));
+  const use_speaker_boost =
+    (opts.use_speaker_boost != null ? !!opts.use_speaker_boost : (settings?.eleven_use_speaker_boost != null ? !!settings.eleven_use_speaker_boost : null));
+
+  return { apiKey, voiceId, modelId, outputFormat, stability, similarity_boost, style, use_speaker_boost };
 }
 
 async function elevenTtsToTempFile(text, settings, opts = {}) {
   const t = String(text || '').trim();
   if (!t) throw new Error('TTS: text vazio');
 
-  const { apiKey, voiceId, modelId, outputFormat } = resolveElevenConfig(settings, opts);
-  if (!apiKey) throw new Error('TTS: faltou ELEVENLABS_API_KEY (env ou settings)');
-  if (!voiceId) throw new Error('TTS: faltou ELEVENLABS_VOICE_ID (env ou settings)');
+  const { apiKey, voiceId, modelId, outputFormat, stability, similarity_boost, style, use_speaker_boost } =
+    resolveElevenConfig(settings, opts);
+
+  if (!apiKey) throw new Error('TTS: faltou elevenlabs_api_key (painel/db)');
+  if (!voiceId) throw new Error('TTS: faltou eleven_voice_id (painel/db)');
 
   const url = `https://api.elevenlabs.io/v1/text-to-speech/${encodeURIComponent(voiceId)}?output_format=${encodeURIComponent(outputFormat)}`;
 
@@ -436,12 +452,11 @@ async function elevenTtsToTempFile(text, settings, opts = {}) {
     model_id: modelId,
   };
 
-  // opcionais (se você quiser controlar “pegada” da voz)
   const voice_settings = {};
-  if (opts.stability != null) voice_settings.stability = Number(opts.stability);
-  if (opts.similarity_boost != null) voice_settings.similarity_boost = Number(opts.similarity_boost);
-  if (opts.style != null) voice_settings.style = Number(opts.style);
-  if (opts.use_speaker_boost != null) voice_settings.use_speaker_boost = !!opts.use_speaker_boost;
+  if (stability != null && Number.isFinite(stability)) voice_settings.stability = stability;
+  if (similarity_boost != null && Number.isFinite(similarity_boost)) voice_settings.similarity_boost = similarity_boost;
+  if (style != null && Number.isFinite(style)) voice_settings.style = style;
+  if (use_speaker_boost != null) voice_settings.use_speaker_boost = !!use_speaker_boost;
   if (Object.keys(voice_settings).length) body.voice_settings = voice_settings;
 
   const r = await axios.post(url, body, {

@@ -8,450 +8,564 @@
 </head>
 
 <body class="container py-4">
-  <% const s = settings || {}; %>
+  <% const s=settings || {}; %>
 
-  <h1 class="mb-3">Configurações do Bot</h1>
+    <h1 class="mb-3">Configurações do Bot</h1>
 
-  <% if (ok) { %>
-    <div class="alert alert-success">Configurações salvas com sucesso.</div>
-  <% } %>
+    <% if (ok) { %>
+      <div class="alert alert-success">Configurações salvas com sucesso.</div>
+      <% } %>
 
-  <form method="POST" action="/admin/settings" class="row g-3">
+        <form method="POST" action="/admin/settings" class="row g-3">
 
-    <div class="col-12">
-      <h3 class="mt-3">Configurações Globais</h3>
-    </div>
-
-    <div class="col-12">
-      <label class="form-label">Graph API Access Token</label>
-      <input type="text" class="form-control" name="graph_api_access_token"
-        value="<%= (s.graph_api_access_token || '') %>" placeholder="EAAB...">
-      <div class="form-text">Token usado para chamadas na Graph API (se aplicável). Os números Meta podem ter token próprio.</div>
-    </div>
-
-    <div class="col-12">
-      <label class="form-label">Verify Token (Webhook)</label>
-      <input type="text" class="form-control" name="contact_token" value="<%= (s.contact_token || '') %>"
-        placeholder="qualquer string (igual ao configurado no Meta)">
-      <div class="form-text">Esse valor precisa bater com o <code>hub.verify_token</code> configurado no Webhook da Meta.</div>
-    </div>
-
-    <hr class="my-3" />
-
-    <div class="col-12">
-      <h3 class="mt-3">Logs</h3>
-    </div>
-
-    <div class="col-12">
-      <div class="form-check">
-        <input type="hidden" name="ai_debug" value="0" />
-        <input class="form-check-input" type="checkbox" name="ai_debug" value="1" id="ai_debug"
-          <%= ((s.ai_debug === undefined || s.ai_debug === null) ? true : !!s.ai_debug) ? 'checked' : '' %> />
-        <label class="form-check-label" for="ai_debug">
-          AI Debug (liga/desliga logs do aiLog sem restart)
-        </label>
-      </div>
-    </div>
-
-    <hr class="my-3" />
-
-    <div class="col-12">
-      <h3 class="mt-3">Configurações Venice.ai</h3>
-    </div>
-
-    <div class="col-12">
-      <label class="form-label">Venice API Key</label>
-      <input type="text" class="form-control" name="venice_api_key" value="<%= (s.venice_api_key || '') %>"
-        placeholder="vnc_...">
-    </div>
-
-    <div class="col-12">
-      <label class="form-label">Venice Model</label>
-      <input type="text" class="form-control" name="venice_model" value="<%= (s.venice_model || '') %>"
-        placeholder="ex.: llama-3.1-...">
-    </div>
-
-    <div class="col-12">
-      <label class="form-label">System Prompt</label>
-      <textarea class="form-control" name="system_prompt" rows="10" placeholder="Cole aqui o prompt do agente..."><%- (s.system_prompt || '') %></textarea>
-    </div>
-
-    <hr class="my-3" />
-
-    <div class="col-12">
-      <h3 class="mt-3">Debounce</h3>
-    </div>
-
-    <div class="col-md-4">
-      <label class="form-label">Debounce Min (ms)</label>
-      <input type="number" class="form-control" name="inbound_debounce_min_ms"
-        value="<%= (s.inbound_debounce_min_ms !== undefined && s.inbound_debounce_min_ms !== null) ? s.inbound_debounce_min_ms : 1800 %>"
-        min="200" max="15000" step="50">
-    </div>
-
-    <div class="col-md-4">
-      <label class="form-label">Debounce Max (ms)</label>
-      <input type="number" class="form-control" name="inbound_debounce_max_ms"
-        value="<%= (s.inbound_debounce_max_ms !== undefined && s.inbound_debounce_max_ms !== null) ? s.inbound_debounce_max_ms : 3200 %>"
-        min="200" max="20000" step="50">
-    </div>
-
-    <div class="col-md-4">
-      <label class="form-label">Max Wait (ms)</label>
-      <input type="number" class="form-control" name="inbound_max_wait_ms"
-        value="<%= (s.inbound_max_wait_ms !== undefined && s.inbound_max_wait_ms !== null) ? s.inbound_max_wait_ms : 12000 %>"
-        min="500" max="60000" step="100">
-    </div>
-
-    <hr class="my-3" />
-
-    <div class="col-12">
-      <h3 class="mt-3">Lead Store</h3>
-    </div>
-
-    <div class="col-md-3">
-      <label class="form-label">MaxMsgs (histórico por lead)</label>
-      <input type="number" class="form-control" name="lead_max_msgs"
-        value="<%= (s.lead_max_msgs !== undefined && s.lead_max_msgs !== null) ? s.lead_max_msgs : 50 %>"
-        min="5" max="500" step="1">
-    </div>
-
-    <div class="col-md-3">
-      <label class="form-label">TTL (ms)</label>
-      <input type="number" class="form-control" name="lead_ttl_ms"
-        value="<%= (s.lead_ttl_ms !== undefined && s.lead_ttl_ms !== null) ? s.lead_ttl_ms : 604800000 %>"
-        min="60000" max="2147000000" step="1000">
-      <div class="form-text">Default: 7 dias = 604800000</div>
-    </div>
-
-    <div class="col-md-3">
-      <label class="form-label">Late-Join Window (ms)</label>
-      <input type="number" class="form-control" name="lead_late_join_window_ms"
-        value="<%= (s.lead_late_join_window_ms !== undefined && s.lead_late_join_window_ms !== null) ? s.lead_late_join_window_ms : 350 %>"
-        min="0" max="5000" step="10">
-    </div>
-
-    <div class="col-md-3">
-      <label class="form-label">Preview/log max len</label>
-      <input type="number" class="form-control" name="lead_preview_text_max_len"
-        value="<%= (s.lead_preview_text_max_len !== undefined && s.lead_preview_text_max_len !== null) ? s.lead_preview_text_max_len : 80 %>"
-        min="10" max="500" step="1">
-    </div>
-
-    <div class="col-12">
-      <div class="form-check">
-        <input type="hidden" name="lead_debug_debounce" value="0" />
-        <input class="form-check-input" type="checkbox" name="lead_debug_debounce" value="1" id="lead_debug_debounce"
-          <%= ((s.lead_debug_debounce === undefined || s.lead_debug_debounce === null) ? true : !!s.lead_debug_debounce) ? 'checked' : '' %> />
-        <label class="form-check-label" for="lead_debug_debounce">
-          Debug Debounce (logs do lead.js)
-        </label>
-      </div>
-    </div>
-
-    <hr class="my-3" />
-
-    <div class="col-12">
-      <h3 class="mt-3">AI / Venice Request</h3>
-    </div>
-
-    <div class="col-12">
-      <label class="form-label">Venice API URL (completions)</label>
-      <input type="text" class="form-control" name="venice_api_url"
-        value="<%= (s.venice_api_url !== undefined && s.venice_api_url !== null) ? s.venice_api_url : 'https://api.venice.ai/api/v1/chat/completions' %>">
-    </div>
-
-    <div class="col-md-3">
-      <label class="form-label">Temperature</label>
-      <input type="number" class="form-control" name="venice_temperature"
-        value="<%= (s.venice_temperature !== undefined && s.venice_temperature !== null) ? s.venice_temperature : 0.7 %>"
-        min="0" max="2" step="0.1">
-    </div>
-
-    <div class="col-md-3">
-      <label class="form-label">Max Tokens</label>
-      <input type="number" class="form-control" name="venice_max_tokens"
-        value="<%= (s.venice_max_tokens !== undefined && s.venice_max_tokens !== null) ? s.venice_max_tokens : 700 %>"
-        min="16" max="4096" step="1">
-    </div>
-
-    <div class="col-md-3">
-      <label class="form-label">Timeout (ms)</label>
-      <input type="number" class="form-control" name="venice_timeout_ms"
-        value="<%= (s.venice_timeout_ms !== undefined && s.venice_timeout_ms !== null) ? s.venice_timeout_ms : 60000 %>"
-        min="1000" max="180000" step="500">
-    </div>
-
-    <div class="col-md-3">
-      <label class="form-label">Max msgs por resposta (AI)</label>
-      <input type="number" class="form-control" name="ai_max_out_messages"
-        value="<%= (s.ai_max_out_messages !== undefined && s.ai_max_out_messages !== null) ? s.ai_max_out_messages : 3 %>"
-        min="1" max="10" step="1">
-    </div>
-
-    <div class="col-12">
-      <label class="form-label">Mensagem fixa do usuário (Venice)</label>
-      <input type="text" class="form-control" name="venice_user_message"
-        value="<%= (s.venice_user_message !== undefined && s.venice_user_message !== null) ? s.venice_user_message : 'Responda exatamente no formato JSON especificado.' %>">
-    </div>
-
-    <div class="col-md-4">
-      <label class="form-label">enable_web_search</label>
-      <input type="text" class="form-control" name="venice_enable_web_search"
-        value="<%= (s.venice_enable_web_search !== undefined && s.venice_enable_web_search !== null) ? s.venice_enable_web_search : 'off' %>">
-      <div class="form-text">Ex.: off / on (depende do Venice)</div>
-    </div>
-
-    <div class="col-md-8">
-      <div class="row g-2 mt-1">
-        <div class="col-md-4">
-          <div class="form-check">
-            <input type="hidden" name="venice_include_venice_system_prompt" value="0" />
-            <input class="form-check-input" type="checkbox" name="venice_include_venice_system_prompt" value="1"
-              id="venice_include_venice_system_prompt"
-              <%= ((s.venice_include_venice_system_prompt === undefined || s.venice_include_venice_system_prompt === null) ? false : !!s.venice_include_venice_system_prompt) ? 'checked' : '' %> />
-            <label class="form-check-label" for="venice_include_venice_system_prompt">include_venice_system_prompt</label>
+          <div class="col-12">
+            <h3 class="mt-3">Configurações Globais</h3>
           </div>
-        </div>
-        <div class="col-md-4">
-          <div class="form-check">
-            <input type="hidden" name="venice_enable_web_citations" value="0" />
-            <input class="form-check-input" type="checkbox" name="venice_enable_web_citations" value="1"
-              id="venice_enable_web_citations"
-              <%= ((s.venice_enable_web_citations === undefined || s.venice_enable_web_citations === null) ? false : !!s.venice_enable_web_citations) ? 'checked' : '' %> />
-            <label class="form-check-label" for="venice_enable_web_citations">enable_web_citations</label>
+
+          <div class="col-12">
+            <label class="form-label">Graph API Access Token</label>
+            <input type="text" class="form-control" name="graph_api_access_token"
+              value="<%= (s.graph_api_access_token || '') %>" placeholder="EAAB...">
+            <div class="form-text">Token usado para chamadas na Graph API (se aplicável). Os números Meta podem ter
+              token próprio.</div>
           </div>
-        </div>
-        <div class="col-md-4">
-          <div class="form-check">
-            <input type="hidden" name="venice_enable_web_scraping" value="0" />
-            <input class="form-check-input" type="checkbox" name="venice_enable_web_scraping" value="1"
-              id="venice_enable_web_scraping"
-              <%= ((s.venice_enable_web_scraping === undefined || s.venice_enable_web_scraping === null) ? false : !!s.venice_enable_web_scraping) ? 'checked' : '' %> />
-            <label class="form-check-label" for="venice_enable_web_scraping">enable_web_scraping</label>
+
+          <div class="col-12">
+            <label class="form-label">Verify Token (Webhook)</label>
+            <input type="text" class="form-control" name="contact_token" value="<%= (s.contact_token || '') %>"
+              placeholder="qualquer string (igual ao configurado no Meta)">
+            <div class="form-text">Esse valor precisa bater com o <code>hub.verify_token</code> configurado no Webhook
+              da Meta.</div>
           </div>
+
+          <hr class="my-3" />
+
+          <div class="col-12">
+            <h3 class="mt-3">Logs</h3>
+          </div>
+
+          <div class="col-12">
+            <div class="form-check">
+              <input type="hidden" name="ai_debug" value="0" />
+              <input class="form-check-input" type="checkbox" name="ai_debug" value="1" id="ai_debug"
+                <%=((s.ai_debug===undefined || s.ai_debug===null) ? true : !!s.ai_debug) ? 'checked' : '' %> />
+              <label class="form-check-label" for="ai_debug">
+                AI Debug (liga/desliga logs do aiLog sem restart)
+              </label>
+            </div>
+          </div>
+
+          <hr class="my-3" />
+
+          <div class="col-12">
+            <h3 class="mt-3">Configurações Venice.ai</h3>
+          </div>
+
+          <div class="col-12">
+            <label class="form-label">Venice API Key</label>
+            <input type="text" class="form-control" name="venice_api_key" value="<%= (s.venice_api_key || '') %>"
+              placeholder="vnc_...">
+          </div>
+
+          <div class="col-12">
+            <label class="form-label">Venice Model</label>
+            <input type="text" class="form-control" name="venice_model" value="<%= (s.venice_model || '') %>"
+              placeholder="ex.: llama-3.1-...">
+          </div>
+
+          <div class="col-12">
+            <label class="form-label">System Prompt</label>
+            <textarea class="form-control" name="system_prompt" rows="10"
+              placeholder="Cole aqui o prompt do agente..."><%- (s.system_prompt || '' ) %></textarea>
+          </div>
+
+          <hr class="my-3" />
+
+          <div class="col-12">
+            <h3 class="mt-3">Áudio (TTS) • ElevenLabs</h3>
+            <div class="form-text">Configs do envio de áudio. Sem fallback em <code>process.env</code>.</div>
+          </div>
+
+          <div class="col-12">
+            <label class="form-label">ElevenLabs API Key</label>
+            <input type="password" class="form-control" name="elevenlabs_api_key"
+              value="<%= (s.elevenlabs_api_key || '') %>" placeholder="xi_...">
+          </div>
+
+          <div class="col-md-6">
+            <label class="form-label">Voice ID</label>
+            <input type="text" class="form-control" name="eleven_voice_id" value="<%= (s.eleven_voice_id || '') %>"
+              placeholder="ex.: 21m00Tcm4TlvDq8ikWAM">
+          </div>
+
+          <div class="col-md-3">
+            <label class="form-label">Model ID</label>
+            <input type="text" class="form-control" name="eleven_model_id"
+              value="<%= (s.eleven_model_id !== undefined && s.eleven_model_id !== null) ? s.eleven_model_id : 'eleven_v3' %>"
+              placeholder="eleven_v3">
+          </div>
+
+          <div class="col-md-3">
+            <label class="form-label">Output Format</label>
+            <input type="text" class="form-control" name="eleven_output_format"
+              value="<%= (s.eleven_output_format !== undefined && s.eleven_output_format !== null) ? s.eleven_output_format : 'ogg_opus' %>"
+              placeholder="ogg_opus">
+          </div>
+
+          <div class="col-md-3">
+            <label class="form-label">stability (0–1)</label>
+            <input type="number" class="form-control" name="eleven_stability"
+              value="<%= (s.eleven_stability !== undefined && s.eleven_stability !== null) ? s.eleven_stability : '' %>"
+              min="0" max="1" step="0.01" placeholder="(opcional)">
+          </div>
+
+          <div class="col-md-3">
+            <label class="form-label">similarity_boost (0–1)</label>
+            <input type="number" class="form-control" name="eleven_similarity_boost"
+              value="<%= (s.eleven_similarity_boost !== undefined && s.eleven_similarity_boost !== null) ? s.eleven_similarity_boost : '' %>"
+              min="0" max="1" step="0.01" placeholder="(opcional)">
+          </div>
+
+          <div class="col-md-3">
+            <label class="form-label">style (0–1)</label>
+            <input type="number" class="form-control" name="eleven_style"
+              value="<%= (s.eleven_style !== undefined && s.eleven_style !== null) ? s.eleven_style : '' %>" min="0"
+              max="1" step="0.01" placeholder="(opcional)">
+          </div>
+
+          <div class="col-md-3 d-flex align-items-end">
+            <div class="form-check">
+              <input type="hidden" name="eleven_use_speaker_boost" value="0" />
+              <input class="form-check-input" type="checkbox" name="eleven_use_speaker_boost" value="1"
+                id="eleven_use_speaker_boost" <%=((s.eleven_use_speaker_boost===undefined ||
+                s.eleven_use_speaker_boost===null) ? false : !!s.eleven_use_speaker_boost) ? 'checked' : '' %> />
+              <label class="form-check-label" for="eleven_use_speaker_boost">use_speaker_boost</label>
+            </div>
+          </div>
+
+          <hr class="my-3" />
+
+          <div class="col-12">
+            <h3 class="mt-3">Debounce</h3>
+          </div>
+
+          <div class="col-md-4">
+            <label class="form-label">Debounce Min (ms)</label>
+            <input type="number" class="form-control" name="inbound_debounce_min_ms"
+              value="<%= (s.inbound_debounce_min_ms !== undefined && s.inbound_debounce_min_ms !== null) ? s.inbound_debounce_min_ms : 1800 %>"
+              min="200" max="15000" step="50">
+          </div>
+
+          <div class="col-md-4">
+            <label class="form-label">Debounce Max (ms)</label>
+            <input type="number" class="form-control" name="inbound_debounce_max_ms"
+              value="<%= (s.inbound_debounce_max_ms !== undefined && s.inbound_debounce_max_ms !== null) ? s.inbound_debounce_max_ms : 3200 %>"
+              min="200" max="20000" step="50">
+          </div>
+
+          <div class="col-md-4">
+            <label class="form-label">Max Wait (ms)</label>
+            <input type="number" class="form-control" name="inbound_max_wait_ms"
+              value="<%= (s.inbound_max_wait_ms !== undefined && s.inbound_max_wait_ms !== null) ? s.inbound_max_wait_ms : 12000 %>"
+              min="500" max="60000" step="100">
+          </div>
+
+          <hr class="my-3" />
+
+          <div class="col-12">
+            <h3 class="mt-3">Lead Store</h3>
+          </div>
+
+          <div class="col-md-3">
+            <label class="form-label">MaxMsgs (histórico por lead)</label>
+            <input type="number" class="form-control" name="lead_max_msgs"
+              value="<%= (s.lead_max_msgs !== undefined && s.lead_max_msgs !== null) ? s.lead_max_msgs : 50 %>" min="5"
+              max="500" step="1">
+          </div>
+
+          <div class="col-md-3">
+            <label class="form-label">TTL (ms)</label>
+            <input type="number" class="form-control" name="lead_ttl_ms"
+              value="<%= (s.lead_ttl_ms !== undefined && s.lead_ttl_ms !== null) ? s.lead_ttl_ms : 604800000 %>"
+              min="60000" max="2147000000" step="1000">
+            <div class="form-text">Default: 7 dias = 604800000</div>
+          </div>
+
+          <div class="col-md-3">
+            <label class="form-label">Late-Join Window (ms)</label>
+            <input type="number" class="form-control" name="lead_late_join_window_ms"
+              value="<%= (s.lead_late_join_window_ms !== undefined && s.lead_late_join_window_ms !== null) ? s.lead_late_join_window_ms : 350 %>"
+              min="0" max="5000" step="10">
+          </div>
+
+          <div class="col-md-3">
+            <label class="form-label">Preview/log max len</label>
+            <input type="number" class="form-control" name="lead_preview_text_max_len"
+              value="<%= (s.lead_preview_text_max_len !== undefined && s.lead_preview_text_max_len !== null) ? s.lead_preview_text_max_len : 80 %>"
+              min="10" max="500" step="1">
+          </div>
+
+          <div class="col-12">
+            <div class="form-check">
+              <input type="hidden" name="lead_debug_debounce" value="0" />
+              <input class="form-check-input" type="checkbox" name="lead_debug_debounce" value="1"
+                id="lead_debug_debounce" <%=((s.lead_debug_debounce===undefined || s.lead_debug_debounce===null) ? true
+                : !!s.lead_debug_debounce) ? 'checked' : '' %> />
+              <label class="form-check-label" for="lead_debug_debounce">
+                Debug Debounce (logs do lead.js)
+              </label>
+            </div>
+          </div>
+
+          <hr class="my-3" />
+
+          <div class="col-12">
+            <h3 class="mt-3">AI / Venice Request</h3>
+          </div>
+
+          <div class="col-12">
+            <label class="form-label">Venice API URL (completions)</label>
+            <input type="text" class="form-control" name="venice_api_url"
+              value="<%= (s.venice_api_url !== undefined && s.venice_api_url !== null) ? s.venice_api_url : 'https://api.venice.ai/api/v1/chat/completions' %>">
+          </div>
+
+          <div class="col-md-3">
+            <label class="form-label">Temperature</label>
+            <input type="number" class="form-control" name="venice_temperature"
+              value="<%= (s.venice_temperature !== undefined && s.venice_temperature !== null) ? s.venice_temperature : 0.7 %>"
+              min="0" max="2" step="0.1">
+          </div>
+
+          <div class="col-md-3">
+            <label class="form-label">Max Tokens</label>
+            <input type="number" class="form-control" name="venice_max_tokens"
+              value="<%= (s.venice_max_tokens !== undefined && s.venice_max_tokens !== null) ? s.venice_max_tokens : 700 %>"
+              min="16" max="4096" step="1">
+          </div>
+
+          <div class="col-md-3">
+            <label class="form-label">Timeout (ms)</label>
+            <input type="number" class="form-control" name="venice_timeout_ms"
+              value="<%= (s.venice_timeout_ms !== undefined && s.venice_timeout_ms !== null) ? s.venice_timeout_ms : 60000 %>"
+              min="1000" max="180000" step="500">
+          </div>
+
+          <div class="col-md-3">
+            <label class="form-label">Max msgs por resposta (AI)</label>
+            <input type="number" class="form-control" name="ai_max_out_messages"
+              value="<%= (s.ai_max_out_messages !== undefined && s.ai_max_out_messages !== null) ? s.ai_max_out_messages : 3 %>"
+              min="1" max="10" step="1">
+          </div>
+
+          <div class="col-12">
+            <label class="form-label">Mensagem fixa do usuário (Venice)</label>
+            <input type="text" class="form-control" name="venice_user_message"
+              value="<%= (s.venice_user_message !== undefined && s.venice_user_message !== null) ? s.venice_user_message : 'Responda exatamente no formato JSON especificado.' %>">
+          </div>
+
+          <div class="col-md-4">
+            <label class="form-label">enable_web_search</label>
+            <input type="text" class="form-control" name="venice_enable_web_search"
+              value="<%= (s.venice_enable_web_search !== undefined && s.venice_enable_web_search !== null) ? s.venice_enable_web_search : 'off' %>">
+            <div class="form-text">Ex.: off / on (depende do Venice)</div>
+          </div>
+
+          <div class="col-md-8">
+            <div class="row g-2 mt-1">
+              <div class="col-md-4">
+                <div class="form-check">
+                  <input type="hidden" name="venice_include_venice_system_prompt" value="0" />
+                  <input class="form-check-input" type="checkbox" name="venice_include_venice_system_prompt" value="1"
+                    id="venice_include_venice_system_prompt" <%=((s.venice_include_venice_system_prompt===undefined ||
+                    s.venice_include_venice_system_prompt===null) ? false : !!s.venice_include_venice_system_prompt)
+                    ? 'checked' : '' %> />
+                  <label class="form-check-label"
+                    for="venice_include_venice_system_prompt">include_venice_system_prompt</label>
+                </div>
+              </div>
+              <div class="col-md-4">
+                <div class="form-check">
+                  <input type="hidden" name="venice_enable_web_citations" value="0" />
+                  <input class="form-check-input" type="checkbox" name="venice_enable_web_citations" value="1"
+                    id="venice_enable_web_citations" <%=((s.venice_enable_web_citations===undefined ||
+                    s.venice_enable_web_citations===null) ? false : !!s.venice_enable_web_citations) ? 'checked' : '' %>
+                  />
+                  <label class="form-check-label" for="venice_enable_web_citations">enable_web_citations</label>
+                </div>
+              </div>
+              <div class="col-md-4">
+                <div class="form-check">
+                  <input type="hidden" name="venice_enable_web_scraping" value="0" />
+                  <input class="form-check-input" type="checkbox" name="venice_enable_web_scraping" value="1"
+                    id="venice_enable_web_scraping" <%=((s.venice_enable_web_scraping===undefined ||
+                    s.venice_enable_web_scraping===null) ? false : !!s.venice_enable_web_scraping) ? 'checked' : '' %>
+                  />
+                  <label class="form-check-label" for="venice_enable_web_scraping">enable_web_scraping</label>
+                </div>
+              </div>
+            </div>
+
+            <div class="form-check mt-2">
+              <input type="hidden" name="venice_stream" value="0" />
+              <input class="form-check-input" type="checkbox" name="venice_stream" value="1" id="venice_stream"
+                <%=((s.venice_stream===undefined || s.venice_stream===null) ? false : !!s.venice_stream) ? 'checked'
+                : '' %> />
+              <label class="form-check-label" for="venice_stream">stream</label>
+            </div>
+          </div>
+
+          <hr class="my-3" />
+
+          <div class="col-12">
+            <h3 class="mt-3">Mensagens fixas (AI)</h3>
+          </div>
+
+          <div class="col-12">
+            <label class="form-label">Msg: config incompleta</label>
+            <input type="text" class="form-control" name="ai_error_msg_config"
+              value="<%= (s.ai_error_msg_config !== undefined && s.ai_error_msg_config !== null) ? s.ai_error_msg_config : 'Config incompleta no painel (venice key/model/prompt).' %>">
+          </div>
+
+          <div class="col-12">
+            <label class="form-label">Msg: erro genérico</label>
+            <input type="text" class="form-control" name="ai_error_msg_generic"
+              value="<%= (s.ai_error_msg_generic !== undefined && s.ai_error_msg_generic !== null) ? s.ai_error_msg_generic : 'Tive um erro aqui. Manda de novo?' %>">
+          </div>
+
+          <div class="col-12">
+            <label class="form-label">Msg: parse inválido</label>
+            <input type="text" class="form-control" name="ai_error_msg_parse"
+              value="<%= (s.ai_error_msg_parse !== undefined && s.ai_error_msg_parse !== null) ? s.ai_error_msg_parse : 'Não entendi direito. Me manda de novo?' %>">
+          </div>
+
+          <hr class="my-3" />
+
+          <div class="col-12">
+            <h3 class="mt-3">Human Delays (AI)</h3>
+            <div class="form-text">Esses valores replicam exatamente os hardcoded atuais, só que editáveis no DB.</div>
+          </div>
+
+          <div class="col-12">
+            <h5 class="mt-2">Inbound</h5>
+          </div>
+
+          <div class="col-md-3"><label class="form-label">Base Min</label>
+            <input type="number" class="form-control" name="ai_in_delay_base_min_ms"
+              value="<%= (s.ai_in_delay_base_min_ms !== undefined && s.ai_in_delay_base_min_ms !== null) ? s.ai_in_delay_base_min_ms : 900 %>">
+          </div>
+          <div class="col-md-3"><label class="form-label">Base Max</label>
+            <input type="number" class="form-control" name="ai_in_delay_base_max_ms"
+              value="<%= (s.ai_in_delay_base_max_ms !== undefined && s.ai_in_delay_base_max_ms !== null) ? s.ai_in_delay_base_max_ms : 1800 %>">
+          </div>
+          <div class="col-md-3"><label class="form-label">PerChar Min</label>
+            <input type="number" class="form-control" name="ai_in_delay_per_char_min_ms"
+              value="<%= (s.ai_in_delay_per_char_min_ms !== undefined && s.ai_in_delay_per_char_min_ms !== null) ? s.ai_in_delay_per_char_min_ms : 18 %>">
+          </div>
+          <div class="col-md-3"><label class="form-label">PerChar Max</label>
+            <input type="number" class="form-control" name="ai_in_delay_per_char_max_ms"
+              value="<%= (s.ai_in_delay_per_char_max_ms !== undefined && s.ai_in_delay_per_char_max_ms !== null) ? s.ai_in_delay_per_char_max_ms : 45 %>">
+          </div>
+
+          <div class="col-md-3"><label class="form-label">Cap</label>
+            <input type="number" class="form-control" name="ai_in_delay_cap_ms"
+              value="<%= (s.ai_in_delay_cap_ms !== undefined && s.ai_in_delay_cap_ms !== null) ? s.ai_in_delay_cap_ms : 5200 %>">
+          </div>
+          <div class="col-md-3"><label class="form-label">Jitter Min</label>
+            <input type="number" class="form-control" name="ai_in_delay_jitter_min_ms"
+              value="<%= (s.ai_in_delay_jitter_min_ms !== undefined && s.ai_in_delay_jitter_min_ms !== null) ? s.ai_in_delay_jitter_min_ms : 400 %>">
+          </div>
+          <div class="col-md-3"><label class="form-label">Jitter Max</label>
+            <input type="number" class="form-control" name="ai_in_delay_jitter_max_ms"
+              value="<%= (s.ai_in_delay_jitter_max_ms !== undefined && s.ai_in_delay_jitter_max_ms !== null) ? s.ai_in_delay_jitter_max_ms : 1600 %>">
+          </div>
+          <div class="col-md-3"><label class="form-label">Total Min</label>
+            <input type="number" class="form-control" name="ai_in_delay_total_min_ms"
+              value="<%= (s.ai_in_delay_total_min_ms !== undefined && s.ai_in_delay_total_min_ms !== null) ? s.ai_in_delay_total_min_ms : 1600 %>">
+          </div>
+          <div class="col-md-3"><label class="form-label">Total Max</label>
+            <input type="number" class="form-control" name="ai_in_delay_total_max_ms"
+              value="<%= (s.ai_in_delay_total_max_ms !== undefined && s.ai_in_delay_total_max_ms !== null) ? s.ai_in_delay_total_max_ms : 9500 %>">
+          </div>
+
+          <div class="col-12">
+            <h5 class="mt-3">Outbound</h5>
+          </div>
+
+          <div class="col-md-3"><label class="form-label">Base Min</label>
+            <input type="number" class="form-control" name="ai_out_delay_base_min_ms"
+              value="<%= (s.ai_out_delay_base_min_ms !== undefined && s.ai_out_delay_base_min_ms !== null) ? s.ai_out_delay_base_min_ms : 450 %>">
+          </div>
+          <div class="col-md-3"><label class="form-label">Base Max</label>
+            <input type="number" class="form-control" name="ai_out_delay_base_max_ms"
+              value="<%= (s.ai_out_delay_base_max_ms !== undefined && s.ai_out_delay_base_max_ms !== null) ? s.ai_out_delay_base_max_ms : 1200 %>">
+          </div>
+          <div class="col-md-3"><label class="form-label">PerChar Min</label>
+            <input type="number" class="form-control" name="ai_out_delay_per_char_min_ms"
+              value="<%= (s.ai_out_delay_per_char_min_ms !== undefined && s.ai_out_delay_per_char_min_ms !== null) ? s.ai_out_delay_per_char_min_ms : 22 %>">
+          </div>
+          <div class="col-md-3"><label class="form-label">PerChar Max</label>
+            <input type="number" class="form-control" name="ai_out_delay_per_char_max_ms"
+              value="<%= (s.ai_out_delay_per_char_max_ms !== undefined && s.ai_out_delay_per_char_max_ms !== null) ? s.ai_out_delay_per_char_max_ms : 55 %>">
+          </div>
+
+          <div class="col-md-3"><label class="form-label">Cap</label>
+            <input type="number" class="form-control" name="ai_out_delay_cap_ms"
+              value="<%= (s.ai_out_delay_cap_ms !== undefined && s.ai_out_delay_cap_ms !== null) ? s.ai_out_delay_cap_ms : 6500 %>">
+          </div>
+          <div class="col-md-3"><label class="form-label">Jitter Min</label>
+            <input type="number" class="form-control" name="ai_out_delay_jitter_min_ms"
+              value="<%= (s.ai_out_delay_jitter_min_ms !== undefined && s.ai_out_delay_jitter_min_ms !== null) ? s.ai_out_delay_jitter_min_ms : 250 %>">
+          </div>
+          <div class="col-md-3"><label class="form-label">Jitter Max</label>
+            <input type="number" class="form-control" name="ai_out_delay_jitter_max_ms"
+              value="<%= (s.ai_out_delay_jitter_max_ms !== undefined && s.ai_out_delay_jitter_max_ms !== null) ? s.ai_out_delay_jitter_max_ms : 1200 %>">
+          </div>
+          <div class="col-md-3"><label class="form-label">Total Min</label>
+            <input type="number" class="form-control" name="ai_out_delay_total_min_ms"
+              value="<%= (s.ai_out_delay_total_min_ms !== undefined && s.ai_out_delay_total_min_ms !== null) ? s.ai_out_delay_total_min_ms : 900 %>">
+          </div>
+          <div class="col-md-3"><label class="form-label">Total Max</label>
+            <input type="number" class="form-control" name="ai_out_delay_total_max_ms"
+              value="<%= (s.ai_out_delay_total_max_ms !== undefined && s.ai_out_delay_total_max_ms !== null) ? s.ai_out_delay_total_max_ms : 12000 %>">
+          </div>
+
+          <div class="col-12 mt-2">
+            <button class="btn btn-primary">Salvar</button>
+            <a class="btn btn-outline-secondary" href="/logout">Sair</a>
+          </div>
+        </form>
+
+        <hr class="my-4" />
+
+        <!-- NÚMEROS META -->
+        <div id="meta-settings">
+          <h3 class="mt-3">Números WhatsApp Cloud (Meta)</h3>
+
+          <table class="table table-sm align-middle">
+            <thead>
+              <tr>
+                <th style="min-width: 170px;">Número</th>
+                <th style="min-width: 210px;">Phone Number ID</th>
+                <th>Access Token</th>
+                <th style="min-width: 140px;">Label (opcional)</th>
+                <th class="text-center" style="width: 70px;">Ativo?</th>
+                <th style="width: 160px;"></th>
+              </tr>
+            </thead>
+            <tbody>
+              <% const metaList=(typeof metaNumbers !=='undefined' && metaNumbers) ? metaNumbers : []; %>
+
+                <% if (metaList.length) { %>
+                  <% metaList.forEach(function(n) { %>
+                    <tr>
+                      <form method="post" action="/admin/settings/meta/save">
+                        <td>
+                          <input type="hidden" name="id" value="<%= n.id %>">
+                          <input type="text" class="form-control form-control-sm" name="display_phone_number"
+                            value="<%= n.display_phone_number || '' %>" placeholder="+55 11 99999-9999">
+                        </td>
+                        <td>
+                          <input type="text" class="form-control form-control-sm" name="phone_number_id"
+                            value="<%= n.phone_number_id || '' %>" placeholder="phone_number_id" required>
+                        </td>
+                        <td>
+                          <input type="text" class="form-control form-control-sm" name="access_token"
+                            value="<%= n.access_token || '' %>" placeholder="Access Token" required>
+                        </td>
+                        <td>
+                          <input type="text" class="form-control form-control-sm" name="label"
+                            value="<%= n.label || '' %>" placeholder="ex.: Conta 1">
+                        </td>
+                        <td class="text-center">
+                          <input class="form-check-input" type="checkbox" name="active" <%=n.active ? 'checked' : '' %>
+                          />
+                        </td>
+                        <td class="text-end">
+                          <button type="submit" class="btn btn-sm btn-primary me-1">Salvar</button>
+                          <button type="submit" class="btn btn-sm btn-outline-danger"
+                            formaction="/admin/settings/meta/delete" onclick="return confirm('Remover este número?');">
+                            Remover
+                          </button>
+                        </td>
+                      </form>
+                    </tr>
+                    <% }); %>
+                      <% } else { %>
+                        <tr>
+                          <td colspan="6" class="text-muted">Nenhum número cadastrado</td>
+                        </tr>
+                        <% } %>
+
+                          <tr>
+                            <form method="post" action="/admin/settings/meta/save">
+                              <td>
+                                <input type="hidden" name="id" value="">
+                                <input type="text" class="form-control form-control-sm" name="display_phone_number"
+                                  placeholder="+55 11 99999-9999">
+                              </td>
+                              <td>
+                                <input type="text" class="form-control form-control-sm" name="phone_number_id"
+                                  placeholder="phone_number_id" required>
+                              </td>
+                              <td>
+                                <input type="text" class="form-control form-control-sm" name="access_token"
+                                  placeholder="Access Token" required>
+                              </td>
+                              <td>
+                                <input type="text" class="form-control form-control-sm" name="label"
+                                  placeholder="ex.: Conta 2">
+                              </td>
+                              <td class="text-center">
+                                <input class="form-check-input" type="checkbox" name="active" checked />
+                              </td>
+                              <td class="text-end">
+                                <button type="submit" class="btn btn-sm btn-success">Adicionar</button>
+                              </td>
+                            </form>
+                          </tr>
+            </tbody>
+          </table>
         </div>
-      </div>
 
-      <div class="form-check mt-2">
-        <input type="hidden" name="venice_stream" value="0" />
-        <input class="form-check-input" type="checkbox" name="venice_stream" value="1" id="venice_stream"
-          <%= ((s.venice_stream === undefined || s.venice_stream === null) ? false : !!s.venice_stream) ? 'checked' : '' %> />
-        <label class="form-check-label" for="venice_stream">stream</label>
-      </div>
-    </div>
+        <script>
+          function formatNumero(value) {
+            let v = (value || '').replace(/\D/g, '');
+            v = v.slice(0, 13);
+            if (!v) return '';
 
-    <hr class="my-3" />
+            let out = '+';
+            if (v.length <= 2) { out += v; return out; }
 
-    <div class="col-12">
-      <h3 class="mt-3">Mensagens fixas (AI)</h3>
-    </div>
+            out += v.slice(0, 2) + ' ';
+            if (v.length <= 4) { out += v.slice(2); return out; }
 
-    <div class="col-12">
-      <label class="form-label">Msg: config incompleta</label>
-      <input type="text" class="form-control" name="ai_error_msg_config"
-        value="<%= (s.ai_error_msg_config !== undefined && s.ai_error_msg_config !== null) ? s.ai_error_msg_config : 'Config incompleta no painel (venice key/model/prompt).' %>">
-    </div>
+            out += v.slice(2, 4) + ' ';
+            if (v.length <= 9) { out += v.slice(4); return out; }
 
-    <div class="col-12">
-      <label class="form-label">Msg: erro genérico</label>
-      <input type="text" class="form-control" name="ai_error_msg_generic"
-        value="<%= (s.ai_error_msg_generic !== undefined && s.ai_error_msg_generic !== null) ? s.ai_error_msg_generic : 'Tive um erro aqui. Manda de novo?' %>">
-    </div>
+            out += v.slice(4, 9) + '-' + v.slice(9);
+            return out;
+          }
 
-    <div class="col-12">
-      <label class="form-label">Msg: parse inválido</label>
-      <input type="text" class="form-control" name="ai_error_msg_parse"
-        value="<%= (s.ai_error_msg_parse !== undefined && s.ai_error_msg_parse !== null) ? s.ai_error_msg_parse : 'Não entendi direito. Me manda de novo?' %>">
-    </div>
+          function attachNumeroMasks() {
+            const inputs = document.querySelectorAll('input[name="display_phone_number"]');
+            inputs.forEach((inp) => {
+              inp.addEventListener('input', (e) => {
+                const cursorPos = e.target.selectionStart;
+                const oldLength = e.target.value.length;
 
-    <hr class="my-3" />
+                const formatted = formatNumero(e.target.value);
+                e.target.value = formatted;
 
-    <div class="col-12">
-      <h3 class="mt-3">Human Delays (AI)</h3>
-      <div class="form-text">Esses valores replicam exatamente os hardcoded atuais, só que editáveis no DB.</div>
-    </div>
+                const newLength = formatted.length;
+                const diff = newLength - oldLength;
+                const newPos = Math.max(0, (cursorPos || 0) + diff);
+                try { e.target.setSelectionRange(newPos, newPos); } catch { }
+              });
+            });
+          }
 
-    <div class="col-12"><h5 class="mt-2">Inbound</h5></div>
-
-    <div class="col-md-3"><label class="form-label">Base Min</label>
-      <input type="number" class="form-control" name="ai_in_delay_base_min_ms" value="<%= (s.ai_in_delay_base_min_ms !== undefined && s.ai_in_delay_base_min_ms !== null) ? s.ai_in_delay_base_min_ms : 900 %>"></div>
-    <div class="col-md-3"><label class="form-label">Base Max</label>
-      <input type="number" class="form-control" name="ai_in_delay_base_max_ms" value="<%= (s.ai_in_delay_base_max_ms !== undefined && s.ai_in_delay_base_max_ms !== null) ? s.ai_in_delay_base_max_ms : 1800 %>"></div>
-    <div class="col-md-3"><label class="form-label">PerChar Min</label>
-      <input type="number" class="form-control" name="ai_in_delay_per_char_min_ms" value="<%= (s.ai_in_delay_per_char_min_ms !== undefined && s.ai_in_delay_per_char_min_ms !== null) ? s.ai_in_delay_per_char_min_ms : 18 %>"></div>
-    <div class="col-md-3"><label class="form-label">PerChar Max</label>
-      <input type="number" class="form-control" name="ai_in_delay_per_char_max_ms" value="<%= (s.ai_in_delay_per_char_max_ms !== undefined && s.ai_in_delay_per_char_max_ms !== null) ? s.ai_in_delay_per_char_max_ms : 45 %>"></div>
-
-    <div class="col-md-3"><label class="form-label">Cap</label>
-      <input type="number" class="form-control" name="ai_in_delay_cap_ms" value="<%= (s.ai_in_delay_cap_ms !== undefined && s.ai_in_delay_cap_ms !== null) ? s.ai_in_delay_cap_ms : 5200 %>"></div>
-    <div class="col-md-3"><label class="form-label">Jitter Min</label>
-      <input type="number" class="form-control" name="ai_in_delay_jitter_min_ms" value="<%= (s.ai_in_delay_jitter_min_ms !== undefined && s.ai_in_delay_jitter_min_ms !== null) ? s.ai_in_delay_jitter_min_ms : 400 %>"></div>
-    <div class="col-md-3"><label class="form-label">Jitter Max</label>
-      <input type="number" class="form-control" name="ai_in_delay_jitter_max_ms" value="<%= (s.ai_in_delay_jitter_max_ms !== undefined && s.ai_in_delay_jitter_max_ms !== null) ? s.ai_in_delay_jitter_max_ms : 1600 %>"></div>
-    <div class="col-md-3"><label class="form-label">Total Min</label>
-      <input type="number" class="form-control" name="ai_in_delay_total_min_ms" value="<%= (s.ai_in_delay_total_min_ms !== undefined && s.ai_in_delay_total_min_ms !== null) ? s.ai_in_delay_total_min_ms : 1600 %>"></div>
-    <div class="col-md-3"><label class="form-label">Total Max</label>
-      <input type="number" class="form-control" name="ai_in_delay_total_max_ms" value="<%= (s.ai_in_delay_total_max_ms !== undefined && s.ai_in_delay_total_max_ms !== null) ? s.ai_in_delay_total_max_ms : 9500 %>"></div>
-
-    <div class="col-12"><h5 class="mt-3">Outbound</h5></div>
-
-    <div class="col-md-3"><label class="form-label">Base Min</label>
-      <input type="number" class="form-control" name="ai_out_delay_base_min_ms" value="<%= (s.ai_out_delay_base_min_ms !== undefined && s.ai_out_delay_base_min_ms !== null) ? s.ai_out_delay_base_min_ms : 450 %>"></div>
-    <div class="col-md-3"><label class="form-label">Base Max</label>
-      <input type="number" class="form-control" name="ai_out_delay_base_max_ms" value="<%= (s.ai_out_delay_base_max_ms !== undefined && s.ai_out_delay_base_max_ms !== null) ? s.ai_out_delay_base_max_ms : 1200 %>"></div>
-    <div class="col-md-3"><label class="form-label">PerChar Min</label>
-      <input type="number" class="form-control" name="ai_out_delay_per_char_min_ms" value="<%= (s.ai_out_delay_per_char_min_ms !== undefined && s.ai_out_delay_per_char_min_ms !== null) ? s.ai_out_delay_per_char_min_ms : 22 %>"></div>
-    <div class="col-md-3"><label class="form-label">PerChar Max</label>
-      <input type="number" class="form-control" name="ai_out_delay_per_char_max_ms" value="<%= (s.ai_out_delay_per_char_max_ms !== undefined && s.ai_out_delay_per_char_max_ms !== null) ? s.ai_out_delay_per_char_max_ms : 55 %>"></div>
-
-    <div class="col-md-3"><label class="form-label">Cap</label>
-      <input type="number" class="form-control" name="ai_out_delay_cap_ms" value="<%= (s.ai_out_delay_cap_ms !== undefined && s.ai_out_delay_cap_ms !== null) ? s.ai_out_delay_cap_ms : 6500 %>"></div>
-    <div class="col-md-3"><label class="form-label">Jitter Min</label>
-      <input type="number" class="form-control" name="ai_out_delay_jitter_min_ms" value="<%= (s.ai_out_delay_jitter_min_ms !== undefined && s.ai_out_delay_jitter_min_ms !== null) ? s.ai_out_delay_jitter_min_ms : 250 %>"></div>
-    <div class="col-md-3"><label class="form-label">Jitter Max</label>
-      <input type="number" class="form-control" name="ai_out_delay_jitter_max_ms" value="<%= (s.ai_out_delay_jitter_max_ms !== undefined && s.ai_out_delay_jitter_max_ms !== null) ? s.ai_out_delay_jitter_max_ms : 1200 %>"></div>
-    <div class="col-md-3"><label class="form-label">Total Min</label>
-      <input type="number" class="form-control" name="ai_out_delay_total_min_ms" value="<%= (s.ai_out_delay_total_min_ms !== undefined && s.ai_out_delay_total_min_ms !== null) ? s.ai_out_delay_total_min_ms : 900 %>"></div>
-    <div class="col-md-3"><label class="form-label">Total Max</label>
-      <input type="number" class="form-control" name="ai_out_delay_total_max_ms" value="<%= (s.ai_out_delay_total_max_ms !== undefined && s.ai_out_delay_total_max_ms !== null) ? s.ai_out_delay_total_max_ms : 12000 %>"></div>
-
-    <div class="col-12 mt-2">
-      <button class="btn btn-primary">Salvar</button>
-      <a class="btn btn-outline-secondary" href="/logout">Sair</a>
-    </div>
-  </form>
-
-  <hr class="my-4" />
-
-  <!-- NÚMEROS META -->
-  <div id="meta-settings">
-    <h3 class="mt-3">Números WhatsApp Cloud (Meta)</h3>
-
-    <table class="table table-sm align-middle">
-      <thead>
-        <tr>
-          <th style="min-width: 170px;">Número</th>
-          <th style="min-width: 210px;">Phone Number ID</th>
-          <th>Access Token</th>
-          <th style="min-width: 140px;">Label (opcional)</th>
-          <th class="text-center" style="width: 70px;">Ativo?</th>
-          <th style="width: 160px;"></th>
-        </tr>
-      </thead>
-      <tbody>
-        <% const metaList=(typeof metaNumbers !=='undefined' && metaNumbers) ? metaNumbers : []; %>
-
-        <% if (metaList.length) { %>
-          <% metaList.forEach(function(n) { %>
-            <tr>
-              <form method="post" action="/admin/settings/meta/save">
-                <td>
-                  <input type="hidden" name="id" value="<%= n.id %>">
-                  <input type="text" class="form-control form-control-sm" name="display_phone_number"
-                    value="<%= n.display_phone_number || '' %>" placeholder="+55 11 99999-9999">
-                </td>
-                <td>
-                  <input type="text" class="form-control form-control-sm" name="phone_number_id"
-                    value="<%= n.phone_number_id || '' %>" placeholder="phone_number_id" required>
-                </td>
-                <td>
-                  <input type="text" class="form-control form-control-sm" name="access_token"
-                    value="<%= n.access_token || '' %>" placeholder="Access Token" required>
-                </td>
-                <td>
-                  <input type="text" class="form-control form-control-sm" name="label"
-                    value="<%= n.label || '' %>" placeholder="ex.: Conta 1">
-                </td>
-                <td class="text-center">
-                  <input class="form-check-input" type="checkbox" name="active" <%=n.active ? 'checked' : '' %> />
-                </td>
-                <td class="text-end">
-                  <button type="submit" class="btn btn-sm btn-primary me-1">Salvar</button>
-                  <button type="submit" class="btn btn-sm btn-outline-danger"
-                    formaction="/admin/settings/meta/delete" onclick="return confirm('Remover este número?');">
-                    Remover
-                  </button>
-                </td>
-              </form>
-            </tr>
-          <% }); %>
-        <% } else { %>
-          <tr>
-            <td colspan="6" class="text-muted">Nenhum número cadastrado</td>
-          </tr>
-        <% } %>
-
-        <tr>
-          <form method="post" action="/admin/settings/meta/save">
-            <td>
-              <input type="hidden" name="id" value="">
-              <input type="text" class="form-control form-control-sm" name="display_phone_number"
-                placeholder="+55 11 99999-9999">
-            </td>
-            <td>
-              <input type="text" class="form-control form-control-sm" name="phone_number_id"
-                placeholder="phone_number_id" required>
-            </td>
-            <td>
-              <input type="text" class="form-control form-control-sm" name="access_token"
-                placeholder="Access Token" required>
-            </td>
-            <td>
-              <input type="text" class="form-control form-control-sm" name="label"
-                placeholder="ex.: Conta 2">
-            </td>
-            <td class="text-center">
-              <input class="form-check-input" type="checkbox" name="active" checked />
-            </td>
-            <td class="text-end">
-              <button type="submit" class="btn btn-sm btn-success">Adicionar</button>
-            </td>
-          </form>
-        </tr>
-      </tbody>
-    </table>
-  </div>
-
-  <script>
-    function formatNumero(value) {
-      let v = (value || '').replace(/\D/g, '');
-      v = v.slice(0, 13);
-      if (!v) return '';
-
-      let out = '+';
-      if (v.length <= 2) { out += v; return out; }
-
-      out += v.slice(0, 2) + ' ';
-      if (v.length <= 4) { out += v.slice(2); return out; }
-
-      out += v.slice(2, 4) + ' ';
-      if (v.length <= 9) { out += v.slice(4); return out; }
-
-      out += v.slice(4, 9) + '-' + v.slice(9);
-      return out;
-    }
-
-    function attachNumeroMasks() {
-      const inputs = document.querySelectorAll('input[name="display_phone_number"]');
-      inputs.forEach((inp) => {
-        inp.addEventListener('input', (e) => {
-          const cursorPos = e.target.selectionStart;
-          const oldLength = e.target.value.length;
-
-          const formatted = formatNumero(e.target.value);
-          e.target.value = formatted;
-
-          const newLength = formatted.length;
-          const diff = newLength - oldLength;
-          const newPos = Math.max(0, (cursorPos || 0) + diff);
-          try { e.target.setSelectionRange(newPos, newPos); } catch { }
-        });
-      });
-    }
-
-    attachNumeroMasks();
-  </script>
+          attachNumeroMasks();
+        </script>
 </body>
 
 </html>
