@@ -1,39 +1,21 @@
-module.exports = {
-  key: 'enviar_pix',
-  priority: 10,
+const { getPixForCtx } = require('../config');
 
-  async run(ctx) {
-    const { wa_id, inboundPhoneNumberId, replyToWamid, payload, senders, lead } = ctx;
+module.exports = async function enviar_pix(ctx) {
+  const pix = getPixForCtx(ctx);
 
-    // Você pode puxar isso do DB depois (bot_settings), mas o mais rápido é ENV:
-    const pix = (process.env.PIX_CHAVE || '').trim();
-    const nome = (process.env.PIX_NOME || '').trim();
-    const banco = (process.env.PIX_BANCO || '').trim();
+  // ✅ tudo configurado aqui (backend), não no prompt
+  await ctx.sendText(`Segue o Pix pra confirmar:`, { reply_to_wamid: ctx.replyToWamid });
+  await ctx.delay();
+  await ctx.sendText(`Chave: ${pix.chave}`, { reply_to_wamid: ctx.replyToWamid });
+  await ctx.delay();
+  await ctx.sendText(`Recebedor: ${pix.recebedor}`, { reply_to_wamid: ctx.replyToWamid });
+  await ctx.delay();
+  await ctx.sendText(`Valor: ${pix.valorFmt}`, { reply_to_wamid: ctx.replyToWamid });
 
-    if (!pix) throw new Error('enviar_pix: faltou PIX_CHAVE no env');
+  if (pix.mensagemExtra) {
+    await ctx.delay();
+    await ctx.sendText(pix.mensagemExtra, { reply_to_wamid: ctx.replyToWamid });
+  }
 
-    const valor = payload.valor ? String(payload.valor).trim() : null; // opcional
-    const msg =
-      `PIX pra pagamento:\n` +
-      `Chave: ${pix}` +
-      (nome ? `\nNome: ${nome}` : '') +
-      (banco ? `\nBanco: ${banco}` : '') +
-      (valor ? `\nValor: ${valor}` : '');
-
-    const r = await senders.sendMessage(wa_id, msg, {
-      meta_phone_number_id: inboundPhoneNumberId || null,
-      ...(replyToWamid ? { reply_to_wamid: replyToWamid } : {}),
-    });
-
-    if (r?.ok && lead?.pushHistory) {
-      lead.pushHistory(wa_id, 'assistant', msg, {
-        kind: 'text',
-        wamid: r.wamid || '',
-        phone_number_id: r.phone_number_id || inboundPhoneNumberId || null,
-        ts_ms: Date.now(),
-      });
-    }
-
-    return r;
-  },
+  return { ok: true, pix: { valor: pix.valor, fase: ctx.agent?.proxima_fase || null } };
 };

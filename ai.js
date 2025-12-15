@@ -1,14 +1,20 @@
 const axios = require('axios');
 const crypto = require('crypto');
 
+const { createActionRunner } = require('./actions');
 const senders = require('./senders');
-const { createActions } = require('./actions');
 
 function createAiEngine({ db, sendMessage, aiLog = () => { } } = {}) {
-  const actions = createActions({ senders, aiLog });
   function sha256Of(text) {
     return crypto.createHash('sha256').update(String(text || ''), 'utf8').digest('hex');
   }
+
+  const actionRunner = createActionRunner({
+    db,
+    senders,
+    publishState: null, // se você quiser, injete depois (opcional)
+    aiLog,
+  });
 
   function extractJsonObject(str) {
     const s = String(str || '').trim();
@@ -503,8 +509,13 @@ function createAiEngine({ db, sendMessage, aiLog = () => { } } = {}) {
       maxOutMessages: cfg.max_out_messages,
     });
 
-    if (!outItems.length) return;
+    const outItems = normalizeAgentMessages(agent, {
+      batchItems: batch_items,
+      fallbackReplyToWamid,
+      maxOutMessages: cfg.max_out_messages,
+    });
 
+    // envia mensagens (se houver)
     for (let i = 0; i < outItems.length; i++) {
       const { text: msg, reply_to_wamid } = outItems[i];
       if (i > 0) await humanDelayForOutboundText(msg, cfg.outboundDelay);
@@ -514,9 +525,7 @@ function createAiEngine({ db, sendMessage, aiLog = () => { } } = {}) {
         ...(reply_to_wamid ? { reply_to_wamid } : {}),
       });
 
-      if (!r?.ok) {
-        aiLog(`[AI][SEND][${wa_id}] FAIL`, r);
-      }
+      if (!r?.ok) aiLog(`[AI][SEND][${wa_id}] FAIL`, r);
 
       if (r?.ok) {
         lead.pushHistory(wa_id, 'assistant', msg, {
@@ -528,20 +537,18 @@ function createAiEngine({ db, sendMessage, aiLog = () => { } } = {}) {
         });
       }
     }
-    try {
-      await actions.run(agent, {
-        wa_id,
-        inboundPhoneNumberId,
-        replyToWamid: fallbackReplyToWamid,
-        lead,
-        db,
-        senders,
-        aiLog,
-        agent,
-      });
-    } catch (e) {
-      aiLog(`[ACTIONS][${wa_id}] dispatcher fail: ${e?.message || e}`);
-    }
+
+    // ✅ roda actions mesmo que não tenha messages
+    await actionRunner.run({
+      agent,
+      wa_id,
+      inboundPhoneNumberId,
+      lead,
+      replyToWamid: fallbackReplyToWamid,
+      batch_items,
+      settings,
+    });
+
   }
 
   return { handleInboundBlock };
