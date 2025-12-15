@@ -60,80 +60,75 @@ async function initDatabase() {
   const client = await pool.connect();
   try {
     await client.query(`
-      CREATE TABLE IF NOT EXISTS bot_settings (
-        id SERIAL PRIMARY KEY,
-        graph_api_access_token TEXT,
-        contact_token TEXT,
-        venice_api_key TEXT,
-        venice_model TEXT,
-        system_prompt TEXT,
+  UPDATE bot_settings
+     SET inbound_debounce_min_ms = COALESCE(inbound_debounce_min_ms, 1800),
+         inbound_debounce_max_ms = COALESCE(inbound_debounce_max_ms, 3200),
+         inbound_max_wait_ms     = COALESCE(inbound_max_wait_ms, 12000),
 
-        inbound_debounce_min_ms INTEGER,
-        inbound_debounce_max_ms INTEGER,
-        inbound_max_wait_ms INTEGER,
+         ai_debug = COALESCE(ai_debug, TRUE),
 
-        -- ✅ NOVOS: index.js / logs
-        ai_debug BOOLEAN,
+         lead_max_msgs = COALESCE(lead_max_msgs, 50),
+         lead_ttl_ms = COALESCE(lead_ttl_ms, 604800000),
+         lead_debug_debounce = COALESCE(lead_debug_debounce, TRUE),
+         lead_late_join_window_ms = COALESCE(lead_late_join_window_ms, 350),
+         lead_preview_text_max_len = COALESCE(lead_preview_text_max_len, 80),
 
-        -- ✅ NOVOS: lead.js
-        lead_max_msgs INTEGER,
-        lead_ttl_ms INTEGER,
-        lead_debug_debounce BOOLEAN,
-        lead_late_join_window_ms INTEGER,
-        lead_preview_text_max_len INTEGER,
+         venice_api_url = COALESCE(venice_api_url, 'https://api.venice.ai/api/v1/chat/completions'),
+         venice_temperature = COALESCE(venice_temperature, 0.7),
+         venice_max_tokens = COALESCE(venice_max_tokens, 700),
+         venice_timeout_ms = COALESCE(venice_timeout_ms, 60000),
+         venice_stream = COALESCE(venice_stream, FALSE),
+         venice_user_message = COALESCE(venice_user_message, 'Responda exatamente no formato JSON especificado.'),
 
-        -- ✅ NOVOS: ai.js (Venice request + limits + textos)
-        venice_api_url TEXT,
-        venice_temperature DOUBLE PRECISION,
-        venice_max_tokens INTEGER,
-        venice_timeout_ms INTEGER,
-        venice_stream BOOLEAN,
-        venice_user_message TEXT,
+         venice_enable_web_search = COALESCE(venice_enable_web_search, 'off'),
+         venice_include_venice_system_prompt = COALESCE(venice_include_venice_system_prompt, FALSE),
+         venice_enable_web_citations = COALESCE(venice_enable_web_citations, FALSE),
+         venice_enable_web_scraping = COALESCE(venice_enable_web_scraping, FALSE),
 
-        venice_enable_web_search TEXT,
-        venice_include_venice_system_prompt BOOLEAN,
-        venice_enable_web_citations BOOLEAN,
-        venice_enable_web_scraping BOOLEAN,
+         ai_max_out_messages = COALESCE(ai_max_out_messages, 3),
+         ai_error_msg_config = COALESCE(ai_error_msg_config, 'Config incompleta no painel (venice key/model/prompt).'),
+         ai_error_msg_generic = COALESCE(ai_error_msg_generic, 'Tive um erro aqui. Manda de novo?'),
+         ai_error_msg_parse = COALESCE(ai_error_msg_parse, 'Não entendi direito. Me manda de novo?'),
 
-        ai_max_out_messages INTEGER,
-        ai_error_msg_config TEXT,
-        ai_error_msg_generic TEXT,
-        ai_error_msg_parse TEXT,
+         ai_in_delay_base_min_ms = COALESCE(ai_in_delay_base_min_ms, 900),
+         ai_in_delay_base_max_ms = COALESCE(ai_in_delay_base_max_ms, 1800),
+         ai_in_delay_per_char_min_ms = COALESCE(ai_in_delay_per_char_min_ms, 18),
+         ai_in_delay_per_char_max_ms = COALESCE(ai_in_delay_per_char_max_ms, 45),
+         ai_in_delay_cap_ms = COALESCE(ai_in_delay_cap_ms, 5200),
+         ai_in_delay_jitter_min_ms = COALESCE(ai_in_delay_jitter_min_ms, 400),
+         ai_in_delay_jitter_max_ms = COALESCE(ai_in_delay_jitter_max_ms, 1600),
+         ai_in_delay_total_min_ms = COALESCE(ai_in_delay_total_min_ms, 1600),
+         ai_in_delay_total_max_ms = COALESCE(ai_in_delay_total_max_ms, 9500),
 
-        -- ✅ NOVOS: human delays (ai.js)
-        ai_in_delay_base_min_ms INTEGER,
-        ai_in_delay_base_max_ms INTEGER,
-        ai_in_delay_per_char_min_ms INTEGER,
-        ai_in_delay_per_char_max_ms INTEGER,
-        ai_in_delay_cap_ms INTEGER,
-        ai_in_delay_jitter_min_ms INTEGER,
-        ai_in_delay_jitter_max_ms INTEGER,
-        ai_in_delay_total_min_ms INTEGER,
-        ai_in_delay_total_max_ms INTEGER,
+         ai_out_delay_base_min_ms = COALESCE(ai_out_delay_base_min_ms, 450),
+         ai_out_delay_base_max_ms = COALESCE(ai_out_delay_base_max_ms, 1200),
+         ai_out_delay_per_char_min_ms = COALESCE(ai_out_delay_per_char_min_ms, 22),
+         ai_out_delay_per_char_max_ms = COALESCE(ai_out_delay_per_char_max_ms, 55),
+         ai_out_delay_cap_ms = COALESCE(ai_out_delay_cap_ms, 6500),
+         ai_out_delay_jitter_min_ms = COALESCE(ai_out_delay_jitter_min_ms, 250),
+         ai_out_delay_jitter_max_ms = COALESCE(ai_out_delay_jitter_max_ms, 1200),
+         ai_out_delay_total_min_ms = COALESCE(ai_out_delay_total_min_ms, 900),
+         ai_out_delay_total_max_ms = COALESCE(ai_out_delay_total_max_ms, 12000),
 
-        ai_out_delay_base_min_ms INTEGER,
-        ai_out_delay_base_max_ms INTEGER,
-        ai_out_delay_per_char_min_ms INTEGER,
-        ai_out_delay_per_char_max_ms INTEGER,
-        ai_out_delay_cap_ms INTEGER,
-        ai_out_delay_jitter_min_ms INTEGER,
-        ai_out_delay_jitter_max_ms INTEGER,
-        ai_out_delay_total_min_ms INTEGER,
-        ai_out_delay_total_max_ms INTEGER,
+         eleven_model_id = COALESCE(eleven_model_id, 'eleven_v3'),
+         eleven_output_format = COALESCE(eleven_output_format, 'ogg_opus'),
+         eleven_use_speaker_boost = COALESCE(eleven_use_speaker_boost, FALSE),
 
-        voice_note_system_prompt TEXT,
-        voice_note_user_prompt TEXT,
-        voice_note_temperature DOUBLE PRECISION,
-        voice_note_max_tokens INTEGER,
-        voice_note_timeout_ms INTEGER,
-        voice_note_history_max_items INTEGER,
-        voice_note_history_max_chars INTEGER,
-        voice_note_script_max_chars INTEGER,
-        voice_note_fallback_text TEXT,
+         voice_note_temperature = COALESCE(voice_note_temperature, 0.85),
+         voice_note_max_tokens = COALESCE(voice_note_max_tokens, 220),
+         voice_note_timeout_ms = COALESCE(voice_note_timeout_ms, 45000),
+         voice_note_history_max_items = COALESCE(voice_note_history_max_items, 10),
+         voice_note_history_max_chars = COALESCE(voice_note_history_max_chars, 1600),
+         voice_note_script_max_chars = COALESCE(voice_note_script_max_chars, 650),
+         voice_note_fallback_text = COALESCE(
+           voice_note_fallback_text,
+           '[whispers] Ei… me diz uma coisa… você tá me provocando ou eu tô imaginando? [mischievously]'
+         ),
+         voice_note_system_prompt = COALESCE(voice_note_system_prompt, ''),
+         voice_note_user_prompt = COALESCE(voice_note_user_prompt, '')
+   WHERE id = 1;
+`);
 
-        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-      );
-    `);
 
     // ✅ garante colunas em bancos antigos
     const alter = async (sql) => client.query(sql).catch(() => { });
@@ -625,17 +620,17 @@ async function updateBotSettings(payload) {
              eleven_style = COALESCE($53, eleven_style),
              eleven_use_speaker_boost = COALESCE($54, eleven_use_speaker_boost),
 
-             , voice_note_system_prompt = COALESCE($55, voice_note_system_prompt)
-, voice_note_user_prompt = COALESCE($56, voice_note_user_prompt)
-, voice_note_temperature = COALESCE($57, voice_note_temperature)
-, voice_note_max_tokens = COALESCE($58, voice_note_max_tokens)
-, voice_note_timeout_ms = COALESCE($59, voice_note_timeout_ms)
-, voice_note_history_max_items = COALESCE($60, voice_note_history_max_items)
-, voice_note_history_max_chars = COALESCE($61, voice_note_history_max_chars)
-, voice_note_script_max_chars = COALESCE($62, voice_note_script_max_chars)
-, voice_note_fallback_text = COALESCE($63, voice_note_fallback_text)
+            voice_note_system_prompt = COALESCE($55, voice_note_system_prompt),
+            voice_note_user_prompt = COALESCE($56, voice_note_user_prompt),
+            voice_note_temperature = COALESCE($57, voice_note_temperature),
+            voice_note_max_tokens = COALESCE($58, voice_note_max_tokens),
+            voice_note_timeout_ms = COALESCE($59, voice_note_timeout_ms),
+            voice_note_history_max_items = COALESCE($60, voice_note_history_max_items),
+            voice_note_history_max_chars = COALESCE($61, voice_note_history_max_chars),
+            voice_note_script_max_chars = COALESCE($62, voice_note_script_max_chars),
+            voice_note_fallback_text = COALESCE($63, voice_note_fallback_text),
 
-             updated_at            = NOW()
+            updated_at = NOW()
        WHERE id = 1
       `,
       [
