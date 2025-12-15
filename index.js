@@ -323,8 +323,8 @@ async function callVeniceChat({ apiKey, model, systemPromptRendered, userId }) {
     stream: false,
   };
 
-  aiLog('[AI][REQUEST]');
-  aiLog(JSON.stringify(sanitizeVeniceBodyForLog(body), null, 2)); // ✅ agora não vaza o system
+  // aiLog('[AI][REQUEST]');
+  // aiLog(JSON.stringify(sanitizeVeniceBodyForLog(body), null, 2)); // ✅ agora não vaza o system
 
   const r = await axios.post(url, body, {
     headers: {
@@ -337,15 +337,20 @@ async function callVeniceChat({ apiKey, model, systemPromptRendered, userId }) {
 
   aiLog(`[AI][RESPONSE] http=${r.status}`);
 
-  // (Opcional) logar resposta completa pode ser pesado; dá pra resumir:
+  // Conteúdo completo (texto cru, do jeito que você vai “postar”)
+  const content = r.data?.choices?.[0]?.message?.content ?? '';
+  aiLog(`[AI][RESPONSE][CONTENT]\n${content}`);
+
+  // (Opcional) mantém um metadata leve pra debug
   aiLog(JSON.stringify({
     id: r.data?.id,
     model: r.data?.model,
     created: r.data?.created,
     usage: r.data?.usage,
     finish_reason: r.data?.choices?.[0]?.finish_reason,
-    content_chars: String(r.data?.choices?.[0]?.message?.content || '').length,
   }, null, 2));
+
+  aiLog(`[AI][RESPONSE][FULL_PAYLOAD]\n${JSON.stringify(r.data, null, 2)}`);
 
   return { status: r.status, data: r.data };
 }
