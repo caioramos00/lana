@@ -5,8 +5,14 @@
 // - Publica no SSE via publishMessage
 
 const axios = require('axios');
+const fs = require('fs');
+const path = require('path');
 const db = require('./db');
 const { publishMessage } = require('./stream/events-bus');
+
+// Dependência recomendada p/ multipart/form-data no Node + axios
+let FormData = null;
+try { FormData = require('form-data'); } catch { /* ok */ }
 
 // wa_id -> { phone_number_id, ts }
 const inboundMetaMap = new Map();
@@ -109,6 +115,69 @@ async function metaPostMessage({ phoneNumberId, token, version, payload }) {
   return r.data || {};
 }
 
+// ======= MEDIA UPLOAD (local file -> media id) =======
+function guessAudioMime(filePath) {
+  const ext = String(path.extname(filePath || '')).toLowerCase();
+
+  // formatos comuns pra teste
+  if (ext === '.ogg' || ext === '.opus') return 'audio/ogg';
+  if (ext === '.mp3') return 'audio/mpeg';
+  if (ext === '.m4a') return 'audio/mp4';
+  if (ext === '.aac') return 'audio/aac';
+  if (ext === '.wav') return 'audio/wav';
+  if (ext === '.amr') return 'audio/amr';
+
+  // fallback (a API pode rejeitar)
+  return 'application/octet-stream';
+}
+
+async function metaUploadMediaFromPath({ phoneNumberId, token, version, filePath, mimeType }) {
+  if (!FormData) {
+    throw new Error('Dependência ausente: instale "form-data" (npm i form-data)');
+  }
+
+  const abs = String(filePath || '');
+  if (!abs || !fs.existsSync(abs)) {
+    throw new Error(`Arquivo não encontrado: ${abs}`);
+  }
+
+  const apiVersion = version || 'v24.0';
+  const url = `https://graph.facebook.com/${apiVersion}/${phoneNumberId}/media`;
+
+  const form = new FormData();
+  form.append('messaging_product', 'whatsapp');
+
+  const mt = String(mimeType || '').trim() || guessAudioMime(abs);
+  form.append('type', mt);
+
+  form.append('file', fs.createReadStream(abs), {
+    filename: path.basename(abs),
+    contentType: mt,
+  });
+
+  const r = await axios.post(url, form, {
+    headers: {
+      Authorization: `Bearer ${token}`,
+      ...form.getHeaders(),
+    },
+    timeout: 30000,
+    maxBodyLength: Infinity,
+    maxContentLength: Infinity,
+    validateStatus: () => true,
+  });
+
+  if (r.status < 200 || r.status >= 300) {
+    const body = r.data ? JSON.stringify(r.data).slice(0, 1200) : '';
+    throw new Error(`Meta HTTP ${r.status} ${body}`);
+  }
+
+  const id = r.data?.id ? String(r.data.id) : '';
+  if (!id) throw new Error(`Upload ok mas sem media id no retorno: ${JSON.stringify(r.data).slice(0, 500)}`);
+
+  return { id, raw: r.data };
+}
+
+// ======= SEND TEXT =======
 async function sendMessage(contato, texto, opts = {}) {
   const to = String(contato || '').trim();
   const text = String(texto || '').trim();
@@ -160,6 +229,7 @@ async function sendMessage(contato, texto, opts = {}) {
   }
 }
 
+// ======= SEND IMAGE (já existia) =======
 async function sendImage(contato, urlOrItems, captionOrOpts, opts = {}) {
   // compat: sendImage(to, url, caption, opts) OU sendImage(to, [{url,caption}], opts)
   if (typeof captionOrOpts === 'object' && captionOrOpts) {
@@ -238,9 +308,109 @@ async function sendImage(contato, urlOrItems, captionOrOpts, opts = {}) {
   }
 }
 
+// ======= SEND AUDIO (novo) =======
+async function sendAudioByMediaId(contato, mediaId, opts = {}) {
+  const to = String(contato || '').trim();
+  const id = String(mediaId || '').trim();
+  if (!to) return { ok: false, reason: 'missing-to' };
+  if (!id) return { ok: false, reason: 'missing-media-id' };
+
+  try {
+    const settings = await getSettings();
+    const { phoneNumberId, token } = await resolveMetaCredentialsForContato(to, settings, opts);
+
+    if (!phoneNumberId || !token) {
+      return { ok: false, reason: 'missing-meta-credentials', phone_number_id: phoneNumberId || null };
+    }
+
+    const replyTo = String(opts.reply_to_wamid || opts.replyToWamid || '').trim() || null;
+
+    const audioObj = { id };
+    // tentativa de “voice note” (se a API aceitar esse campo no seu setup)
+    if (opts.voice === true) audioObj.voice = true;
+
+    const payload = {
+      messaging_product: 'whatsapp',
+      to,
+      type: 'audio',
+      audio: audioObj,
+    };
+
+    if (replyTo) payload.context = { message_id: replyTo };
+
+    const data = await metaPostMessage({
+      phoneNumberId,
+      token,
+      version: settings?.meta_api_version || 'v24.0',
+      payload,
+    });
+
+    try {
+      publishMessage({
+        dir: 'out',
+        wa_id: to,
+        wamid: (data?.messages && data.messages[0]?.id) ? String(data.messages[0].id) : '',
+        kind: 'audio',
+        text: '',
+        media: { type: 'audio', id },
+        ts: Date.now(),
+      });
+    } catch { }
+
+    return { ok: true, provider: 'meta', phone_number_id: phoneNumberId, wamid: data?.messages?.[0]?.id || '' };
+  } catch (e) {
+    return { ok: false, error: e?.message || String(e) };
+  }
+}
+
+async function sendAudioFromPath(contato, filePath, opts = {}) {
+  const to = String(contato || '').trim();
+  const fp = String(filePath || '').trim();
+  if (!to) return { ok: false, reason: 'missing-to' };
+  if (!fp) return { ok: false, reason: 'missing-filepath' };
+
+  try {
+    const settings = await getSettings();
+    const { phoneNumberId, token } = await resolveMetaCredentialsForContato(to, settings, opts);
+
+    if (!phoneNumberId || !token) {
+      return { ok: false, reason: 'missing-meta-credentials', phone_number_id: phoneNumberId || null };
+    }
+
+    const mimeType = String(opts.mimeType || '').trim() || guessAudioMime(fp);
+
+    const up = await metaUploadMediaFromPath({
+      phoneNumberId,
+      token,
+      version: settings?.meta_api_version || 'v24.0',
+      filePath: fp,
+      mimeType,
+    });
+
+    // tenta como “voice note” se você pediu
+    if (opts.tryVoice === true) {
+      const rVoice = await sendAudioByMediaId(to, up.id, { ...opts, voice: true });
+      if (rVoice?.ok) return { ...rVoice, uploaded_media_id: up.id, mimeType, filePath: fp, mode: 'voice' };
+
+      // fallback: manda sem voice
+      const rPlain = await sendAudioByMediaId(to, up.id, { ...opts, voice: false });
+      return { ...rPlain, uploaded_media_id: up.id, mimeType, filePath: fp, mode: 'plain_fallback', voice_error: rVoice?.error || null };
+    }
+
+    const r = await sendAudioByMediaId(to, up.id, { ...opts, voice: false });
+    return { ...r, uploaded_media_id: up.id, mimeType, filePath: fp, mode: 'plain' };
+  } catch (e) {
+    return { ok: false, error: e?.message || String(e), filePath: fp };
+  }
+}
+
 module.exports = {
   rememberInboundMetaPhoneNumberId,
   resolveMetaCredentialsForContato,
   sendMessage,
   sendImage,
+
+  // novos exports
+  sendAudioByMediaId,
+  sendAudioFromPath,
 };
