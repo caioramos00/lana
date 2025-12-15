@@ -697,47 +697,57 @@ async function sendTtsVoiceNote(contato, text, opts = {}) {
     return { found: null, candidates };
   }
 
-  async function uploadVoiceFile(filePath, filename) {
-    // tenta mimes comuns (sem quebrar caso a Meta rejeite parâmetros)
-    const mimesToTry = [
-      'audio/ogg; codecs=opus',
-      'audio/ogg',
-      'audio/opus',
-    ];
-
-    let lastErr = null;
-    for (const mt of mimesToTry) {
-      try {
-        const up = await metaUploadMediaFromPath({
-          phoneNumberId,
-          token,
-          version: settings?.meta_api_version || 'v24.0',
-          filePath,
-          mimeType: mt,
-          filename,
-        });
-        console.log('[AUDIO][META][UPLOAD]', JSON.stringify({ id: up.id, ...up.upload }));
-        return up;
-      } catch (e) {
-        lastErr = e;
-        console.log('[AUDIO][META][UPLOAD][fail]', JSON.stringify({ mimeType: mt, error: e?.message || String(e) }));
-      }
-    }
-    throw lastErr || new Error('upload failed');
-  }
-
   try {
     const settings = await getSettings();
-    const { phoneNumberId, token } = await resolveMetaCredentialsForContato(to, settings, opts);
+    const creds = await resolveMetaCredentialsForContato(to, settings, opts);
+    const phoneNumberId = creds?.phoneNumberId || null;
+    const token = creds?.token || null;
 
     if (!phoneNumberId || !token) {
       return { ok: false, reason: 'missing-meta-credentials', phone_number_id: phoneNumberId || null };
     }
 
+    // helper com escopo certo
+    const uploadVoiceFile = async (filePath, filename) => {
+      const mimesToTry = [
+        'audio/ogg; codecs=opus',
+        'audio/ogg',
+        'audio/opus',
+      ];
+
+      let lastErr = null;
+      for (const mt of mimesToTry) {
+        try {
+          const up = await metaUploadMediaFromPath({
+            phoneNumberId,
+            token,
+            version: settings?.meta_api_version || 'v24.0',
+            filePath,
+            mimeType: mt,
+            filename,
+          });
+          console.log('[AUDIO][META][UPLOAD]', JSON.stringify({ id: up.id, ...up.upload }));
+          return up;
+        } catch (e) {
+          lastErr = e;
+          console.log('[AUDIO][META][UPLOAD][fail]', JSON.stringify({
+            mimeType: mt,
+            error: e?.message || String(e),
+          }));
+        }
+      }
+      throw lastErr || new Error('upload failed');
+    };
+
     // ✅ DEBUG: enviar response.opus
     if (opts && opts.send_response_opus) {
       const { found, candidates } = findResponseOpusPath();
-      console.log('[AUDIO][response.opus][search]', JSON.stringify({ found, candidates, cwd: process.cwd(), dirname: __dirname }));
+      console.log('[AUDIO][response.opus][search]', JSON.stringify({
+        found,
+        candidates,
+        cwd: process.cwd(),
+        dirname: __dirname,
+      }));
 
       if (!found) {
         return { ok: false, reason: 'missing-response-opus', tried: { candidates, cwd: process.cwd(), dirname: __dirname } };
@@ -758,16 +768,16 @@ async function sendTtsVoiceNote(contato, text, opts = {}) {
       return { ...rSend, uploaded_media_id: up.id, sent_from: 'response.opus', filePath: found };
     }
 
-    // 1) gera arquivo
+    // 1) gera áudio (Eleven)
     tmpFile = await elevenTtsToTempFile(text, settings, opts);
 
     // 2) log antes do upload
     logAudioInfo('before-upload', tmpFile, { source: 'tmp-eleven' });
 
-    // ✅ CRÍTICO: NÃO PATCH AQUI (isso quebra CRC e mata reprodução)
-    // (se você quiser testar patch no futuro, tem que recalcular CRC de todas as páginas)
+    // 🚫 NÃO patch aqui (quebra CRC e mata reprodução)
+    // patchOpusHeadInputSampleRate(tmpFile, 24000);
 
-    // 3) upload + send como voice note
+    // 3) upload + send
     const up = await uploadVoiceFile(tmpFile, 'voice.ogg');
     const rSend = await sendAudioByMediaId(to, up.id, { ...opts, voice_note: true });
 
