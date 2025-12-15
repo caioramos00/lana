@@ -95,30 +95,6 @@ function createAiEngine({ db, sendMessage, aiLog = () => {} } = {}) {
     await sleep(total);
   }
 
-  function sanitizeVeniceBodyForLog(body) {
-    const clone = JSON.parse(JSON.stringify(body || {}));
-    if (Array.isArray(clone.messages)) {
-      clone.messages = clone.messages.map((m) => {
-        const role = m?.role;
-        const content = String(m?.content || '');
-
-        if (role === 'system') {
-          const sha = sha256Of(content);
-          return { role, content: `[SYSTEM_PROMPT_OMITTED] chars=${content.length} sha256=${sha}` };
-        }
-
-        const MAX_LOG_CHARS = 200;
-        if (content.length > MAX_LOG_CHARS) {
-          const sha = sha256Of(content);
-          return { role, content: `[TRUNCATED] first=${content.slice(0, MAX_LOG_CHARS)}... chars=${content.length} sha256=${sha}` };
-        }
-
-        return { role, content };
-      });
-    }
-    return clone;
-  }
-
   async function callVeniceChat({ apiKey, model, systemPromptRendered, userId }) {
     const url = 'https://api.venice.ai/api/v1/chat/completions';
 
@@ -140,9 +116,6 @@ function createAiEngine({ db, sendMessage, aiLog = () => {} } = {}) {
       },
       stream: false,
     };
-
-    // aiLog('[AI][REQUEST]');
-    // aiLog(JSON.stringify(sanitizeVeniceBodyForLog(body), null, 2));
 
     const r = await axios.post(url, body, {
       headers: {
@@ -169,16 +142,20 @@ function createAiEngine({ db, sendMessage, aiLog = () => {} } = {}) {
     return { status: r.status, data: r.data };
   }
 
+  // ✅ AGORA essa é a função que o lead.flush chama (com lead injetado)
   async function handleInboundBlock({
     wa_id,
     inboundPhoneNumberId,
     blocoText,
     mensagemAtualBloco,
     excludeWamids,
-
-    // lead vem “injetado” pelo routes ao chamar (ver routes.js)
     lead,
   }) {
+    if (!lead || typeof lead.getLead !== 'function') {
+      aiLog('[AI][ERROR] leadStore não foi injetado no handleInboundBlock');
+      return;
+    }
+
     const st = lead.getLead(wa_id);
     if (!st) return;
 
@@ -209,9 +186,6 @@ function createAiEngine({ db, sendMessage, aiLog = () => {} } = {}) {
     const rendered = renderSystemPrompt(systemPromptTpl, facts, historicoStr, msgParaPrompt);
 
     aiLog(`[AI][CTX][${wa_id}] phone_number_id=${inboundPhoneNumberId || ''}`);
-    aiLog('[AI][MENSAGEM_ATUAL_BLOCO]');
-    aiLog(atual || '');
-
     {
       const sha = sha256Of(rendered || '');
       aiLog(`[AI][SYSTEM_PROMPT_RENDERED] (omitted) chars=${(rendered || '').length} sha256=${sha}`);
@@ -234,9 +208,6 @@ function createAiEngine({ db, sendMessage, aiLog = () => {} } = {}) {
     const content = venice?.data?.choices?.[0]?.message?.content || '';
     const parsed = safeParseAgentJson(content);
 
-    aiLog(`[AI][RAW_CONTENT][${wa_id}]`);
-    aiLog(content);
-
     if (!parsed.ok) {
       await sendMessage(wa_id, 'Não entendi direito. Me manda de novo?', {
         meta_phone_number_id: inboundPhoneNumberId || null,
@@ -254,7 +225,6 @@ function createAiEngine({ db, sendMessage, aiLog = () => {} } = {}) {
 
     for (let i = 0; i < outMessages.length; i++) {
       const msg = outMessages[i];
-
       if (i > 0) await humanDelayForOutboundText(msg);
 
       const r = await sendMessage(wa_id, msg, {
@@ -271,17 +241,7 @@ function createAiEngine({ db, sendMessage, aiLog = () => {} } = {}) {
     }
   }
 
-  return {
-    // wrapper: routes/lead vão passar o lead aqui
-    handleInboundBlock: async (payload) => {
-      // payload vem do lead.flush -> aqui a gente injeta lead no routes.js
-      // então esse wrapper não faz nada sozinho; é o routes que chama com lead
-      return payload;
-    },
-
-    // expõe a função real pro routes (pra injetar lead)
-    _handleInboundBlock: handleInboundBlock,
-  };
+  return { handleInboundBlock };
 }
 
 module.exports = { createAiEngine };

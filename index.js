@@ -22,6 +22,7 @@ app.set('view engine', 'ejs');
 app.set('views', path.join(__dirname, 'views'));
 app.use('/public', express.static(path.join(__dirname, 'public')));
 
+// ✅ session middleware (tava faltando)
 app.use(session({
   secret: process.env.SESSION_SECRET || 'dev-secret',
   resave: false,
@@ -73,8 +74,11 @@ function aiLog(...args) {
     aiLog,
   });
 
+  // ✅ a gente declara lead antes pra poder fechar no onFlushBlock
+  let lead;
+
   // Lead store (memória + batching) — chama ai quando “flush” acontecer
-  const lead = createLeadStore({
+  lead = createLeadStore({
     maxMsgs: 50,
     ttlMs: 7 * 24 * 60 * 60 * 1000,
 
@@ -82,7 +86,10 @@ function aiLog(...args) {
     inboundDebounceMaxMs: Number(process.env.INBOUND_DEBOUNCE_MAX_MS || 1500),
     inboundMaxWaitMs: Number(process.env.INBOUND_MAX_WAIT_MS || 7000),
 
-    onFlushBlock: async (payload) => ai.handleInboundBlock(payload),
+    // ✅ AGORA chama a função REAL e injeta lead
+    onFlushBlock: async (payload) => {
+      return ai.handleInboundBlock({ ...payload, lead });
+    },
   });
 
   // Rotas (admin + webhook)
