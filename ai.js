@@ -1,7 +1,11 @@
 const axios = require('axios');
 const crypto = require('crypto');
 
+const senders = require('./senders');
+const { createActions } = require('./actions');
+
 function createAiEngine({ db, sendMessage, aiLog = () => { } } = {}) {
+  const actions = createActions({ senders, aiLog });
   function sha256Of(text) {
     return crypto.createHash('sha256').update(String(text || ''), 'utf8').digest('hex');
   }
@@ -523,6 +527,20 @@ function createAiEngine({ db, sendMessage, aiLog = () => { } } = {}) {
           reply_to_wamid: reply_to_wamid || null,
         });
       }
+    }
+    try {
+      await actions.run(agent, {
+        wa_id,
+        inboundPhoneNumberId,
+        replyToWamid: fallbackReplyToWamid,
+        lead,
+        db,
+        senders,
+        aiLog,
+        agent,
+      });
+    } catch (e) {
+      aiLog(`[ACTIONS][${wa_id}] dispatcher fail: ${e?.message || e}`);
     }
   }
 
