@@ -2,401 +2,531 @@ const axios = require('axios');
 const crypto = require('crypto');
 
 function createAiEngine({ db, sendMessage, aiLog = () => { } } = {}) {
-    function sha256Of(text) {
-        return crypto.createHash('sha256').update(String(text || ''), 'utf8').digest('hex');
+  function sha256Of(text) {
+    return crypto.createHash('sha256').update(String(text || ''), 'utf8').digest('hex');
+  }
+
+  function extractJsonObject(str) {
+    const s = String(str || '').trim();
+    if (s.startsWith('{') && s.endsWith('}')) return s;
+
+    const first = s.indexOf('{');
+    const last = s.lastIndexOf('}');
+    if (first >= 0 && last > first) return s.slice(first, last + 1);
+    return null;
+  }
+
+  function safeParseAgentJson(raw) {
+    const jsonStr = extractJsonObject(raw);
+    if (!jsonStr) return { ok: false, data: null };
+
+    try {
+      const obj = JSON.parse(jsonStr);
+      if (!obj || typeof obj !== 'object') return { ok: false, data: null };
+      if (!Array.isArray(obj.messages)) return { ok: false, data: obj };
+      return { ok: true, data: obj };
+    } catch {
+      return { ok: false, data: null };
+    }
+  }
+
+  function normalizeReplyId(x) {
+    const r = String(x || '').trim();
+    return r ? r : null;
+  }
+
+  function previewText(s, max = 120) {
+    const t = String(s || '').replace(/\s+/g, ' ').trim();
+    if (t.length <= max) return t;
+    return t.slice(0, max) + `... (len=${t.length})`;
+  }
+
+  function extractAround(haystack, needle, radius = 800) {
+    const s = String(haystack || '');
+    const n = String(needle || '');
+    const idx = s.indexOf(n);
+    if (idx < 0) return null;
+    const start = Math.max(0, idx - 80);
+    const end = Math.min(s.length, idx + radius);
+    return s.slice(start, end);
+  }
+
+  function toNumberOrNull(v) {
+    if (v === undefined || v === null) return null;
+    const n = Number(String(v).trim());
+    return Number.isFinite(n) ? n : null;
+  }
+
+  function clampNum(n, { min, max } = {}) {
+    if (!Number.isFinite(n)) return null;
+    let x = n;
+    if (Number.isFinite(min)) x = Math.max(min, x);
+    if (Number.isFinite(max)) x = Math.min(max, x);
+    return x;
+  }
+
+  function clampInt(n, { min, max } = {}) {
+    if (!Number.isFinite(n)) return null;
+    let x = Math.trunc(n);
+    if (Number.isFinite(min)) x = Math.max(min, x);
+    if (Number.isFinite(max)) x = Math.min(max, x);
+    return x;
+  }
+
+  function readAiRuntimeConfig(settings) {
+    const s = settings || {};
+
+    const venice_api_url =
+      (String(s.venice_api_url || '').trim() || 'https://api.venice.ai/api/v1/chat/completions');
+
+    const venice_temperature =
+      clampNum(toNumberOrNull(s.venice_temperature), { min: 0, max: 2 });
+    const temperature = (venice_temperature === null) ? 0.7 : venice_temperature;
+
+    const venice_max_tokens =
+      clampInt(toNumberOrNull(s.venice_max_tokens), { min: 16, max: 4096 });
+    const max_tokens = (venice_max_tokens === null) ? 700 : venice_max_tokens;
+
+    const venice_timeout_ms =
+      clampInt(toNumberOrNull(s.venice_timeout_ms), { min: 1000, max: 180000 });
+    const timeoutMs = (venice_timeout_ms === null) ? 60000 : venice_timeout_ms;
+
+    const stream = (s.venice_stream === undefined || s.venice_stream === null)
+      ? false
+      : !!s.venice_stream;
+
+    const userMessage = (String(s.venice_user_message || '').trim()
+      || 'Responda exatamente no formato JSON especificado.');
+
+    const venice_parameters = {
+      enable_web_search: (String(s.venice_enable_web_search || '').trim() || 'off'),
+      include_venice_system_prompt: (s.venice_include_venice_system_prompt === undefined || s.venice_include_venice_system_prompt === null)
+        ? false
+        : !!s.venice_include_venice_system_prompt,
+      enable_web_citations: (s.venice_enable_web_citations === undefined || s.venice_enable_web_citations === null)
+        ? false
+        : !!s.venice_enable_web_citations,
+      enable_web_scraping: (s.venice_enable_web_scraping === undefined || s.venice_enable_web_scraping === null)
+        ? false
+        : !!s.venice_enable_web_scraping,
+    };
+
+    const maxOut = clampInt(toNumberOrNull(s.ai_max_out_messages), { min: 1, max: 10 });
+    const max_out_messages = (maxOut === null) ? 3 : maxOut;
+
+    const msg_config_incomplete =
+      String(s.ai_error_msg_config || '').trim() || 'Config incompleta no painel (venice key/model/prompt).';
+    const msg_generic_error =
+      String(s.ai_error_msg_generic || '').trim() || 'Tive um erro aqui. Manda de novo?';
+    const msg_parse_error =
+      String(s.ai_error_msg_parse || '').trim() || 'Não entendi direito. Me manda de novo?';
+
+    function readDelay(prefix, defaults) {
+      const baseMin = clampInt(toNumberOrNull(s[`${prefix}_base_min_ms`]), { min: 0, max: 20000 }) ?? defaults.baseMin;
+      const baseMax = clampInt(toNumberOrNull(s[`${prefix}_base_max_ms`]), { min: 0, max: 20000 }) ?? defaults.baseMax;
+
+      const perCharMin = clampInt(toNumberOrNull(s[`${prefix}_per_char_min_ms`]), { min: 0, max: 500 }) ?? defaults.perCharMin;
+      const perCharMax = clampInt(toNumberOrNull(s[`${prefix}_per_char_max_ms`]), { min: 0, max: 500 }) ?? defaults.perCharMax;
+
+      const cap = clampInt(toNumberOrNull(s[`${prefix}_cap_ms`]), { min: 0, max: 60000 }) ?? defaults.cap;
+
+      const jitterMin = clampInt(toNumberOrNull(s[`${prefix}_jitter_min_ms`]), { min: 0, max: 20000 }) ?? defaults.jitterMin;
+      const jitterMax = clampInt(toNumberOrNull(s[`${prefix}_jitter_max_ms`]), { min: 0, max: 20000 }) ?? defaults.jitterMax;
+
+      const totalMin = clampInt(toNumberOrNull(s[`${prefix}_total_min_ms`]), { min: 0, max: 60000 }) ?? defaults.totalMin;
+      const totalMax = clampInt(toNumberOrNull(s[`${prefix}_total_max_ms`]), { min: 0, max: 60000 }) ?? defaults.totalMax;
+
+      return {
+        baseMin: Math.min(baseMin, baseMax),
+        baseMax: Math.max(baseMin, baseMax),
+        perCharMin: Math.min(perCharMin, perCharMax),
+        perCharMax: Math.max(perCharMin, perCharMax),
+        cap,
+        jitterMin: Math.min(jitterMin, jitterMax),
+        jitterMax: Math.max(jitterMin, jitterMax),
+        totalMin: Math.min(totalMin, totalMax),
+        totalMax: Math.max(totalMin, totalMax),
+      };
     }
 
-    function extractJsonObject(str) {
-        const s = String(str || '').trim();
-        if (s.startsWith('{') && s.endsWith('}')) return s;
+    const inboundDelay = readDelay('ai_in_delay', {
+      baseMin: 900,
+      baseMax: 1800,
+      perCharMin: 18,
+      perCharMax: 45,
+      cap: 5200,
+      jitterMin: 400,
+      jitterMax: 1600,
+      totalMin: 1600,
+      totalMax: 9500,
+    });
 
-        const first = s.indexOf('{');
-        const last = s.lastIndexOf('}');
-        if (first >= 0 && last > first) return s.slice(first, last + 1);
-        return null;
-    }
+    const outboundDelay = readDelay('ai_out_delay', {
+      baseMin: 450,
+      baseMax: 1200,
+      perCharMin: 22,
+      perCharMax: 55,
+      cap: 6500,
+      jitterMin: 250,
+      jitterMax: 1200,
+      totalMin: 900,
+      totalMax: 12000,
+    });
 
-    function safeParseAgentJson(raw) {
-        const jsonStr = extractJsonObject(raw);
-        if (!jsonStr) return { ok: false, data: null };
+    return {
+      venice_api_url,
+      temperature,
+      max_tokens,
+      timeoutMs,
+      stream,
+      venice_parameters,
+      userMessage,
+      max_out_messages,
+      msg_config_incomplete,
+      msg_generic_error,
+      msg_parse_error,
+      inboundDelay,
+      outboundDelay,
+    };
+  }
 
-        try {
-            const obj = JSON.parse(jsonStr);
-            if (!obj || typeof obj !== 'object') return { ok: false, data: null };
-            if (!Array.isArray(obj.messages)) return { ok: false, data: obj };
-            return { ok: true, data: obj };
-        } catch {
-            return { ok: false, data: null };
-        }
-    }
+  function normalizeAgentMessages(agent, { batchItems, fallbackReplyToWamid, maxOutMessages }) {
+    const valid = new Set(
+      (batchItems || [])
+        .map(b => String(b?.wamid || '').trim())
+        .filter(Boolean)
+    );
 
-    function normalizeReplyId(x) {
-        const r = String(x || '').trim();
-        return r ? r : null;
-    }
+    const raw = Array.isArray(agent?.messages) ? agent.messages : [];
+    const out = [];
 
-    function previewText(s, max = 120) {
-        const t = String(s || '').replace(/\s+/g, ' ').trim();
-        if (t.length <= max) return t;
-        return t.slice(0, max) + `... (len=${t.length})`;
-    }
-
-    function extractAround(haystack, needle, radius = 800) {
-        const s = String(haystack || '');
-        const n = String(needle || '');
-        const idx = s.indexOf(n);
-        if (idx < 0) return null;
-        const start = Math.max(0, idx - 80);
-        const end = Math.min(s.length, idx + radius);
-        return s.slice(start, end);
-    }
-
-    function normalizeAgentMessages(agent, { batchItems, fallbackReplyToWamid }) {
-        const valid = new Set(
-            (batchItems || [])
-                .map(b => String(b?.wamid || '').trim())
-                .filter(Boolean)
-        );
-
-        const raw = Array.isArray(agent?.messages) ? agent.messages : [];
-        const out = [];
-
-        for (const item of raw) {
-            // compat: formato antigo ["msg1", "msg2"]
-            if (typeof item === 'string') {
-                const text = item.trim();
-                if (!text) continue;
-                out.push({
-                    text,
-                    reply_to_wamid: fallbackReplyToWamid || null,
-                });
-                continue;
-            }
-
-            // novo formato [{text, reply_to_wamid}]
-            if (item && typeof item === 'object') {
-                const text = String(item.text || '').trim();
-                if (!text) continue;
-
-                let reply = normalizeReplyId(item.reply_to_wamid);
-                if (reply && !valid.has(reply)) reply = null; // ✅ só aceita wamid do batch
-
-                out.push({ text, reply_to_wamid: reply });
-            }
-        }
-
-        return out.slice(0, 3);
-    }
-
-    function renderSystemPrompt(template, factsObj, historicoStr, msgAtual, batchItems) {
-        const safeFacts = JSON.stringify(factsObj || {}, null, 2);
-        const safeHist = String(historicoStr || '');
-        const safeMsg = String(msgAtual || '');
-        const safeBatch = JSON.stringify(batchItems || [], null, 2);
-
-        return String(template || '')
-            .replace(/\{FACTS_JSON\}/g, safeFacts)
-            .replace(/\{HISTORICO\}/g, safeHist)
-            .replace(/\{MENSAGEM_ATUAL\}/g, safeMsg)
-            .replace(/\{BATCH_ITEMS_JSON\}/g, safeBatch); // ✅ NÍVEL 3
-    }
-
-    function buildFactsJson(st, inboundPhoneNumberId) {
-        const now = Date.now();
-        const lastTs = st?.last_user_ts ? st.last_user_ts : null;
-        const hoursSince = lastTs ? Math.max(0, (now - lastTs) / 3600000) : 0;
-
-        const totalUserMsgs = (st?.history || []).filter(x => x.role === 'user').length;
-        const status_lead = totalUserMsgs <= 1 ? 'NOVO' : 'EM_CONVERSA';
-
-        return {
-            status_lead,
-            horas_desde_ultima_mensagem_usuario: Math.round(hoursSince * 100) / 100,
-            motivo_interacao: 'RESPOSTA_USUARIO',
-            ja_comprou_vip: false,
-            lead_pediu_pra_parar: false,
-            meta_phone_number_id: inboundPhoneNumberId || st?.meta_phone_number_id || null,
-        };
-    }
-
-    // ===== delay humano =====
-    function randInt(min, max) {
-        const lo = Math.min(min, max);
-        const hi = Math.max(min, max);
-        return Math.floor(lo + Math.random() * (hi - lo + 1));
-    }
-    function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
-
-    async function humanDelayForInboundText(userText) {
-        const t = String(userText || '');
-        const chars = t.length;
-
-        const base = randInt(900, 1800);
-        const perChar = randInt(18, 45);
-        const reading = Math.min(chars * perChar, 5200);
-        const jitter = randInt(400, 1600);
-
-        let total = base + reading + jitter;
-        total = Math.max(1600, Math.min(9500, total));
-        await sleep(total);
-    }
-
-    async function humanDelayForOutboundText(outText) {
-        const t = String(outText || '');
-        const chars = t.length;
-
-        const base = randInt(450, 1200);
-        const perChar = randInt(22, 55);
-        const typing = Math.min(chars * perChar, 6500);
-        const jitter = randInt(250, 1200);
-
-        let total = base + typing + jitter;
-        total = Math.max(900, Math.min(12000, total));
-        await sleep(total);
-    }
-
-    // ===== LOG helpers (SEM depender de ENV) =====
-    function truncateForLog(s, max) {
-        const t = String(s || '');
-        if (t.length <= max) return t;
-        return t.slice(0, max) + `... (truncated chars=${t.length})`;
-    }
-
-    function logAiRequest({ wa_id, inboundPhoneNumberId, facts, historicoStr, msgParaPrompt, rendered, model, batchItems }) {
-        const histMax = 2500;
-        const msgMax = 2500;
-        const factsMax = 4000;
-
-        const sha = sha256Of(rendered || '');
-
-        aiLog(`[AI][REQUEST][${wa_id}] model=${model || ''} phone_number_id=${inboundPhoneNumberId || ''}`);
-        aiLog(`[AI][REQUEST][${wa_id}] SYSTEM_PROMPT (omitted) chars=${(rendered || '').length} sha256=${sha}`);
-
-        aiLog(`[AI][REQUEST][${wa_id}] FACTS_JSON:\n${truncateForLog(JSON.stringify(facts || {}, null, 2), factsMax)}`);
-        aiLog(`[AI][REQUEST][${wa_id}] HISTORICO_PREVIEW:\n${truncateForLog(historicoStr || '', histMax)}`);
-        aiLog(`[AI][REQUEST][${wa_id}] MENSAGEM_PARA_PROMPT:\n${truncateForLog(msgParaPrompt || '', msgMax)}`);
-
-        const batchMax = 4000;
-        const batch = Array.isArray(batchItems) ? batchItems : [];
-        aiLog(`[AI][REQUEST][${wa_id}] BATCH_ITEMS count=${batch.length}`);
-        aiLog(`[AI][REQUEST][${wa_id}] BATCH_ITEMS_JSON:\n${truncateForLog(JSON.stringify(batch, null, 2), batchMax)}`);
-
-        // resumo rápido pra bater o olho
-        const batchMini = batch.map((b, i) => ({
-            i,
-            wamid: String(b?.wamid || '').slice(0, 28) + '...',
-            text: previewText(b?.text || '', 80),
-            ts_ms: b?.ts_ms ?? null,
-        }));
-        aiLog(`[AI][REQUEST][${wa_id}] BATCH_ITEMS_MINI:\n${truncateForLog(JSON.stringify(batchMini, null, 2), 2200)}`);
-
-        // prova de que o rendered está carregando wamid (ou não)
-        const renderedStr = String(rendered || '');
-        const hasPlaceholder = renderedStr.includes('{BATCH_ITEMS_JSON}');
-        const anyWamidInRendered = batch.some(b => {
-            const w = String(b?.wamid || '').trim();
-            return w && renderedStr.includes(w);
+    for (const item of raw) {
+      // compat: formato antigo ["msg1", "msg2"]
+      if (typeof item === 'string') {
+        const text = item.trim();
+        if (!text) continue;
+        out.push({
+          text,
+          reply_to_wamid: fallbackReplyToWamid || null,
         });
-        aiLog(`[AI][REQUEST][${wa_id}] RENDER_CHECK placeholderLeft=${hasPlaceholder} containsAnyWamid=${anyWamidInRendered}`);
+        continue;
+      }
 
-        // opcional: printa só um trecho perto da palavra "BATCH" (não o prompt inteiro)
-        const batchSnippet = extractAround(renderedStr, 'BATCH', 1200);
-        if (batchSnippet) {
-            aiLog(`[AI][REQUEST][${wa_id}] RENDER_SNIPPET_NEAR_BATCH:\n${truncateForLog(batchSnippet, 1800)}`);
-        }
+      // novo formato [{text, reply_to_wamid}]
+      if (item && typeof item === 'object') {
+        const text = String(item.text || '').trim();
+        if (!text) continue;
 
-        aiLog(`[AI][REQUEST][${wa_id}] VENICE_MESSAGES:`);
-        aiLog(JSON.stringify([
-            { role: 'system', content: `[OMITTED] chars=${(rendered || '').length} sha256=${sha}` },
-            { role: 'user', content: 'Responda exatamente no formato JSON especificado.' },
-        ], null, 2));
+        let reply = normalizeReplyId(item.reply_to_wamid);
+        if (reply && !valid.has(reply)) reply = null; // ✅ só aceita wamid do batch
+
+        out.push({ text, reply_to_wamid: reply });
+      }
     }
 
-    async function callVeniceChat({ apiKey, model, systemPromptRendered, userId }) {
-        const url = 'https://api.venice.ai/api/v1/chat/completions';
+    const limit = Number.isFinite(maxOutMessages) ? maxOutMessages : 3;
+    return out.slice(0, Math.max(1, limit));
+  }
 
-        const body = {
-            model,
-            messages: [
-                { role: 'system', content: systemPromptRendered },
-                { role: 'user', content: 'Responda exatamente no formato JSON especificado.' },
-            ],
-            temperature: 0.7,
-            max_tokens: 700,
-            response_format: { type: 'json_object' },
-            user: userId || undefined,
-            venice_parameters: {
-                enable_web_search: 'off',
-                include_venice_system_prompt: false,
-                enable_web_citations: false,
-                enable_web_scraping: false,
-            },
-            stream: false,
-        };
+  function renderSystemPrompt(template, factsObj, historicoStr, msgAtual, batchItems) {
+    const safeFacts = JSON.stringify(factsObj || {}, null, 2);
+    const safeHist = String(historicoStr || '');
+    const safeMsg = String(msgAtual || '');
+    const safeBatch = JSON.stringify(batchItems || [], null, 2);
 
-        const r = await axios.post(url, body, {
-            headers: {
-                Authorization: `Bearer ${apiKey}`,
-                'Content-Type': 'application/json',
-            },
-            timeout: 60000,
-            validateStatus: () => true,
-        });
+    return String(template || '')
+      .replace(/\{FACTS_JSON\}/g, safeFacts)
+      .replace(/\{HISTORICO\}/g, safeHist)
+      .replace(/\{MENSAGEM_ATUAL\}/g, safeMsg)
+      .replace(/\{BATCH_ITEMS_JSON\}/g, safeBatch); // ✅ NÍVEL 3
+  }
 
-        aiLog(`[AI][RESPONSE] http=${r.status}`);
+  function buildFactsJson(st, inboundPhoneNumberId) {
+    const now = Date.now();
+    const lastTs = st?.last_user_ts ? st.last_user_ts : null;
+    const hoursSince = lastTs ? Math.max(0, (now - lastTs) / 3600000) : 0;
 
-        const content = r.data?.choices?.[0]?.message?.content ?? '';
-        aiLog(`[AI][RESPONSE][CONTENT]\n${content}`);
+    const totalUserMsgs = (st?.history || []).filter(x => x.role === 'user').length;
+    const status_lead = totalUserMsgs <= 1 ? 'NOVO' : 'EM_CONVERSA';
 
-        aiLog(JSON.stringify({
-            id: r.data?.id,
-            model: r.data?.model,
-            created: r.data?.created,
-            usage: r.data?.usage,
-            finish_reason: r.data?.choices?.[0]?.finish_reason,
-        }, null, 2));
+    return {
+      status_lead,
+      horas_desde_ultima_mensagem_usuario: Math.round(hoursSince * 100) / 100,
+      motivo_interacao: 'RESPOSTA_USUARIO',
+      ja_comprou_vip: false,
+      lead_pediu_pra_parar: false,
+      meta_phone_number_id: inboundPhoneNumberId || st?.meta_phone_number_id || null,
+    };
+  }
 
-        return { status: r.status, data: r.data };
+  // ===== delay humano =====
+  function randInt(min, max) {
+    const lo = Math.min(min, max);
+    const hi = Math.max(min, max);
+    return Math.floor(lo + Math.random() * (hi - lo + 1));
+  }
+  function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
+
+  async function humanDelayForInboundText(userText, cfg) {
+    const t = String(userText || '');
+    const chars = t.length;
+
+    const base = randInt(cfg.baseMin, cfg.baseMax);
+    const perChar = randInt(cfg.perCharMin, cfg.perCharMax);
+    const reading = Math.min(chars * perChar, cfg.cap);
+    const jitter = randInt(cfg.jitterMin, cfg.jitterMax);
+
+    let total = base + reading + jitter;
+    total = Math.max(cfg.totalMin, Math.min(cfg.totalMax, total));
+    await sleep(total);
+  }
+
+  async function humanDelayForOutboundText(outText, cfg) {
+    const t = String(outText || '');
+    const chars = t.length;
+
+    const base = randInt(cfg.baseMin, cfg.baseMax);
+    const perChar = randInt(cfg.perCharMin, cfg.perCharMax);
+    const typing = Math.min(chars * perChar, cfg.cap);
+    const jitter = randInt(cfg.jitterMin, cfg.jitterMax);
+
+    let total = base + typing + jitter;
+    total = Math.max(cfg.totalMin, Math.min(cfg.totalMax, total));
+    await sleep(total);
+  }
+
+  // ===== LOG helpers (SEM depender de ENV) =====
+  function truncateForLog(s, max) {
+    const t = String(s || '');
+    if (t.length <= max) return t;
+    return t.slice(0, max) + `... (truncated chars=${t.length})`;
+  }
+
+  function logAiRequest({ wa_id, inboundPhoneNumberId, facts, historicoStr, msgParaPrompt, rendered, model, batchItems, userMessage }) {
+    const histMax = 2500;
+    const msgMax = 2500;
+    const factsMax = 4000;
+
+    const sha = sha256Of(rendered || '');
+
+    aiLog(`[AI][REQUEST][${wa_id}] model=${model || ''} phone_number_id=${inboundPhoneNumberId || ''}`);
+    aiLog(`[AI][REQUEST][${wa_id}] SYSTEM_PROMPT (omitted) chars=${(rendered || '').length} sha256=${sha}`);
+
+    aiLog(`[AI][REQUEST][${wa_id}] FACTS_JSON:\n${truncateForLog(JSON.stringify(facts || {}, null, 2), factsMax)}`);
+    aiLog(`[AI][REQUEST][${wa_id}] HISTORICO_PREVIEW:\n${truncateForLog(historicoStr || '', histMax)}`);
+    aiLog(`[AI][REQUEST][${wa_id}] MENSAGEM_PARA_PROMPT:\n${truncateForLog(msgParaPrompt || '', msgMax)}`);
+
+    const batchMax = 4000;
+    const batch = Array.isArray(batchItems) ? batchItems : [];
+    aiLog(`[AI][REQUEST][${wa_id}] BATCH_ITEMS count=${batch.length}`);
+    aiLog(`[AI][REQUEST][${wa_id}] BATCH_ITEMS_JSON:\n${truncateForLog(JSON.stringify(batch, null, 2), batchMax)}`);
+
+    const batchMini = batch.map((b, i) => ({
+      i,
+      wamid: String(b?.wamid || '').slice(0, 28) + '...',
+      text: previewText(b?.text || '', 80),
+      ts_ms: b?.ts_ms ?? null,
+    }));
+    aiLog(`[AI][REQUEST][${wa_id}] BATCH_ITEMS_MINI:\n${truncateForLog(JSON.stringify(batchMini, null, 2), 2200)}`);
+
+    const renderedStr = String(rendered || '');
+    const hasPlaceholder = renderedStr.includes('{BATCH_ITEMS_JSON}');
+    const anyWamidInRendered = batch.some(b => {
+      const w = String(b?.wamid || '').trim();
+      return w && renderedStr.includes(w);
+    });
+    aiLog(`[AI][REQUEST][${wa_id}] RENDER_CHECK placeholderLeft=${hasPlaceholder} containsAnyWamid=${anyWamidInRendered}`);
+
+    const batchSnippet = extractAround(renderedStr, 'BATCH', 1200);
+    if (batchSnippet) {
+      aiLog(`[AI][REQUEST][${wa_id}] RENDER_SNIPPET_NEAR_BATCH:\n${truncateForLog(batchSnippet, 1800)}`);
     }
 
-    // ✅ função chamada pelo lead.flush (lead injetado pelo index.js)
-    async function handleInboundBlock({
-        wa_id,
-        inboundPhoneNumberId,
-        blocoText,
-        mensagemAtualBloco,
-        excludeWamids,
-        replyToWamid,
-        batch_items,
+    aiLog(`[AI][REQUEST][${wa_id}] VENICE_MESSAGES:`);
+    aiLog(JSON.stringify([
+      { role: 'system', content: `[OMITTED] chars=${(rendered || '').length} sha256=${sha}` },
+      { role: 'user', content: userMessage || 'Responda exatamente no formato JSON especificado.' },
+    ], null, 2));
+  }
 
-        // ✅ IMPLEMENTAÇÃO 1: snapshot do histórico (congelado no flush)
-        historicoStrSnapshot,
-        historyMaxTsMs,
+  async function callVeniceChat({ apiKey, model, systemPromptRendered, userId, cfg }) {
+    const url = cfg.venice_api_url;
 
-        lead,
-    }) {
-        if (!lead || typeof lead.getLead !== 'function') {
-            aiLog('[AI][ERROR] leadStore não foi injetado no handleInboundBlock');
-            return;
-        }
+    const body = {
+      model,
+      messages: [
+        { role: 'system', content: systemPromptRendered },
+        { role: 'user', content: cfg.userMessage },
+      ],
+      temperature: cfg.temperature,
+      max_tokens: cfg.max_tokens,
+      response_format: { type: 'json_object' },
+      user: userId || undefined,
+      venice_parameters: cfg.venice_parameters,
+      stream: !!cfg.stream,
+    };
 
-        const st = lead.getLead(wa_id);
-        if (!st) return;
+    const r = await axios.post(url, body, {
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        'Content-Type': 'application/json',
+      },
+      timeout: cfg.timeoutMs,
+      validateStatus: () => true,
+    });
 
-        const settings = global.botSettings || await db.getBotSettings();
-        const veniceApiKey = (settings?.venice_api_key || '').trim();
-        const veniceModel = (settings?.venice_model || '').trim();
-        const systemPromptTpl = (settings?.system_prompt || '').trim();
+    aiLog(`[AI][RESPONSE] http=${r.status}`);
 
-        if (!veniceApiKey || !veniceModel || !systemPromptTpl) {
-            await sendMessage(wa_id, 'Config incompleta no painel (venice key/model/prompt).', {
-                meta_phone_number_id: inboundPhoneNumberId || null,
-            });
-            return;
-        }
+    const content = r.data?.choices?.[0]?.message?.content ?? '';
+    aiLog(`[AI][RESPONSE][CONTENT]\n${content}`);
 
-        const bloco = String(blocoText || '').trim();
-        const atual = String(mensagemAtualBloco || '').trim();
+    aiLog(JSON.stringify({
+      id: r.data?.id,
+      model: r.data?.model,
+      created: r.data?.created,
+      usage: r.data?.usage,
+      finish_reason: r.data?.choices?.[0]?.finish_reason,
+    }, null, 2));
 
-        await humanDelayForInboundText(bloco || atual);
+    return { status: r.status, data: r.data };
+  }
 
-        const facts = buildFactsJson(st, inboundPhoneNumberId);
+  async function handleInboundBlock({
+    wa_id,
+    inboundPhoneNumberId,
+    blocoText,
+    mensagemAtualBloco,
+    excludeWamids,
+    replyToWamid,
+    batch_items,
 
-        // ✅ usa o snapshot se veio do flush; se não veio, cai no comportamento antigo
-        const historicoStr = (typeof historicoStrSnapshot === 'string')
-            ? historicoStrSnapshot
-            : lead.buildHistoryString(st, { excludeWamids });
+    historicoStrSnapshot,
+    historyMaxTsMs,
 
-        const msgParaPrompt = (bloco && atual && bloco !== atual)
-            ? `BLOCO_USUARIO:\n${bloco}\n\nMENSAGEM_ATUAL_BLOCO:\n${atual}`
-            : (atual || bloco);
-
-        const rendered = renderSystemPrompt(systemPromptTpl, facts, historicoStr, msgParaPrompt, batch_items);
-
-        // ✅ mantém seus logs atuais
-        aiLog(`[AI][CTX][${wa_id}] phone_number_id=${inboundPhoneNumberId || ''}`);
-
-        // ✅ extra: deixa explícito quando veio snapshot (não muda nada, só debug)
-        if (typeof historicoStrSnapshot === 'string') {
-            aiLog(`[AI][CTX][${wa_id}] historySnapshot=ON cutoffTsMs=${Number.isFinite(historyMaxTsMs) ? historyMaxTsMs : ''}`);
-        }
-
-        aiLog(`[AI][SYSTEM_PROMPT_RENDERED] (omitted) chars=${(rendered || '').length} sha256=${sha256Of(rendered || '')}`);
-
-        // ✅ loga exatamente “o que foi pra IA”
-        logAiRequest({
-            wa_id,
-            inboundPhoneNumberId,
-            facts,
-            historicoStr,
-            msgParaPrompt,
-            rendered,
-            model: veniceModel,
-            batchItems: batch_items, // ✅ AQUI
-        });
-
-        const venice = await callVeniceChat({
-            apiKey: veniceApiKey,
-            model: veniceModel,
-            systemPromptRendered: rendered,
-            userId: wa_id,
-        });
-
-        if (!venice || venice.status < 200 || venice.status >= 300) {
-            await sendMessage(wa_id, 'Tive um erro aqui. Manda de novo?', {
-                meta_phone_number_id: inboundPhoneNumberId || null,
-            });
-            return;
-        }
-
-        const content = venice?.data?.choices?.[0]?.message?.content || '';
-        const parsed = safeParseAgentJson(content);
-
-        if (!parsed.ok) {
-            await sendMessage(wa_id, 'Não entendi direito. Me manda de novo?', {
-                meta_phone_number_id: inboundPhoneNumberId || null,
-            });
-            return;
-        }
-
-        const agent = parsed.data;
-
-        // fallback: se IA mandar string, cita a última msg do batch (comportamento atual)
-        const fallbackReplyToWamid = String(replyToWamid || '').trim() || null;
-
-        const outItems = normalizeAgentMessages(agent, {
-            batchItems: batch_items,
-            fallbackReplyToWamid,
-        });
-
-        if (!outItems.length) return;
-
-        for (let i = 0; i < outItems.length; i++) {
-            const { text: msg, reply_to_wamid } = outItems[i];
-            if (i > 0) await humanDelayForOutboundText(msg);
-
-            const r = await sendMessage(wa_id, msg, {
-                meta_phone_number_id: inboundPhoneNumberId || null,
-                ...(reply_to_wamid ? { reply_to_wamid } : {}),
-            });
-
-            if (!r?.ok) {
-                aiLog(`[AI][SEND][${wa_id}] FAIL`, r);
-            }
-
-            if (r?.ok) {
-                lead.pushHistory(wa_id, 'assistant', msg, {
-                    kind: 'text',
-                    wamid: r.wamid || '',
-                    phone_number_id: r.phone_number_id || inboundPhoneNumberId || null,
-                    ts_ms: Date.now(),
-                    reply_to_wamid: reply_to_wamid || null, // opcional (ajuda debug)
-                });
-            }
-        }
+    lead,
+  }) {
+    if (!lead || typeof lead.getLead !== 'function') {
+      aiLog('[AI][ERROR] leadStore não foi injetado no handleInboundBlock');
+      return;
     }
 
-    return { handleInboundBlock };
+    const st = lead.getLead(wa_id);
+    if (!st) return;
+
+    const settings = global.botSettings || await db.getBotSettings();
+    const veniceApiKey = (settings?.venice_api_key || '').trim();
+    const veniceModel = (settings?.venice_model || '').trim();
+    const systemPromptTpl = (settings?.system_prompt || '').trim();
+
+    const cfg = readAiRuntimeConfig(settings);
+
+    if (!veniceApiKey || !veniceModel || !systemPromptTpl) {
+      await sendMessage(wa_id, cfg.msg_config_incomplete, {
+        meta_phone_number_id: inboundPhoneNumberId || null,
+      });
+      return;
+    }
+
+    const bloco = String(blocoText || '').trim();
+    const atual = String(mensagemAtualBloco || '').trim();
+
+    await humanDelayForInboundText(bloco || atual, cfg.inboundDelay);
+
+    const facts = buildFactsJson(st, inboundPhoneNumberId);
+
+    const historicoStr = (typeof historicoStrSnapshot === 'string')
+      ? historicoStrSnapshot
+      : lead.buildHistoryString(st, { excludeWamids });
+
+    const msgParaPrompt = (bloco && atual && bloco !== atual)
+      ? `BLOCO_USUARIO:\n${bloco}\n\nMENSAGEM_ATUAL_BLOCO:\n${atual}`
+      : (atual || bloco);
+
+    const rendered = renderSystemPrompt(systemPromptTpl, facts, historicoStr, msgParaPrompt, batch_items);
+
+    aiLog(`[AI][CTX][${wa_id}] phone_number_id=${inboundPhoneNumberId || ''}`);
+
+    if (typeof historicoStrSnapshot === 'string') {
+      aiLog(`[AI][CTX][${wa_id}] historySnapshot=ON cutoffTsMs=${Number.isFinite(historyMaxTsMs) ? historyMaxTsMs : ''}`);
+    }
+
+    aiLog(`[AI][SYSTEM_PROMPT_RENDERED] (omitted) chars=${(rendered || '').length} sha256=${sha256Of(rendered || '')}`);
+
+    logAiRequest({
+      wa_id,
+      inboundPhoneNumberId,
+      facts,
+      historicoStr,
+      msgParaPrompt,
+      rendered,
+      model: veniceModel,
+      batchItems: batch_items,
+      userMessage: cfg.userMessage,
+    });
+
+    const venice = await callVeniceChat({
+      apiKey: veniceApiKey,
+      model: veniceModel,
+      systemPromptRendered: rendered,
+      userId: wa_id,
+      cfg,
+    });
+
+    if (!venice || venice.status < 200 || venice.status >= 300) {
+      await sendMessage(wa_id, cfg.msg_generic_error, {
+        meta_phone_number_id: inboundPhoneNumberId || null,
+      });
+      return;
+    }
+
+    const content = venice?.data?.choices?.[0]?.message?.content || '';
+    const parsed = safeParseAgentJson(content);
+
+    if (!parsed.ok) {
+      await sendMessage(wa_id, cfg.msg_parse_error, {
+        meta_phone_number_id: inboundPhoneNumberId || null,
+      });
+      return;
+    }
+
+    const agent = parsed.data;
+
+    const fallbackReplyToWamid = String(replyToWamid || '').trim() || null;
+
+    const outItems = normalizeAgentMessages(agent, {
+      batchItems: batch_items,
+      fallbackReplyToWamid,
+      maxOutMessages: cfg.max_out_messages,
+    });
+
+    if (!outItems.length) return;
+
+    for (let i = 0; i < outItems.length; i++) {
+      const { text: msg, reply_to_wamid } = outItems[i];
+      if (i > 0) await humanDelayForOutboundText(msg, cfg.outboundDelay);
+
+      const r = await sendMessage(wa_id, msg, {
+        meta_phone_number_id: inboundPhoneNumberId || null,
+        ...(reply_to_wamid ? { reply_to_wamid } : {}),
+      });
+
+      if (!r?.ok) {
+        aiLog(`[AI][SEND][${wa_id}] FAIL`, r);
+      }
+
+      if (r?.ok) {
+        lead.pushHistory(wa_id, 'assistant', msg, {
+          kind: 'text',
+          wamid: r.wamid || '',
+          phone_number_id: r.phone_number_id || inboundPhoneNumberId || null,
+          ts_ms: Date.now(),
+          reply_to_wamid: reply_to_wamid || null,
+        });
+      }
+    }
+  }
+
+  return { handleInboundBlock };
 }
 
 module.exports = { createAiEngine };

@@ -53,9 +53,14 @@ async function bootstrapDb() {
   throw new Error('Falha ao iniciar DB');
 }
 
-const AI_DEBUG = true;
+function isAiDebugOn() {
+  const v = global.botSettings?.ai_debug;
+  if (v === undefined || v === null) return true; // default antigo
+  return !!v;
+}
+
 function aiLog(...args) {
-  if (!AI_DEBUG) return;
+  if (!isAiDebugOn()) return;
   console.log(...args);
 }
 
@@ -78,6 +83,24 @@ function readBatchingFromSettings(settings) {
   return { inboundDebounceMinMs, inboundDebounceMaxMs, inboundMaxWaitMs };
 }
 
+function readLeadFromSettings(settings) {
+  const s = settings || {};
+  const maxMsgs = Number(s.lead_max_msgs);
+  const ttlMs = Number(s.lead_ttl_ms);
+  const lateJoinWindowMs = Number(s.lead_late_join_window_ms);
+  const previewTextMaxLen = Number(s.lead_preview_text_max_len);
+
+  return {
+    maxMsgs: Number.isFinite(maxMsgs) ? maxMsgs : 50,
+    ttlMs: Number.isFinite(ttlMs) ? ttlMs : (7 * 24 * 60 * 60 * 1000),
+    lateJoinWindowMs: Number.isFinite(lateJoinWindowMs) ? lateJoinWindowMs : 350,
+    previewTextMaxLen: Number.isFinite(previewTextMaxLen) ? previewTextMaxLen : 80,
+    debugDebounce: (s.lead_debug_debounce === undefined || s.lead_debug_debounce === null)
+      ? true
+      : !!s.lead_debug_debounce,
+  };
+}
+
 (async () => {
   await bootstrapDb();
 
@@ -87,19 +110,22 @@ function readBatchingFromSettings(settings) {
     aiLog,
   });
 
-  let lead;
-
   // ✅ pega do DB (settings)
   const batching = readBatchingFromSettings(global.botSettings);
+  const leadCfg = readLeadFromSettings(global.botSettings);
 
-  lead = createLeadStore({
-    maxMsgs: 50,
-    ttlMs: 7 * 24 * 60 * 60 * 1000,
+  const lead = createLeadStore({
+    maxMsgs: leadCfg.maxMsgs,
+    ttlMs: leadCfg.ttlMs,
 
     inboundDebounceMinMs: batching.inboundDebounceMinMs,
     inboundDebounceMaxMs: batching.inboundDebounceMaxMs,
     inboundMaxWaitMs: batching.inboundMaxWaitMs,
-    debugDebounce: true,
+
+    lateJoinWindowMs: leadCfg.lateJoinWindowMs,
+    previewTextMaxLen: leadCfg.previewTextMaxLen,
+
+    debugDebounce: leadCfg.debugDebounce,
     debugLog: aiLog,
 
     onFlushBlock: async (payload) => {
