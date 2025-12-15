@@ -58,80 +58,29 @@ function clampFloat(n, { min, max } = {}) {
 
 async function initDatabase() {
   const client = await pool.connect();
+
   try {
+    await client.query('BEGIN');
+
+    // 1) garante tabela principal (mesmo que mínima)
     await client.query(`
-  UPDATE bot_settings
-     SET inbound_debounce_min_ms = COALESCE(inbound_debounce_min_ms, 1800),
-         inbound_debounce_max_ms = COALESCE(inbound_debounce_max_ms, 3200),
-         inbound_max_wait_ms     = COALESCE(inbound_max_wait_ms, 12000),
+      CREATE TABLE IF NOT EXISTS bot_settings (
+        id INTEGER PRIMARY KEY,
+        graph_api_access_token TEXT,
+        contact_token TEXT,
+        venice_api_key TEXT,
+        venice_model TEXT,
+        system_prompt TEXT,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      );
+    `);
 
-         ai_debug = COALESCE(ai_debug, TRUE),
+    // 2) garante colunas em bancos antigos (NÃO engole silenciosamente: loga aviso)
+    const alter = async (sql) =>
+      client.query(sql).catch((e) => {
+        console.warn('[DB][ALTER][SKIP]', { sql, code: e?.code, message: e?.message });
+      });
 
-         lead_max_msgs = COALESCE(lead_max_msgs, 50),
-         lead_ttl_ms = COALESCE(lead_ttl_ms, 604800000),
-         lead_debug_debounce = COALESCE(lead_debug_debounce, TRUE),
-         lead_late_join_window_ms = COALESCE(lead_late_join_window_ms, 350),
-         lead_preview_text_max_len = COALESCE(lead_preview_text_max_len, 80),
-
-         venice_api_url = COALESCE(venice_api_url, 'https://api.venice.ai/api/v1/chat/completions'),
-         venice_temperature = COALESCE(venice_temperature, 0.7),
-         venice_max_tokens = COALESCE(venice_max_tokens, 700),
-         venice_timeout_ms = COALESCE(venice_timeout_ms, 60000),
-         venice_stream = COALESCE(venice_stream, FALSE),
-         venice_user_message = COALESCE(venice_user_message, 'Responda exatamente no formato JSON especificado.'),
-
-         venice_enable_web_search = COALESCE(venice_enable_web_search, 'off'),
-         venice_include_venice_system_prompt = COALESCE(venice_include_venice_system_prompt, FALSE),
-         venice_enable_web_citations = COALESCE(venice_enable_web_citations, FALSE),
-         venice_enable_web_scraping = COALESCE(venice_enable_web_scraping, FALSE),
-
-         ai_max_out_messages = COALESCE(ai_max_out_messages, 3),
-         ai_error_msg_config = COALESCE(ai_error_msg_config, 'Config incompleta no painel (venice key/model/prompt).'),
-         ai_error_msg_generic = COALESCE(ai_error_msg_generic, 'Tive um erro aqui. Manda de novo?'),
-         ai_error_msg_parse = COALESCE(ai_error_msg_parse, 'Não entendi direito. Me manda de novo?'),
-
-         ai_in_delay_base_min_ms = COALESCE(ai_in_delay_base_min_ms, 900),
-         ai_in_delay_base_max_ms = COALESCE(ai_in_delay_base_max_ms, 1800),
-         ai_in_delay_per_char_min_ms = COALESCE(ai_in_delay_per_char_min_ms, 18),
-         ai_in_delay_per_char_max_ms = COALESCE(ai_in_delay_per_char_max_ms, 45),
-         ai_in_delay_cap_ms = COALESCE(ai_in_delay_cap_ms, 5200),
-         ai_in_delay_jitter_min_ms = COALESCE(ai_in_delay_jitter_min_ms, 400),
-         ai_in_delay_jitter_max_ms = COALESCE(ai_in_delay_jitter_max_ms, 1600),
-         ai_in_delay_total_min_ms = COALESCE(ai_in_delay_total_min_ms, 1600),
-         ai_in_delay_total_max_ms = COALESCE(ai_in_delay_total_max_ms, 9500),
-
-         ai_out_delay_base_min_ms = COALESCE(ai_out_delay_base_min_ms, 450),
-         ai_out_delay_base_max_ms = COALESCE(ai_out_delay_base_max_ms, 1200),
-         ai_out_delay_per_char_min_ms = COALESCE(ai_out_delay_per_char_min_ms, 22),
-         ai_out_delay_per_char_max_ms = COALESCE(ai_out_delay_per_char_max_ms, 55),
-         ai_out_delay_cap_ms = COALESCE(ai_out_delay_cap_ms, 6500),
-         ai_out_delay_jitter_min_ms = COALESCE(ai_out_delay_jitter_min_ms, 250),
-         ai_out_delay_jitter_max_ms = COALESCE(ai_out_delay_jitter_max_ms, 1200),
-         ai_out_delay_total_min_ms = COALESCE(ai_out_delay_total_min_ms, 900),
-         ai_out_delay_total_max_ms = COALESCE(ai_out_delay_total_max_ms, 12000),
-
-         eleven_model_id = COALESCE(eleven_model_id, 'eleven_v3'),
-         eleven_output_format = COALESCE(eleven_output_format, 'ogg_opus'),
-         eleven_use_speaker_boost = COALESCE(eleven_use_speaker_boost, FALSE),
-
-         voice_note_temperature = COALESCE(voice_note_temperature, 0.85),
-         voice_note_max_tokens = COALESCE(voice_note_max_tokens, 220),
-         voice_note_timeout_ms = COALESCE(voice_note_timeout_ms, 45000),
-         voice_note_history_max_items = COALESCE(voice_note_history_max_items, 10),
-         voice_note_history_max_chars = COALESCE(voice_note_history_max_chars, 1600),
-         voice_note_script_max_chars = COALESCE(voice_note_script_max_chars, 650),
-         voice_note_fallback_text = COALESCE(
-           voice_note_fallback_text,
-           '[whispers] Ei… me diz uma coisa… você tá me provocando ou eu tô imaginando? [mischievously]'
-         ),
-         voice_note_system_prompt = COALESCE(voice_note_system_prompt, ''),
-         voice_note_user_prompt = COALESCE(voice_note_user_prompt, '')
-   WHERE id = 1;
-`);
-
-
-    // ✅ garante colunas em bancos antigos
-    const alter = async (sql) => client.query(sql).catch(() => { });
     await alter(`ALTER TABLE bot_settings ADD COLUMN IF NOT EXISTS inbound_debounce_min_ms INTEGER;`);
     await alter(`ALTER TABLE bot_settings ADD COLUMN IF NOT EXISTS inbound_debounce_max_ms INTEGER;`);
     await alter(`ALTER TABLE bot_settings ADD COLUMN IF NOT EXISTS inbound_max_wait_ms INTEGER;`);
@@ -165,7 +114,6 @@ async function initDatabase() {
     await alter(`ALTER TABLE bot_settings ADD COLUMN IF NOT EXISTS eleven_voice_id TEXT;`);
     await alter(`ALTER TABLE bot_settings ADD COLUMN IF NOT EXISTS eleven_model_id TEXT;`);
     await alter(`ALTER TABLE bot_settings ADD COLUMN IF NOT EXISTS eleven_output_format TEXT;`);
-
     await alter(`ALTER TABLE bot_settings ADD COLUMN IF NOT EXISTS eleven_stability DOUBLE PRECISION;`);
     await alter(`ALTER TABLE bot_settings ADD COLUMN IF NOT EXISTS eleven_similarity_boost DOUBLE PRECISION;`);
     await alter(`ALTER TABLE bot_settings ADD COLUMN IF NOT EXISTS eleven_style DOUBLE PRECISION;`);
@@ -181,29 +129,24 @@ async function initDatabase() {
     await alter(`ALTER TABLE bot_settings ADD COLUMN IF NOT EXISTS voice_note_script_max_chars INTEGER;`);
     await alter(`ALTER TABLE bot_settings ADD COLUMN IF NOT EXISTS voice_note_fallback_text TEXT;`);
 
-
     const delayCols = [
-      'ai_in_delay_base_min_ms', 'ai_in_delay_base_max_ms', 'ai_in_delay_per_char_min_ms', 'ai_in_delay_per_char_max_ms',
-      'ai_in_delay_cap_ms', 'ai_in_delay_jitter_min_ms', 'ai_in_delay_jitter_max_ms', 'ai_in_delay_total_min_ms', 'ai_in_delay_total_max_ms',
-      'ai_out_delay_base_min_ms', 'ai_out_delay_base_max_ms', 'ai_out_delay_per_char_min_ms', 'ai_out_delay_per_char_max_ms',
-      'ai_out_delay_cap_ms', 'ai_out_delay_jitter_min_ms', 'ai_out_delay_jitter_max_ms', 'ai_out_delay_total_min_ms', 'ai_out_delay_total_max_ms',
+      'ai_in_delay_base_min_ms','ai_in_delay_base_max_ms','ai_in_delay_per_char_min_ms','ai_in_delay_per_char_max_ms',
+      'ai_in_delay_cap_ms','ai_in_delay_jitter_min_ms','ai_in_delay_jitter_max_ms','ai_in_delay_total_min_ms','ai_in_delay_total_max_ms',
+      'ai_out_delay_base_min_ms','ai_out_delay_base_max_ms','ai_out_delay_per_char_min_ms','ai_out_delay_per_char_max_ms',
+      'ai_out_delay_cap_ms','ai_out_delay_jitter_min_ms','ai_out_delay_jitter_max_ms','ai_out_delay_total_min_ms','ai_out_delay_total_max_ms',
     ];
     for (const c of delayCols) {
       await alter(`ALTER TABLE bot_settings ADD COLUMN IF NOT EXISTS ${c} INTEGER;`);
     }
 
-    await client.query(`
-      ALTER TABLE bot_settings
-      ADD CONSTRAINT bot_settings_singleton CHECK (id = 1) NOT VALID;
-    `).catch(() => { });
-
+    // 3) garante singleton id=1
     await client.query(`
       INSERT INTO bot_settings (id)
       VALUES (1)
       ON CONFLICT (id) DO NOTHING;
     `);
 
-    // ✅ defaults (mantém comportamento atual)
+    // 4) defaults (APENAS UMA VEZ, e com vírgulas corretas)
     await client.query(`
       UPDATE bot_settings
          SET inbound_debounce_min_ms = COALESCE(inbound_debounce_min_ms, 1800),
@@ -257,23 +200,26 @@ async function initDatabase() {
 
              eleven_model_id = COALESCE(eleven_model_id, 'eleven_v3'),
              eleven_output_format = COALESCE(eleven_output_format, 'ogg_opus'),
-             eleven_use_speaker_boost = COALESCE(eleven_use_speaker_boost, FALSE)
+             eleven_use_speaker_boost = COALESCE(eleven_use_speaker_boost, FALSE),
 
              voice_note_temperature = COALESCE(voice_note_temperature, 0.85),
-              voice_note_max_tokens = COALESCE(voice_note_max_tokens, 220),
-              voice_note_timeout_ms = COALESCE(voice_note_timeout_ms, 45000),
-              voice_note_history_max_items = COALESCE(voice_note_history_max_items, 10),
-              voice_note_history_max_chars = COALESCE(voice_note_history_max_chars, 1600),
-              voice_note_script_max_chars = COALESCE(voice_note_script_max_chars, 650),
-              voice_note_fallback_text = COALESCE(
-                voice_note_fallback_text,
-                '[whispers] Ei… me diz uma coisa… você tá me provocando ou eu tô imaginando? [mischievously]'
-              ),
-              voice_note_system_prompt = COALESCE(voice_note_system_prompt, ''),
-              voice_note_user_prompt = COALESCE(voice_note_user_prompt, ''),
+             voice_note_max_tokens = COALESCE(voice_note_max_tokens, 220),
+             voice_note_timeout_ms = COALESCE(voice_note_timeout_ms, 45000),
+             voice_note_history_max_items = COALESCE(voice_note_history_max_items, 10),
+             voice_note_history_max_chars = COALESCE(voice_note_history_max_chars, 1600),
+             voice_note_script_max_chars = COALESCE(voice_note_script_max_chars, 650),
+             voice_note_fallback_text = COALESCE(
+               voice_note_fallback_text,
+               '[whispers] Ei… me diz uma coisa… você tá me provocando ou eu tô imaginando? [mischievously]'
+             ),
+             voice_note_system_prompt = COALESCE(voice_note_system_prompt, ''),
+             voice_note_user_prompt = COALESCE(voice_note_user_prompt, ''),
+
+             updated_at = NOW()
        WHERE id = 1;
     `);
 
+    // 5) meta numbers
     await client.query(`
       CREATE TABLE IF NOT EXISTS bot_meta_numbers (
         id SERIAL PRIMARY KEY,
@@ -287,7 +233,17 @@ async function initDatabase() {
       );
     `);
 
+    await client.query('COMMIT');
     console.log('[DB] Tabelas (bot_settings, bot_meta_numbers) OK.');
+  } catch (err) {
+    await client.query('ROLLBACK').catch(() => {});
+    console.error('[DB][INIT][ERROR]', {
+      code: err?.code,
+      message: err?.message,
+      detail: err?.detail,
+      where: err?.where,
+    });
+    throw err;
   } finally {
     client.release();
   }

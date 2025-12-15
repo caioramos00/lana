@@ -50,6 +50,7 @@ async function bootstrapDb() {
       await new Promise(r => setTimeout(r, 1500 * attempt));
     }
   }
+  console.error('[DB][BOOTSTRAP][ERROR]', err);
   throw new Error('Falha ao iniciar DB');
 }
 
