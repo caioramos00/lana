@@ -1,175 +1,114 @@
-// enviar_audio.js
 const axios = require('axios');
 
-function safeStr(x) { return String(x || '').trim(); }
-
-function takeLast(arr, n) {
-  if (!Array.isArray(arr)) return [];
-  return arr.slice(Math.max(0, arr.length - n));
+function safeStr(x) {
+  return String(x || '').replace(/\s+/g, ' ').trim();
 }
 
-function compact(s, max = 260) {
-  const t = String(s || '').replace(/\s+/g, ' ').trim();
-  if (t.length <= max) return t;
-  return t.slice(0, max).trim() + '…';
-}
+function buildRecentChatContext(ctx, { maxItems = 10, maxChars = 1400 } = {}) {
+  try {
+    const st = ctx?.lead?.getLead?.(ctx.wa_id);
+    const hist = Array.isArray(st?.history) ? st.history : [];
+    const tail = hist.slice(-maxItems);
 
-function buildRecentContext(ctx) {
-  const waId = safeStr(ctx?.wa_id);
-  const st = ctx?.lead?.getLead ? ctx.lead.getLead(waId) : null;
-  const hist = Array.isArray(st?.history) ? st.history : [];
+    const lines = tail.map(m => {
+      const who = m.role === 'user' ? 'USER' : (m.role === 'assistant' ? 'ASSISTANT' : 'SYSTEM');
+      return `${who}: ${safeStr(m.text)}`;
+    }).filter(Boolean);
 
-  // pega um bloco recente do histórico
-  const lastHist = takeLast(hist, 14)
-    .filter(m => (m?.role === 'user' || m?.role === 'assistant') && safeStr(m?.text))
-    .map(m => {
-      const who = m.role === 'user' ? 'USER' : 'ASSISTANT';
-      return `${who}: ${compact(m.text, 220)}`;
-    });
-
-  // também tenta usar batch_items (quando existir) pra garantir “últimas mensagens do usuário”
-  const batch = Array.isArray(ctx?.batch_items) ? ctx.batch_items : (Array.isArray(ctx?.batchItems) ? ctx.batchItems : []);
-  const lastBatchUser = takeLast(batch, 6)
-    .map(b => safeStr(b?.text))
-    .filter(Boolean)
-    .map(t => `USER: ${compact(t, 220)}`);
-
-  const merged = [...lastHist, ...lastBatchUser]
-    .slice(-18) // limite final
-    .join('\n')
-    .trim();
-
-  // última msg do user (preferência: batch -> hist)
-  const lastUserFromBatch = takeLast(batch, 6).map(b => safeStr(b?.text)).filter(Boolean).slice(-1)[0] || '';
-  const lastUserFromHist = takeLast(hist.filter(m => m?.role === 'user'), 1).map(m => safeStr(m?.text))[0] || '';
-  const lastUser = lastUserFromBatch || lastUserFromHist || '';
-
-  return { mergedContext: merged, lastUser };
-}
-
-function clampPromptLen(t, { min = 260, max = 620 } = {}) {
-  let s = safeStr(t);
-
-  // garante um tamanho mínimo (v3 alpha tende a ficar melhor >250 chars) :contentReference[oaicite:2]{index=2}
-  if (s.length < min) {
-    s = (s + ' ' + 'Vem cá… me conta rapidinho o que você quer AGORA, sem enrolar.').trim();
+    let out = lines.join('\n');
+    if (out.length > maxChars) out = out.slice(out.length - maxChars);
+    return out;
+  } catch {
+    return '';
   }
-
-  if (s.length > max) {
-    // corta sem destruir a frase
-    s = s.slice(0, max);
-    const cut = Math.max(s.lastIndexOf('.'), s.lastIndexOf('!'), s.lastIndexOf('?'));
-    if (cut > 120) s = s.slice(0, cut + 1);
-    s = s.trim();
-  }
-
-  return s;
 }
 
-async function generateTtsTextWithVenice({ settings, contextText, lastUser, hint }) {
-  const veniceApiKey = safeStr(settings?.venice_api_key);
-  const veniceModel = safeStr(settings?.venice_model);
-  const veniceUrl = safeStr(settings?.venice_api_url) || 'https://api.venice.ai/api/v1/chat/completions';
+function extractModelText(resp) {
+  const content = resp?.data?.choices?.[0]?.message?.content;
+  return safeStr(content);
+}
 
-  if (!veniceApiKey || !veniceModel) return null;
+async function generateVoiceNoteScriptWithVenice(ctx) {
+  const settings = ctx?.settings || global.botSettings || null;
 
-  // System prompt focado em:
-  // - Tom “sexy/provocativo” (sem explicitão)
-  // - Audio tags do Eleven v3 em colchetes (auditivas) :contentReference[oaicite:3]{index=3}
-  // - Pontuação/pausas/ênfases :contentReference[oaicite:4]{index=4}
-  // - Tamanho >= 250 chars :contentReference[oaicite:5]{index=5}
-  const sys = `
-Você escreve um TEXTO curto para virar ÁUDIO (WhatsApp voice note) em PT-BR usando Eleven v3 (alpha).
+  const apiKey = safeStr(settings?.venice_api_key);
+  const model = safeStr(settings?.venice_model);
+  const url = safeStr(settings?.venice_api_url) || 'https://api.venice.ai/api/v1/chat/completions';
 
-OBJETIVO:
-Responder a última mensagem do usuário com um tom íntimo, confiante, “sexy” e provocativo — mas SEM ser explícito/pornográfico.
-Nada de conteúdo sexual explícito, nada envolvendo menores, nada de termos gráficos.
+  if (!apiKey || !model) return '';
 
-REGRAS DO TEXTO (importante para Eleven v3):
-- Entregue entre 280 e 520 caracteres (ideal: 1 parágrafo curto).
-- Use de 1 a 3 AUDIO TAGS EM COLCHETES, sempre auditivas, ex: [whispers], [sighs], [exhales], [laughs softly], [mischievously].
-- Use pontuação para ritmo: "..." para pausa curta e frases curtas.
-- Não use múltiplos speakers. Não use listas. Não use markdown.
-- Não diga que você é IA. Não cite “prompt”, “modelo”, “Eleven”, “Venice”.
-- Retorne SOMENTE o texto final do áudio.
+  const chat = buildRecentChatContext(ctx, { maxItems: 10, maxChars: 1600 });
 
-CONTEXTO RECENTE (conversa):
-${contextText || '(sem contexto)'}
+  // “Sexy/provocativa” = flerte + tensão + sussurros + pausas (sem explicitar sexo)
+  // E com audio tags e pontuação (best practices v3)
+  const system = `
+Você é roteirista de áudios curtos (voice note) para WhatsApp em PT-BR.
 
-ÚLTIMA MENSAGEM DO USUÁRIO:
-${lastUser || '(vazio)'}
+Objetivo:
+- Gerar UM único texto (curto) que será convertido em áudio no Eleven v3.
+- Tom: sedutor, provocativo, confiante, brincalhão (FLERTE), sem conteúdo sexual explícito.
+- Use audio tags do Eleven v3 em colchetes: ex: [whispers], [sighs], [mischievously], [laughs], etc.
+- Use pontuação e reticências (…) para ritmo e pausas.
+- Não diga que é IA. Não use markdown. Não use JSON. Não use palavrões.
+- 280 a 520 caracteres (ideal para ~4–8s).
+- Foque em responder o que o usuário disse por último, puxando o assunto e conduzindo a conversa.
+`.trim();
 
-INTENÇÃO/PISTA (se existir):
-${hint || '(nenhuma)'}
+  const user = `
+CONVERSA (recente):
+${chat || '(sem histórico suficiente)'}
+
+Tarefa:
+Gere o PRÓXIMO voice note do ASSISTANT para responder o USER agora.
+Retorne APENAS o texto final (com tags), nada mais.
 `.trim();
 
   const body = {
-    model: veniceModel,
+    model,
     messages: [
-      { role: 'system', content: sys },
-      { role: 'user', content: 'Escreva agora o texto do áudio.' },
+      { role: 'system', content: system },
+      { role: 'user', content: user },
     ],
-    temperature: 0.9,
+    temperature: 0.85,
     max_tokens: 220,
     stream: false,
   };
 
-  const r = await axios.post(veniceUrl, body, {
+  const r = await axios.post(url, body, {
     headers: {
-      Authorization: `Bearer ${veniceApiKey}`,
+      Authorization: `Bearer ${apiKey}`,
       'Content-Type': 'application/json',
     },
-    timeout: 20000,
+    timeout: 45000,
     validateStatus: () => true,
   });
 
-  if (r.status < 200 || r.status >= 300) return null;
+  if (r.status < 200 || r.status >= 300) return '';
 
-  const out = safeStr(r.data?.choices?.[0]?.message?.content);
-  return out || null;
+  const script = extractModelText(r);
+
+  // hard guard: se vier gigante, corta
+  if (!script) return '';
+  return script.slice(0, 650).trim();
 }
 
 module.exports = async function enviar_audio(ctx, payload) {
-  // ✅ aceita texto manual (quando você quiser forçar)
-  // - se payload vier vazio/sem texto => gera dinâmico com base na conversa
-  const raw =
-    (payload && typeof payload === 'object' && payload.text != null) ? String(payload.text) :
-    (typeof payload === 'string' ? String(payload) : '');
+  // 1) tenta usar texto explícito do payload
+  let raw = '';
+  if (payload && typeof payload === 'object') raw = payload.text;
+  if (typeof payload === 'string') raw = payload;
 
-  const hint = safeStr(
-    (payload && typeof payload === 'object' && payload.hint) ? payload.hint :
-    ''
-  );
+  let finalText = safeStr(raw);
 
-  const wantsAuto =
-    !safeStr(raw) ||
-    safeStr(raw).toLowerCase() === '__auto__' ||
-    safeStr(raw).toLowerCase() === 'auto';
-
-  const fallback = 'Posso te explicar rapidinho por áudio… me diz só uma coisa: o que você quer agora?';
-
-  let finalText = safeStr(raw) || fallback;
-
-  try {
-    if (wantsAuto) {
-      const settings = ctx?.settings || global.botSettings || (ctx?.db?.getBotSettings ? await ctx.db.getBotSettings() : null);
-
-      const { mergedContext, lastUser } = buildRecentContext(ctx);
-
-      const dyn = await generateTtsTextWithVenice({
-        settings,
-        contextText: mergedContext,
-        lastUser,
-        hint,
-      });
-
-      if (dyn) finalText = dyn;
-    }
-  } catch {
-    // silêncio: cai no fallback
+  // 2) se não veio texto, gera dinamicamente com base no histórico
+  if (!finalText) {
+    finalText = await generateVoiceNoteScriptWithVenice(ctx);
   }
 
-  finalText = clampPromptLen(finalText, { min: 260, max: 620 });
+  // 3) fallback (se Venice falhar)
+  if (!finalText) {
+    finalText = '[whispers] Ei… me diz uma coisa… você tá me provocando ou eu tô imaginando? [mischievously]';
+  }
 
   const r = await ctx.senders.sendTtsVoiceNote(ctx.wa_id, finalText, {
     meta_phone_number_id: ctx.inboundPhoneNumberId || null,

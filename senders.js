@@ -467,16 +467,45 @@ function resolveElevenConfig(settings, opts = {}) {
   // FORÇADO: sempre esse formato
   const outputFormat = 'opus_48000_32';
 
-  const stability =
-    (opts.stability != null ? Number(opts.stability) : numOpt(settings?.eleven_stability)) || 0.7;  // Ajuste para estabilidade mais fluida
+  const rawStability =
+    (opts.stability != null ? opts.stability : numOpt(settings?.eleven_stability));
+
+  const stability = isElevenV3Model(modelId)
+    ? normalizeElevenV3Stability(rawStability)
+    : (rawStability != null ? Number(rawStability) : null);
+
   const similarity_boost =
-    (opts.similarity_boost != null ? Number(opts.similarity_boost) : numOpt(settings?.eleven_similarity_boost)) || 0.9;  // Boost maior para uma voz mais humana
+    (opts.similarity_boost != null ? Number(opts.similarity_boost) : numOpt(settings?.eleven_similarity_boost));
   const style =
-    (opts.style != null ? Number(opts.style) : numOpt(settings?.eleven_style)) || 1.2;  // Estilo mais sensual e suave
+    (opts.style != null ? Number(opts.style) : numOpt(settings?.eleven_style));
   const use_speaker_boost =
     (opts.use_speaker_boost != null ? !!opts.use_speaker_boost : (settings?.eleven_use_speaker_boost != null ? !!settings.eleven_use_speaker_boost : null));
 
   return { apiKey, voiceId, modelId, outputFormat, stability, similarity_boost, style, use_speaker_boost };
+}
+
+function normalizeElevenV3Stability(raw) {
+  if (raw === undefined || raw === null) return null;
+
+  // aceita string também
+  const s = String(raw).trim().toLowerCase();
+  if (s === 'creative') return 0.0;
+  if (s === 'natural') return 0.5;
+  if (s === 'robust') return 1.0;
+
+  const n = Number(s);
+  if (!Number.isFinite(n)) return null;
+
+  // quantiza pro mais próximo: 0.0 / 0.5 / 1.0
+  if (n <= 0.25) return 0.0;
+  if (n <= 0.75) return 0.5;
+  return 1.0;
+}
+
+function isElevenV3Model(modelId) {
+  const m = String(modelId || '').toLowerCase();
+  // cobre "eleven_v3", "eleven_v3_alpha", etc
+  return m.includes('v3');
 }
 
 async function elevenTtsToTempFile(text, settings, opts = {}) {
