@@ -17,12 +17,10 @@ const app = express();
 app.use(express.json({ limit: '2mb' }));
 app.use(express.urlencoded({ extended: true, limit: '2mb' }));
 
-// ===== Views / Admin =====
 app.set('view engine', 'ejs');
 app.set('views', path.join(__dirname, 'views'));
 app.use('/public', express.static(path.join(__dirname, 'public')));
 
-// ✅ session middleware (tava faltando)
 app.use(session({
   secret: process.env.SESSION_SECRET || 'dev-secret',
   resave: false,
@@ -30,10 +28,8 @@ app.use(session({
   cookie: { secure: false },
 }));
 
-// ===== SSE =====
 app.use(sseRouter);
 
-// ===== Bootstrap DB + Settings em memória =====
 async function bootstrapDb() {
   let attempt = 0;
   while (attempt < 8) {
@@ -57,42 +53,58 @@ async function bootstrapDb() {
   throw new Error('Falha ao iniciar DB');
 }
 
-// ===== AI DEBUG =====
 const AI_DEBUG = true;
 function aiLog(...args) {
   if (!AI_DEBUG) return;
   console.log(...args);
 }
 
+function readBatchingFromSettings(settings) {
+  const s = settings || {};
+  const dMin = Number(s.inbound_debounce_min_ms);
+  const dMax = Number(s.inbound_debounce_max_ms);
+  const maxW = Number(s.inbound_max_wait_ms);
+
+  let inboundDebounceMinMs = Number.isFinite(dMin) ? dMin : 1800;
+  let inboundDebounceMaxMs = Number.isFinite(dMax) ? dMax : 3200;
+  let inboundMaxWaitMs     = Number.isFinite(maxW) ? maxW : 12000;
+
+  if (inboundDebounceMinMs > inboundDebounceMaxMs) {
+    const tmp = inboundDebounceMinMs;
+    inboundDebounceMinMs = inboundDebounceMaxMs;
+    inboundDebounceMaxMs = tmp;
+  }
+
+  return { inboundDebounceMinMs, inboundDebounceMaxMs, inboundMaxWaitMs };
+}
+
 (async () => {
   await bootstrapDb();
 
-  // AI engine (Venice + parse + envio)
   const ai = createAiEngine({
     db,
     sendMessage,
     aiLog,
   });
 
-  // ✅ a gente declara lead antes pra poder fechar no onFlushBlock
   let lead;
 
-  // Lead store (memória + batching) — chama ai quando “flush” acontecer
+  // ✅ pega do DB (settings)
+  const batching = readBatchingFromSettings(global.botSettings);
+
   lead = createLeadStore({
     maxMsgs: 50,
     ttlMs: 7 * 24 * 60 * 60 * 1000,
 
-    inboundDebounceMinMs: Number(process.env.INBOUND_DEBOUNCE_MIN_MS || 800),
-    inboundDebounceMaxMs: Number(process.env.INBOUND_DEBOUNCE_MAX_MS || 1500),
-    inboundMaxWaitMs: Number(process.env.INBOUND_MAX_WAIT_MS || 7000),
+    inboundDebounceMinMs: batching.inboundDebounceMinMs,
+    inboundDebounceMaxMs: batching.inboundDebounceMaxMs,
+    inboundMaxWaitMs: batching.inboundMaxWaitMs,
 
-    // ✅ AGORA chama a função REAL e injeta lead
     onFlushBlock: async (payload) => {
       return ai.handleInboundBlock({ ...payload, lead });
     },
   });
 
-  // Rotas (admin + webhook)
   registerRoutes(app, {
     db,
     lead,
