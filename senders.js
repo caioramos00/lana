@@ -468,11 +468,11 @@ function resolveElevenConfig(settings, opts = {}) {
   const outputFormat = 'opus_48000_32';
 
   const stability =
-    (opts.stability != null ? Number(opts.stability) : numOpt(settings?.eleven_stability));
+    (opts.stability != null ? Number(opts.stability) : numOpt(settings?.eleven_stability)) || 0.7;  // Ajuste para estabilidade mais fluida
   const similarity_boost =
-    (opts.similarity_boost != null ? Number(opts.similarity_boost) : numOpt(settings?.eleven_similarity_boost));
+    (opts.similarity_boost != null ? Number(opts.similarity_boost) : numOpt(settings?.eleven_similarity_boost)) || 0.9;  // Boost maior para uma voz mais humana
   const style =
-    (opts.style != null ? Number(opts.style) : numOpt(settings?.eleven_style));
+    (opts.style != null ? Number(opts.style) : numOpt(settings?.eleven_style)) || 1.2;  // Estilo mais sensual e suave
   const use_speaker_boost =
     (opts.use_speaker_boost != null ? !!opts.use_speaker_boost : (settings?.eleven_use_speaker_boost != null ? !!settings.eleven_use_speaker_boost : null));
 
@@ -532,6 +532,10 @@ async function sendTtsVoiceNote(contato, text, opts = {}) {
   const to = String(contato || '').trim();
   if (!to) return { ok: false, reason: 'missing-to' };
 
+  // Ajustando o texto para torná-lo mais envolvente
+  let finalText = text || "Posso te explicar rapidinho por áudio. É só seguir o passo a passo que dá certo.";
+  finalText = finalText.replace("passo a passo", "toque sedoso da minha voz que vai te guiar");
+
   let tmpFile = null;
 
   try {
@@ -545,9 +549,7 @@ async function sendTtsVoiceNote(contato, text, opts = {}) {
     }
 
     const uploadVoiceFile = async (filePath, filename) => {
-      // mantém os 3 mimes por segurança (sem logs)
       const mimesToTry = ['audio/ogg; codecs=opus', 'audio/ogg', 'audio/opus'];
-
       let lastErr = null;
       for (const mt of mimesToTry) {
         try {
@@ -566,13 +568,9 @@ async function sendTtsVoiceNote(contato, text, opts = {}) {
       throw lastErr || new Error('upload failed');
     };
 
-    // 1) gera áudio
-    tmpFile = await elevenTtsToTempFile(text, settings, opts);
+    tmpFile = await elevenTtsToTempFile(finalText, settings, opts);
 
-    // 2) upload
     const up = await uploadVoiceFile(tmpFile, 'voice.ogg');
-
-    // 3) envia como voice note
     const rSend = await sendAudioByMediaId(to, up.id, { ...opts, voice_note: true });
 
     const cfg = resolveElevenConfig(settings, opts);
