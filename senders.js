@@ -3,10 +3,15 @@
 // - Guarda em memória o phone_number_id do inbound por lead (pra responder sempre pelo mesmo)
 // - Resolve credenciais via bot_meta_numbers (token por número) e fallback em bot_settings.graph_api_access_token
 // - Publica no SSE via publishMessage
+//
+// + Definitivo: gera TTS (ElevenLabs) em OGG/Opus e envia como áudio (voice note)
 
 const axios = require('axios');
 const fs = require('fs');
 const path = require('path');
+const os = require('os');
+const crypto = require('crypto');
+
 const db = require('./db');
 const { publishMessage } = require('./stream/events-bus');
 
@@ -119,7 +124,6 @@ async function metaPostMessage({ phoneNumberId, token, version, payload }) {
 function guessAudioMime(filePath) {
   const ext = String(path.extname(filePath || '')).toLowerCase();
 
-  // formatos comuns pra teste
   if (ext === '.ogg' || ext === '.opus') return 'audio/ogg';
   if (ext === '.mp3') return 'audio/mpeg';
   if (ext === '.m4a') return 'audio/mp4';
@@ -127,7 +131,6 @@ function guessAudioMime(filePath) {
   if (ext === '.wav') return 'audio/wav';
   if (ext === '.amr') return 'audio/amr';
 
-  // fallback (a API pode rejeitar)
   return 'application/octet-stream';
 }
 
@@ -231,7 +234,6 @@ async function sendMessage(contato, texto, opts = {}) {
 
 // ======= SEND IMAGE (já existia) =======
 async function sendImage(contato, urlOrItems, captionOrOpts, opts = {}) {
-  // compat: sendImage(to, url, caption, opts) OU sendImage(to, [{url,caption}], opts)
   if (typeof captionOrOpts === 'object' && captionOrOpts) {
     opts = captionOrOpts;
     captionOrOpts = undefined;
@@ -308,7 +310,7 @@ async function sendImage(contato, urlOrItems, captionOrOpts, opts = {}) {
   }
 }
 
-// ======= SEND AUDIO (novo) =======
+// ======= SEND AUDIO (definitivo) =======
 async function sendAudioByMediaId(contato, mediaId, opts = {}) {
   const to = String(contato || '').trim();
   const id = String(mediaId || '').trim();
@@ -325,15 +327,11 @@ async function sendAudioByMediaId(contato, mediaId, opts = {}) {
 
     const replyTo = String(opts.reply_to_wamid || opts.replyToWamid || '').trim() || null;
 
-    const audioObj = { id };
-    // tentativa de “voice note” (se a API aceitar esse campo no seu setup)
-    if (opts.voice === true) audioObj.voice = true;
-
     const payload = {
       messaging_product: 'whatsapp',
       to,
       type: 'audio',
-      audio: audioObj,
+      audio: { id },
     };
 
     if (replyTo) payload.context = { message_id: replyTo };
@@ -387,20 +385,132 @@ async function sendAudioFromPath(contato, filePath, opts = {}) {
       mimeType,
     });
 
-    // tenta como “voice note” se você pediu
-    if (opts.tryVoice === true) {
-      const rVoice = await sendAudioByMediaId(to, up.id, { ...opts, voice: true });
-      if (rVoice?.ok) return { ...rVoice, uploaded_media_id: up.id, mimeType, filePath: fp, mode: 'voice' };
-
-      // fallback: manda sem voice
-      const rPlain = await sendAudioByMediaId(to, up.id, { ...opts, voice: false });
-      return { ...rPlain, uploaded_media_id: up.id, mimeType, filePath: fp, mode: 'plain_fallback', voice_error: rVoice?.error || null };
-    }
-
-    const r = await sendAudioByMediaId(to, up.id, { ...opts, voice: false });
-    return { ...r, uploaded_media_id: up.id, mimeType, filePath: fp, mode: 'plain' };
+    const r = await sendAudioByMediaId(to, up.id, opts);
+    return { ...r, uploaded_media_id: up.id, mimeType, filePath: fp };
   } catch (e) {
     return { ok: false, error: e?.message || String(e), filePath: fp };
+  }
+}
+
+// ======= ElevenLabs TTS -> OGG/Opus (Render-safe: usa /tmp) =======
+function resolveElevenConfig(settings, opts = {}) {
+  const apiKey =
+    String(opts.eleven_api_key || '').trim() ||
+    String(settings?.elevenlabs_api_key || '').trim() ||
+    String(process.env.ELEVENLABS_API_KEY || '').trim() ||
+    null;
+
+  const voiceId =
+    String(opts.eleven_voice_id || '').trim() ||
+    String(settings?.eleven_voice_id || '').trim() ||
+    String(process.env.ELEVENLABS_VOICE_ID || '').trim() ||
+    null;
+
+  const modelId =
+    String(opts.eleven_model_id || '').trim() ||
+    String(settings?.eleven_model_id || '').trim() ||
+    String(process.env.ELEVENLABS_MODEL_ID || '').trim() ||
+    'eleven_v3';
+
+  const outputFormat =
+    String(opts.eleven_output_format || '').trim() ||
+    String(settings?.eleven_output_format || '').trim() ||
+    String(process.env.ELEVENLABS_OUTPUT_FORMAT || '').trim() ||
+    'ogg_opus';
+
+  return { apiKey, voiceId, modelId, outputFormat };
+}
+
+async function elevenTtsToTempFile(text, settings, opts = {}) {
+  const t = String(text || '').trim();
+  if (!t) throw new Error('TTS: text vazio');
+
+  const { apiKey, voiceId, modelId, outputFormat } = resolveElevenConfig(settings, opts);
+  if (!apiKey) throw new Error('TTS: faltou ELEVENLABS_API_KEY (env ou settings)');
+  if (!voiceId) throw new Error('TTS: faltou ELEVENLABS_VOICE_ID (env ou settings)');
+
+  const url = `https://api.elevenlabs.io/v1/text-to-speech/${encodeURIComponent(voiceId)}?output_format=${encodeURIComponent(outputFormat)}`;
+
+  const body = {
+    text: t,
+    model_id: modelId,
+  };
+
+  // opcionais (se você quiser controlar “pegada” da voz)
+  const voice_settings = {};
+  if (opts.stability != null) voice_settings.stability = Number(opts.stability);
+  if (opts.similarity_boost != null) voice_settings.similarity_boost = Number(opts.similarity_boost);
+  if (opts.style != null) voice_settings.style = Number(opts.style);
+  if (opts.use_speaker_boost != null) voice_settings.use_speaker_boost = !!opts.use_speaker_boost;
+  if (Object.keys(voice_settings).length) body.voice_settings = voice_settings;
+
+  const r = await axios.post(url, body, {
+    headers: {
+      'Content-Type': 'application/json',
+      // header padrão da ElevenLabs
+      'xi-api-key': apiKey,
+      // dica: alguns setups respeitam Accept, mas o output_format já manda o formato
+      'Accept': 'audio/ogg',
+    },
+    responseType: 'arraybuffer',
+    timeout: 60000,
+    validateStatus: () => true,
+  });
+
+  if (r.status < 200 || r.status >= 300) {
+    const msg = (typeof r.data === 'string' ? r.data : '') || '';
+    throw new Error(`ElevenLabs HTTP ${r.status} ${msg.slice(0, 400)}`);
+  }
+
+  const buf = Buffer.from(r.data);
+
+  const name = `tts_${Date.now()}_${crypto.randomUUID()}.ogg`;
+  const outPath = path.join(os.tmpdir(), name);
+
+  fs.writeFileSync(outPath, buf);
+  return outPath;
+}
+
+async function sendTtsVoiceNote(contato, text, opts = {}) {
+  const to = String(contato || '').trim();
+  if (!to) return { ok: false, reason: 'missing-to' };
+
+  let tmpFile = null;
+
+  try {
+    const settings = await getSettings();
+    const { phoneNumberId, token } = await resolveMetaCredentialsForContato(to, settings, opts);
+
+    if (!phoneNumberId || !token) {
+      return { ok: false, reason: 'missing-meta-credentials', phone_number_id: phoneNumberId || null };
+    }
+
+    // 1) gera OGG/Opus em /tmp
+    tmpFile = await elevenTtsToTempFile(text, settings, opts);
+
+    // 2) upload na Meta (tipo certo)
+    const up = await metaUploadMediaFromPath({
+      phoneNumberId,
+      token,
+      version: settings?.meta_api_version || 'v24.0',
+      filePath: tmpFile,
+      mimeType: 'audio/ogg',
+    });
+
+    // 3) envia audio referenciando media id
+    const rSend = await sendAudioByMediaId(to, up.id, opts);
+
+    return {
+      ...rSend,
+      tts: { provider: 'elevenlabs', voice_id: resolveElevenConfig(settings, opts).voiceId, model_id: resolveElevenConfig(settings, opts).modelId, output_format: resolveElevenConfig(settings, opts).outputFormat },
+      uploaded_media_id: up.id,
+    };
+  } catch (e) {
+    return { ok: false, error: e?.message || String(e) };
+  } finally {
+    if (tmpFile) {
+      try { fs.unlinkSync(tmpFile); } catch { /* ignore */ }
+    }
   }
 }
 
@@ -410,7 +520,10 @@ module.exports = {
   sendMessage,
   sendImage,
 
-  // novos exports
+  // áudio
   sendAudioByMediaId,
   sendAudioFromPath,
+
+  // definitivo: TTS -> voice note
+  sendTtsVoiceNote,
 };

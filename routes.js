@@ -1,6 +1,5 @@
 const path = require('path');
-const fs = require('fs');
-const { sendMessage, sendAudioFromPath } = require('./senders');
+const { sendMessage } = require('./senders');
 
 function registerRoutes(app, {
   db,
@@ -15,74 +14,6 @@ function registerRoutes(app, {
   function checkAuth(req, res, next) {
     if (req.session?.loggedIn) return next();
     return res.redirect('/login');
-  }
-
-  // ====== TESTE AUDIO helpers ======
-  function normalizeCmd(s) {
-    return String(s || '').trim().replace(/\s+/g, ' ').toUpperCase();
-  }
-
-  function listAudioFilesInTemp() {
-    const dir = path.join(__dirname, 'temp');
-    if (!fs.existsSync(dir)) return { dir, files: [], missing: true };
-
-    const all = fs.readdirSync(dir).map(x => String(x || '')).filter(Boolean);
-    const files = all.filter((name) => {
-      const ext = path.extname(name).toLowerCase();
-      return ['.ogg', '.opus', '.mp3', '.m4a', '.aac', '.wav', '.amr'].includes(ext);
-    }).sort((a, b) => a.localeCompare(b, 'pt-BR'));
-
-    return { dir, files, missing: false };
-  }
-
-  async function runTesteAudio({ wa_id, inboundPhoneNumberId, replyToWamid }) {
-    const { dir, files, missing } = listAudioFilesInTemp();
-
-    // msg curta só pra você saber que o comando bateu
-    await sendMessage(wa_id, 'ok. testando áudio', {
-      meta_phone_number_id: inboundPhoneNumberId || null,
-      reply_to_wamid: replyToWamid || null,
-    });
-
-    if (missing) {
-      await sendMessage(wa_id, `pasta /temp não existe (${dir})`, {
-        meta_phone_number_id: inboundPhoneNumberId || null,
-        reply_to_wamid: replyToWamid || null,
-      });
-      return;
-    }
-
-    if (!files.length) {
-      await sendMessage(wa_id, 'pasta /temp tá vazia (sem áudios suportados)', {
-        meta_phone_number_id: inboundPhoneNumberId || null,
-        reply_to_wamid: replyToWamid || null,
-      });
-      return;
-    }
-
-    // envia todos os arquivos
-    for (let i = 0; i < files.length; i++) {
-      const name = files[i];
-      const abs = path.join(dir, name);
-
-      // tenta “voice note” primeiro (se a API aceitar). se não aceitar, cai no plain automaticamente.
-      const r = await sendAudioFromPath(wa_id, abs, {
-        meta_phone_number_id: inboundPhoneNumberId || null,
-        reply_to_wamid: replyToWamid || null,
-        tryVoice: true,
-      });
-
-      // log mínimo (terminal)
-      console.log(`[TESTE_AUDIO][${wa_id}] file=${name} ok=${!!r?.ok} mode=${r?.mode || ''} err=${r?.error || ''}`);
-
-      // espaça um pouco
-      await new Promise(r => setTimeout(r, 650));
-    }
-
-    await sendMessage(wa_id, `fim. enviei ${files.length} áudio(s) da /temp`, {
-      meta_phone_number_id: inboundPhoneNumberId || null,
-      reply_to_wamid: replyToWamid || null,
-    });
   }
 
   app.get(['/', '/login'], (req, res) => res.sendFile(path.join(__dirname, 'public', 'login.html')));
@@ -250,24 +181,8 @@ function registerRoutes(app, {
 
             publishState({ wa_id, etapa: 'RECEBIDO', vars: { kind: type }, ts: Date.now() });
 
-            // ====== COMANDO: TESTE AUDIO ======
+            // fluxo normal (sem comandos de teste)
             if (type === 'text') {
-              const cmd = normalizeCmd(text);
-              if (cmd === 'TESTE AUDIO' || cmd === 'TESTE ÁUDIO') {
-                publishState({ wa_id, etapa: 'TESTE_AUDIO', vars: { cmd }, ts: Date.now() });
-
-                // roda async (webhook já respondeu 200)
-                runTesteAudio({
-                  wa_id,
-                  inboundPhoneNumberId,
-                  replyToWamid: wamid,
-                }).catch(() => {});
-
-                // não manda pro batching/IA
-                continue;
-              }
-
-              // fluxo normal
               lead.enqueueInboundText({
                 wa_id,
                 inboundPhoneNumberId,
