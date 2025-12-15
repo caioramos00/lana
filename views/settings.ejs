@@ -65,6 +65,30 @@
           </textarea>
         </div>
 
+        <hr class="my-3" />
+
+        <div class="col-12">
+          <h3 class="mt-3">Debounce</h3>
+        </div>
+
+        <div class="col-md-4">
+          <label class="form-label">Debounce Min (ms)</label>
+          <input type="number" class="form-control" name="inbound_debounce_min_ms"
+            value="<%= (settings?.inbound_debounce_min_ms ?? 1800) %>" min="200" max="15000" step="50">
+        </div>
+
+        <div class="col-md-4">
+          <label class="form-label">Debounce Max (ms)</label>
+          <input type="number" class="form-control" name="inbound_debounce_max_ms"
+            value="<%= (settings?.inbound_debounce_max_ms ?? 3200) %>" min="200" max="20000" step="50">
+        </div>
+
+        <div class="col-md-4">
+          <label class="form-label">Max Wait (ms)</label>
+          <input type="number" class="form-control" name="inbound_max_wait_ms"
+            value="<%= (settings?.inbound_max_wait_ms ?? 12000) %>" min="500" max="60000" step="100">
+        </div>
+
         <div class="col-12 mt-2">
           <button class="btn btn-primary">Salvar</button>
           <a class="btn btn-outline-secondary" href="/logout">Sair</a>
@@ -72,36 +96,6 @@
       </form>
 
       <hr class="my-4" />
-
-      <div class="col-12">
-        <h3 class="mt-3">Agrupamento de Mensagens (Janela do Bloco)</h3>
-        <div class="form-text">
-          Isso controla quando o bot “espera um pouco” pra juntar mensagens enviadas em sequência antes de chamar a IA.
-        </div>
-      </div>
-
-      <div class="col-md-4">
-        <label class="form-label">Debounce Min (ms)</label>
-        <input type="number" class="form-control" name="inbound_debounce_min_ms"
-          value="<%= (settings?.inbound_debounce_min_ms ?? 1800) %>" min="200" max="15000" step="50">
-        <div class="form-text">Tempo mínimo de silêncio pra fechar o bloco.</div>
-      </div>
-
-      <div class="col-md-4">
-        <label class="form-label">Debounce Max (ms)</label>
-        <input type="number" class="form-control" name="inbound_debounce_max_ms"
-          value="<%= (settings?.inbound_debounce_max_ms ?? 3200) %>" min="200" max="20000" step="50">
-        <div class="form-text">Tempo máximo (aleatório) de silêncio pra fechar o bloco.</div>
-      </div>
-
-      <div class="col-md-4">
-        <label class="form-label">Max Wait (ms)</label>
-        <input type="number" class="form-control" name="inbound_max_wait_ms"
-          value="<%= (settings?.inbound_max_wait_ms ?? 12000) %>" min="500" max="60000" step="100">
-        <div class="form-text">Se o lead não parar de digitar, força o flush após esse tempo.</div>
-      </div>
-
-      <hr class="my-3" />
 
       <!-- NÚMEROS META -->
       <div id="meta-settings">
