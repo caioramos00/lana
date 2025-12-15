@@ -12,215 +12,227 @@
 
   <% if (ok) { %>
     <div class="alert alert-success">Configurações salvas com sucesso.</div>
-  <% } %>
+    <% } %>
 
-  <!-- FORM PRINCIPAL: settings do bot (somente o necessário) -->
-  <form method="POST" action="/admin/settings" class="row g-3">
+      <!-- FORM PRINCIPAL: settings do bot (somente o necessário) -->
+      <form method="POST" action="/admin/settings" class="row g-3">
 
-    <!-- Configurações Globais -->
-    <div class="col-12">
-      <h3 class="mt-3">Configurações Globais</h3>
-    </div>
+        <!-- Configurações Globais -->
+        <div class="col-12">
+          <h3 class="mt-3">Configurações Globais</h3>
+        </div>
 
-    <div class="col-12">
-      <label class="form-label">Graph API Access Token</label>
-      <input type="text" class="form-control" name="graph_api_access_token"
-        value="<%= settings?.graph_api_access_token || '' %>"
-        placeholder="EAAB...">
-      <div class="form-text">Token usado para chamadas na Graph API (se aplicável). Os números Meta podem ter token próprio.</div>
-    </div>
+        <div class="col-12">
+          <label class="form-label">Graph API Access Token</label>
+          <input type="text" class="form-control" name="graph_api_access_token"
+            value="<%= settings?.graph_api_access_token || '' %>" placeholder="EAAB...">
+          <div class="form-text">Token usado para chamadas na Graph API (se aplicável). Os números Meta podem ter token
+            próprio.</div>
+        </div>
 
-    <div class="col-12">
-      <label class="form-label">Verify Token (Webhook)</label>
-      <!-- mantém name="contact_token" pq seu backend/db.js usa esse campo -->
-      <input type="text" class="form-control" name="contact_token"
-        value="<%= settings?.contact_token || '' %>"
-        placeholder="qualquer string (igual ao configurado no Meta)">
-      <div class="form-text">Esse valor precisa bater com o <code>hub.verify_token</code> configurado no Webhook da Meta.</div>
-    </div>
+        <div class="col-12">
+          <label class="form-label">Verify Token (Webhook)</label>
+          <!-- mantém name="contact_token" pq seu backend/db.js usa esse campo -->
+          <input type="text" class="form-control" name="contact_token" value="<%= settings?.contact_token || '' %>"
+            placeholder="qualquer string (igual ao configurado no Meta)">
+          <div class="form-text">Esse valor precisa bater com o <code>hub.verify_token</code> configurado no Webhook da
+            Meta.</div>
+        </div>
 
-    <hr class="my-3" />
+        <hr class="my-3" />
 
-    <!-- Configurações Venice.ai -->
-    <div class="col-12">
-      <h3 class="mt-3">Configurações Venice.ai</h3>
-    </div>
+        <!-- Configurações Venice.ai -->
+        <div class="col-12">
+          <h3 class="mt-3">Configurações Venice.ai</h3>
+        </div>
 
-    <div class="col-12">
-      <label class="form-label">Venice API Key</label>
-      <input type="text" class="form-control" name="venice_api_key"
-        value="<%= settings?.venice_api_key || '' %>"
-        placeholder="vnc_...">
-    </div>
+        <div class="col-12">
+          <label class="form-label">Venice API Key</label>
+          <input type="text" class="form-control" name="venice_api_key" value="<%= settings?.venice_api_key || '' %>"
+            placeholder="vnc_...">
+        </div>
 
-    <div class="col-12">
-      <label class="form-label">Venice Model</label>
-      <input type="text" class="form-control" name="venice_model"
-        value="<%= settings?.venice_model || '' %>"
-        placeholder="ex.: llama-3.1-...">
-    </div>
+        <div class="col-12">
+          <label class="form-label">Venice Model</label>
+          <input type="text" class="form-control" name="venice_model" value="<%= settings?.venice_model || '' %>"
+            placeholder="ex.: llama-3.1-...">
+        </div>
 
-    <div class="col-12">
-      <label class="form-label">System Prompt</label>
-      <textarea class="form-control" name="system_prompt" rows="10"
-        placeholder="Cole aqui o prompt do agente..."><%= settings?.system_prompt || '' %></textarea>
-    </div>
+        <div class="col-12">
+          <label class="form-label">System Prompt</label>
+          <textarea class="form-control" name="system_prompt" rows="10" placeholder="Cole aqui o prompt do agente...">
+            <%= settings?.system_prompt || '' %>
+          </textarea>
+        </div>
 
-    <div class="col-12 mt-2">
-      <button class="btn btn-primary">Salvar</button>
-      <a class="btn btn-outline-secondary" href="/logout">Sair</a>
-    </div>
-  </form>
+        <div class="col-12 mt-2">
+          <button class="btn btn-primary">Salvar</button>
+          <a class="btn btn-outline-secondary" href="/logout">Sair</a>
+        </div>
+      </form>
 
-  <hr class="my-4" />
+      <hr class="my-4" />
 
-  <!-- NÚMEROS META -->
-  <div id="meta-settings">
-    <h3 class="mt-3">Números WhatsApp Cloud (Meta)</h3>
+      <div class="col-12">
+        <h3 class="mt-3">Agrupamento de Mensagens (Janela do Bloco)</h3>
+        <div class="form-text">
+          Isso controla quando o bot “espera um pouco” pra juntar mensagens enviadas em sequência antes de chamar a IA.
+        </div>
+      </div>
 
-    <table class="table table-sm align-middle">
-      <thead>
-        <tr>
-          <th style="min-width: 170px;">Número</th>
-          <th style="min-width: 210px;">Phone Number ID</th>
-          <th>Access Token</th>
-          <th style="min-width: 140px;">Label (opcional)</th>
-          <th class="text-center" style="width: 70px;">Ativo?</th>
-          <th style="width: 160px;"></th>
-        </tr>
-      </thead>
-      <tbody>
-        <% const metaList = (typeof metaNumbers !== 'undefined' && metaNumbers) ? metaNumbers : []; %>
+      <div class="col-md-4">
+        <label class="form-label">Debounce Min (ms)</label>
+        <input type="number" class="form-control" name="inbound_debounce_min_ms"
+          value="<%= (settings?.inbound_debounce_min_ms ?? 1800) %>" min="200" max="15000" step="50">
+        <div class="form-text">Tempo mínimo de silêncio pra fechar o bloco.</div>
+      </div>
 
-        <% if (metaList.length) { %>
-          <% metaList.forEach(function(n) { %>
+      <div class="col-md-4">
+        <label class="form-label">Debounce Max (ms)</label>
+        <input type="number" class="form-control" name="inbound_debounce_max_ms"
+          value="<%= (settings?.inbound_debounce_max_ms ?? 3200) %>" min="200" max="20000" step="50">
+        <div class="form-text">Tempo máximo (aleatório) de silêncio pra fechar o bloco.</div>
+      </div>
+
+      <div class="col-md-4">
+        <label class="form-label">Max Wait (ms)</label>
+        <input type="number" class="form-control" name="inbound_max_wait_ms"
+          value="<%= (settings?.inbound_max_wait_ms ?? 12000) %>" min="500" max="60000" step="100">
+        <div class="form-text">Se o lead não parar de digitar, força o flush após esse tempo.</div>
+      </div>
+
+      <hr class="my-3" />
+
+      <!-- NÚMEROS META -->
+      <div id="meta-settings">
+        <h3 class="mt-3">Números WhatsApp Cloud (Meta)</h3>
+
+        <table class="table table-sm align-middle">
+          <thead>
             <tr>
-              <form method="post" action="/admin/settings/meta/save">
-                <td>
-                  <input type="hidden" name="id" value="<%= n.id %>">
-                  <input type="text" class="form-control form-control-sm"
-                    name="display_phone_number"
-                    value="<%= n.display_phone_number || '' %>"
-                    placeholder="+55 11 99999-9999">
-                </td>
-                <td>
-                  <input type="text" class="form-control form-control-sm"
-                    name="phone_number_id"
-                    value="<%= n.phone_number_id || '' %>"
-                    placeholder="phone_number_id"
-                    required>
-                </td>
-                <td>
-                  <input type="text" class="form-control form-control-sm"
-                    name="access_token"
-                    value="<%= n.access_token || '' %>"
-                    placeholder="Access Token"
-                    required>
-                </td>
-                <td>
-                  <input type="text" class="form-control form-control-sm"
-                    name="label"
-                    value="<%= n.label || '' %>"
-                    placeholder="ex.: Conta 1">
-                </td>
-                <td class="text-center">
-                  <input class="form-check-input" type="checkbox" name="active" <%= n.active ? 'checked' : '' %> />
-                </td>
-                <td class="text-end">
-                  <button type="submit" class="btn btn-sm btn-primary me-1">Salvar</button>
-                  <button type="submit" class="btn btn-sm btn-outline-danger"
-                    formaction="/admin/settings/meta/delete"
-                    onclick="return confirm('Remover este número?');">
-                    Remover
-                  </button>
-                </td>
-              </form>
+              <th style="min-width: 170px;">Número</th>
+              <th style="min-width: 210px;">Phone Number ID</th>
+              <th>Access Token</th>
+              <th style="min-width: 140px;">Label (opcional)</th>
+              <th class="text-center" style="width: 70px;">Ativo?</th>
+              <th style="width: 160px;"></th>
             </tr>
-          <% }); %>
-        <% } else { %>
-          <tr>
-            <td colspan="6" class="text-muted">Nenhum número cadastrado</td>
-          </tr>
-        <% } %>
+          </thead>
+          <tbody>
+            <% const metaList=(typeof metaNumbers !=='undefined' && metaNumbers) ? metaNumbers : []; %>
 
-        <!-- Linha para adicionar novo número -->
-        <tr>
-          <form method="post" action="/admin/settings/meta/save">
-            <td>
-              <input type="hidden" name="id" value="">
-              <input type="text" class="form-control form-control-sm"
-                name="display_phone_number"
-                placeholder="+55 11 99999-9999">
-            </td>
-            <td>
-              <input type="text" class="form-control form-control-sm"
-                name="phone_number_id"
-                placeholder="phone_number_id"
-                required>
-            </td>
-            <td>
-              <input type="text" class="form-control form-control-sm"
-                name="access_token"
-                placeholder="Access Token"
-                required>
-            </td>
-            <td>
-              <input type="text" class="form-control form-control-sm"
-                name="label"
-                placeholder="ex.: Conta 2">
-            </td>
-            <td class="text-center">
-              <input class="form-check-input" type="checkbox" name="active" checked />
-            </td>
-            <td class="text-end">
-              <button type="submit" class="btn btn-sm btn-success">Adicionar</button>
-            </td>
-          </form>
-        </tr>
-      </tbody>
-    </table>
-  </div>
+              <% if (metaList.length) { %>
+                <% metaList.forEach(function(n) { %>
+                  <tr>
+                    <form method="post" action="/admin/settings/meta/save">
+                      <td>
+                        <input type="hidden" name="id" value="<%= n.id %>">
+                        <input type="text" class="form-control form-control-sm" name="display_phone_number"
+                          value="<%= n.display_phone_number || '' %>" placeholder="+55 11 99999-9999">
+                      </td>
+                      <td>
+                        <input type="text" class="form-control form-control-sm" name="phone_number_id"
+                          value="<%= n.phone_number_id || '' %>" placeholder="phone_number_id" required>
+                      </td>
+                      <td>
+                        <input type="text" class="form-control form-control-sm" name="access_token"
+                          value="<%= n.access_token || '' %>" placeholder="Access Token" required>
+                      </td>
+                      <td>
+                        <input type="text" class="form-control form-control-sm" name="label"
+                          value="<%= n.label || '' %>" placeholder="ex.: Conta 1">
+                      </td>
+                      <td class="text-center">
+                        <input class="form-check-input" type="checkbox" name="active" <%=n.active ? 'checked' : '' %> />
+                      </td>
+                      <td class="text-end">
+                        <button type="submit" class="btn btn-sm btn-primary me-1">Salvar</button>
+                        <button type="submit" class="btn btn-sm btn-outline-danger"
+                          formaction="/admin/settings/meta/delete" onclick="return confirm('Remover este número?');">
+                          Remover
+                        </button>
+                      </td>
+                    </form>
+                  </tr>
+                  <% }); %>
+                    <% } else { %>
+                      <tr>
+                        <td colspan="6" class="text-muted">Nenhum número cadastrado</td>
+                      </tr>
+                      <% } %>
 
-  <script>
-    // Máscara opcional para o campo "Número" (+55 11 99999-9999)
-    function formatNumero(value) {
-      let v = (value || '').replace(/\D/g, '');
-      v = v.slice(0, 13);
-      if (!v) return '';
+                        <!-- Linha para adicionar novo número -->
+                        <tr>
+                          <form method="post" action="/admin/settings/meta/save">
+                            <td>
+                              <input type="hidden" name="id" value="">
+                              <input type="text" class="form-control form-control-sm" name="display_phone_number"
+                                placeholder="+55 11 99999-9999">
+                            </td>
+                            <td>
+                              <input type="text" class="form-control form-control-sm" name="phone_number_id"
+                                placeholder="phone_number_id" required>
+                            </td>
+                            <td>
+                              <input type="text" class="form-control form-control-sm" name="access_token"
+                                placeholder="Access Token" required>
+                            </td>
+                            <td>
+                              <input type="text" class="form-control form-control-sm" name="label"
+                                placeholder="ex.: Conta 2">
+                            </td>
+                            <td class="text-center">
+                              <input class="form-check-input" type="checkbox" name="active" checked />
+                            </td>
+                            <td class="text-end">
+                              <button type="submit" class="btn btn-sm btn-success">Adicionar</button>
+                            </td>
+                          </form>
+                        </tr>
+          </tbody>
+        </table>
+      </div>
 
-      let out = '+';
-      if (v.length <= 2) { out += v; return out; }
+      <script>
+        // Máscara opcional para o campo "Número" (+55 11 99999-9999)
+        function formatNumero(value) {
+          let v = (value || '').replace(/\D/g, '');
+          v = v.slice(0, 13);
+          if (!v) return '';
 
-      out += v.slice(0, 2) + ' ';
-      if (v.length <= 4) { out += v.slice(2); return out; }
+          let out = '+';
+          if (v.length <= 2) { out += v; return out; }
 
-      out += v.slice(2, 4) + ' ';
-      if (v.length <= 9) { out += v.slice(4); return out; }
+          out += v.slice(0, 2) + ' ';
+          if (v.length <= 4) { out += v.slice(2); return out; }
 
-      out += v.slice(4, 9) + '-' + v.slice(9);
-      return out;
-    }
+          out += v.slice(2, 4) + ' ';
+          if (v.length <= 9) { out += v.slice(4); return out; }
 
-    function attachNumeroMasks() {
-      const inputs = document.querySelectorAll('input[name="display_phone_number"]');
-      inputs.forEach((inp) => {
-        inp.addEventListener('input', (e) => {
-          const cursorPos = e.target.selectionStart;
-          const oldLength = e.target.value.length;
+          out += v.slice(4, 9) + '-' + v.slice(9);
+          return out;
+        }
 
-          const formatted = formatNumero(e.target.value);
-          e.target.value = formatted;
+        function attachNumeroMasks() {
+          const inputs = document.querySelectorAll('input[name="display_phone_number"]');
+          inputs.forEach((inp) => {
+            inp.addEventListener('input', (e) => {
+              const cursorPos = e.target.selectionStart;
+              const oldLength = e.target.value.length;
 
-          const newLength = formatted.length;
-          const diff = newLength - oldLength;
-          const newPos = Math.max(0, (cursorPos || 0) + diff);
-          try { e.target.setSelectionRange(newPos, newPos); } catch { }
-        });
-      });
-    }
+              const formatted = formatNumero(e.target.value);
+              e.target.value = formatted;
 
-    attachNumeroMasks();
-  </script>
+              const newLength = formatted.length;
+              const diff = newLength - oldLength;
+              const newPos = Math.max(0, (cursorPos || 0) + diff);
+              try { e.target.setSelectionRange(newPos, newPos); } catch { }
+            });
+          });
+        }
+
+        attachNumeroMasks();
+      </script>
 </body>
 
 </html>

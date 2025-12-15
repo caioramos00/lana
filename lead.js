@@ -2,15 +2,41 @@ function createLeadStore({
   maxMsgs = 50,
   ttlMs = 7 * 24 * 60 * 60 * 1000,
 
-  inboundDebounceMinMs = 800,
-  inboundDebounceMaxMs = 1500,
-  inboundMaxWaitMs = 7000,
+  inboundDebounceMinMs = 1800,
+  inboundDebounceMaxMs = 3200,
+  inboundMaxWaitMs = 12000,
 
-  onFlushBlock, // async ({ wa_id, inboundPhoneNumberId, blocoText, mensagemAtualBloco, excludeWamids })
+  onFlushBlock,
 } = {}) {
   const leadStore = new Map();
 
+  // ✅ config mutável (pra atualizar pelo painel sem restart)
+  const cfg = {
+    inboundDebounceMinMs,
+    inboundDebounceMaxMs,
+    inboundMaxWaitMs,
+  };
+
   function now() { return Date.now(); }
+
+  function normMs(v, def, min, max) {
+    const n = Number(v);
+    if (!Number.isFinite(n)) return def;
+    let x = Math.trunc(n);
+    if (Number.isFinite(min)) x = Math.max(min, x);
+    if (Number.isFinite(max)) x = Math.min(max, x);
+    return x;
+  }
+
+  function updateConfig(next = {}) {
+    const nextMin = normMs(next.inboundDebounceMinMs, cfg.inboundDebounceMinMs, 200, 15000);
+    const nextMax = normMs(next.inboundDebounceMaxMs, cfg.inboundDebounceMaxMs, 200, 20000);
+    const nextWait = normMs(next.inboundMaxWaitMs, cfg.inboundMaxWaitMs, 500, 60000);
+
+    cfg.inboundDebounceMinMs = Math.min(nextMin, nextMax);
+    cfg.inboundDebounceMaxMs = Math.max(nextMin, nextMax);
+    cfg.inboundMaxWaitMs = nextWait;
+  }
 
   function randInt(min, max) {
     const lo = Math.min(min, max);
@@ -19,7 +45,7 @@ function createLeadStore({
   }
 
   function computeDebounceMs() {
-    return randInt(inboundDebounceMinMs, inboundDebounceMaxMs);
+    return randInt(cfg.inboundDebounceMinMs, cfg.inboundDebounceMaxMs);
   }
 
   function getLead(wa_id) {
@@ -36,8 +62,7 @@ function createLeadStore({
         last_user_ts: null,
         created_at: now(),
 
-        // batching
-        pending_inbound: [],          // [{ text, wamid, inboundPhoneNumberId, ts }]
+        pending_inbound: [],
         pending_first_ts: null,
         pending_timer: null,
         pending_max_timer: null,
@@ -83,7 +108,7 @@ function createLeadStore({
 
   function buildHistoryString(st, opts = {}) {
     const hist = Array.isArray(st?.history) ? st.history : [];
-    const excludeWamids = opts.excludeWamids; // Set
+    const excludeWamids = opts.excludeWamids;
 
     return hist
       .slice(-maxMsgs)
@@ -157,7 +182,7 @@ function createLeadStore({
         clearTimeout(st.pending_max_timer);
         st.pending_max_timer = setTimeout(() => {
           flushLead(wa_id).catch(() => { });
-        }, inboundMaxWaitMs);
+        }, cfg.inboundMaxWaitMs);
       }
 
       clearTimeout(st.pending_timer);
@@ -187,7 +212,7 @@ function createLeadStore({
       clearTimeout(st.pending_max_timer);
       st.pending_max_timer = setTimeout(() => {
         flushLead(wa_id).catch(() => { });
-      }, inboundMaxWaitMs);
+      }, cfg.inboundMaxWaitMs);
     }
 
     clearTimeout(st.pending_timer);
@@ -196,7 +221,6 @@ function createLeadStore({
     }, computeDebounceMs());
   }
 
-  // cleanup TTL
   setInterval(() => {
     const t = now();
     for (const [k, v] of leadStore.entries()) {
@@ -212,6 +236,7 @@ function createLeadStore({
     pushHistory,
     buildHistoryString,
     enqueueInboundText,
+    updateConfig, // ✅ novo
   };
 }
 

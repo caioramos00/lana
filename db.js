@@ -18,6 +18,21 @@ pool.on('error', (err) => {
   console.error('[PG][POOL][ERROR]', { code: err?.code, message: err?.message });
 });
 
+function toIntOrNull(v) {
+  if (v === undefined || v === null) return null;
+  const n = Number(String(v).trim());
+  if (!Number.isFinite(n)) return null;
+  return Math.trunc(n);
+}
+
+function clampInt(n, { min, max } = {}) {
+  if (!Number.isFinite(n)) return null;
+  let x = Math.trunc(n);
+  if (Number.isFinite(min)) x = Math.max(min, x);
+  if (Number.isFinite(max)) x = Math.min(max, x);
+  return x;
+}
+
 async function initDatabase() {
   const client = await pool.connect();
   try {
@@ -25,13 +40,18 @@ async function initDatabase() {
       CREATE TABLE IF NOT EXISTS bot_settings (
         id SERIAL PRIMARY KEY,
         graph_api_access_token TEXT,
-        contact_token TEXT, -- aqui é o verify_token do webhook
+        contact_token TEXT,
         venice_api_key TEXT,
         venice_model TEXT,
         system_prompt TEXT,
         updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
       );
     `);
+
+    // ✅ adiciona colunas de batching sem quebrar banco já existente
+    await client.query(`ALTER TABLE bot_settings ADD COLUMN IF NOT EXISTS inbound_debounce_min_ms INTEGER;`).catch(() => {});
+    await client.query(`ALTER TABLE bot_settings ADD COLUMN IF NOT EXISTS inbound_debounce_max_ms INTEGER;`).catch(() => {});
+    await client.query(`ALTER TABLE bot_settings ADD COLUMN IF NOT EXISTS inbound_max_wait_ms INTEGER;`).catch(() => {});
 
     // singleton (id=1)
     await client.query(`
@@ -43,6 +63,15 @@ async function initDatabase() {
       INSERT INTO bot_settings (id)
       VALUES (1)
       ON CONFLICT (id) DO NOTHING;
+    `);
+
+    // ✅ defaults bons pra agrupar mensagens “em sequência”
+    await client.query(`
+      UPDATE bot_settings
+         SET inbound_debounce_min_ms = COALESCE(inbound_debounce_min_ms, 1800),
+             inbound_debounce_max_ms = COALESCE(inbound_debounce_max_ms, 3200),
+             inbound_max_wait_ms     = COALESCE(inbound_max_wait_ms, 12000)
+       WHERE id = 1;
     `);
 
     await client.query(`
@@ -78,6 +107,9 @@ async function getBotSettings({ bypassCache = false } = {}) {
       venice_api_key,
       venice_model,
       system_prompt,
+      inbound_debounce_min_ms,
+      inbound_debounce_max_ms,
+      inbound_max_wait_ms,
       updated_at
     FROM bot_settings
     WHERE id = 1
@@ -100,7 +132,21 @@ async function updateBotSettings(payload) {
       venice_api_key,
       venice_model,
       system_prompt,
+
+      inbound_debounce_min_ms,
+      inbound_debounce_max_ms,
+      inbound_max_wait_ms,
     } = payload;
+
+    // parse + clamp
+    let dMin = clampInt(toIntOrNull(inbound_debounce_min_ms), { min: 200, max: 15000 });
+    let dMax = clampInt(toIntOrNull(inbound_debounce_max_ms), { min: 200, max: 20000 });
+    let maxW = clampInt(toIntOrNull(inbound_max_wait_ms),     { min: 500, max: 60000 });
+
+    // garante min <= max (se vier invertido)
+    if (Number.isFinite(dMin) && Number.isFinite(dMax) && dMin > dMax) {
+      const tmp = dMin; dMin = dMax; dMax = tmp;
+    }
 
     await client.query(
       `
@@ -110,6 +156,11 @@ async function updateBotSettings(payload) {
              venice_api_key        = COALESCE($3, venice_api_key),
              venice_model          = COALESCE($4, venice_model),
              system_prompt         = COALESCE($5, system_prompt),
+
+             inbound_debounce_min_ms = COALESCE($6, inbound_debounce_min_ms),
+             inbound_debounce_max_ms = COALESCE($7, inbound_debounce_max_ms),
+             inbound_max_wait_ms     = COALESCE($8, inbound_max_wait_ms),
+
              updated_at            = NOW()
        WHERE id = 1
       `,
@@ -119,6 +170,9 @@ async function updateBotSettings(payload) {
         (venice_api_key || '').trim() || null,
         (venice_model || '').trim() || null,
         (system_prompt || '').trim() || null,
+        Number.isFinite(dMin) ? dMin : null,
+        Number.isFinite(dMax) ? dMax : null,
+        Number.isFinite(maxW) ? maxW : null,
       ]
     );
 
