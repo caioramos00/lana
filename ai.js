@@ -30,15 +30,59 @@ function createAiEngine({ db, sendMessage, aiLog = () => { } } = {}) {
         }
     }
 
-    function renderSystemPrompt(template, factsObj, historicoStr, msgAtual) {
+    function normalizeReplyId(x) {
+        const r = String(x || '').trim();
+        return r ? r : null;
+    }
+
+    function normalizeAgentMessages(agent, { batchItems, fallbackReplyToWamid }) {
+        const valid = new Set(
+            (batchItems || [])
+                .map(b => String(b?.wamid || '').trim())
+                .filter(Boolean)
+        );
+
+        const raw = Array.isArray(agent?.messages) ? agent.messages : [];
+        const out = [];
+
+        for (const item of raw) {
+            // compat: formato antigo ["msg1", "msg2"]
+            if (typeof item === 'string') {
+                const text = item.trim();
+                if (!text) continue;
+                out.push({
+                    text,
+                    reply_to_wamid: fallbackReplyToWamid || null,
+                });
+                continue;
+            }
+
+            // novo formato [{text, reply_to_wamid}]
+            if (item && typeof item === 'object') {
+                const text = String(item.text || '').trim();
+                if (!text) continue;
+
+                let reply = normalizeReplyId(item.reply_to_wamid);
+                if (reply && !valid.has(reply)) reply = null; // ✅ só aceita wamid do batch
+
+                out.push({ text, reply_to_wamid: reply });
+            }
+        }
+
+        return out.slice(0, 3);
+    }
+
+    function renderSystemPrompt(template, factsObj, historicoStr, msgAtual, batchItems) {
         const safeFacts = JSON.stringify(factsObj || {}, null, 2);
         const safeHist = String(historicoStr || '');
         const safeMsg = String(msgAtual || '');
+        const safeBatch = JSON.stringify(batchItems || [], null, 2);
 
         return String(template || '')
             .replace(/\{FACTS_JSON\}/g, safeFacts)
             .replace(/\{HISTORICO\}/g, safeHist)
-            .replace(/\{MENSAGEM_ATUAL\}/g, safeMsg);
+            .replace(/\{MENSAGEM_ATUAL\}/g, safeMsg)
+            .replace(/\{BATCH_ITEMS_JSON\}/g, safeBatch); // ✅ NÍVEL 3
     }
 
     function buildFactsJson(st, inboundPhoneNumberId) {
@@ -178,6 +222,7 @@ function createAiEngine({ db, sendMessage, aiLog = () => { } } = {}) {
         mensagemAtualBloco,
         excludeWamids,
         replyToWamid,
+        batch_items,
 
         // ✅ IMPLEMENTAÇÃO 1: snapshot do histórico (congelado no flush)
         historicoStrSnapshot,
@@ -221,7 +266,7 @@ function createAiEngine({ db, sendMessage, aiLog = () => { } } = {}) {
             ? `BLOCO_USUARIO:\n${bloco}\n\nMENSAGEM_ATUAL_BLOCO:\n${atual}`
             : (atual || bloco);
 
-        const rendered = renderSystemPrompt(systemPromptTpl, facts, historicoStr, msgParaPrompt);
+        const rendered = renderSystemPrompt(systemPromptTpl, facts, historicoStr, msgParaPrompt, batch_items);
 
         // ✅ mantém seus logs atuais
         aiLog(`[AI][CTX][${wa_id}] phone_number_id=${inboundPhoneNumberId || ''}`);
@@ -269,22 +314,24 @@ function createAiEngine({ db, sendMessage, aiLog = () => { } } = {}) {
         }
 
         const agent = parsed.data;
-        const outMessages = (agent.messages || [])
-            .map(x => String(x || '').trim())
-            .filter(Boolean)
-            .slice(0, 3);
 
-        if (!outMessages.length) return;
+        // fallback: se IA mandar string, cita a última msg do batch (comportamento atual)
+        const fallbackReplyToWamid = String(replyToWamid || '').trim() || null;
 
-        const replyId = String(replyToWamid || '').trim();
+        const outItems = normalizeAgentMessages(agent, {
+            batchItems: batch_items,
+            fallbackReplyToWamid,
+        });
 
-        for (let i = 0; i < outMessages.length; i++) {
-            const msg = outMessages[i];
+        if (!outItems.length) return;
+
+        for (let i = 0; i < outItems.length; i++) {
+            const { text: msg, reply_to_wamid } = outItems[i];
             if (i > 0) await humanDelayForOutboundText(msg);
 
             const r = await sendMessage(wa_id, msg, {
                 meta_phone_number_id: inboundPhoneNumberId || null,
-                ...(i === 0 && replyId ? { reply_to_wamid: replyId } : {}),
+                ...(reply_to_wamid ? { reply_to_wamid } : {}),
             });
 
             if (!r?.ok) {
@@ -296,7 +343,8 @@ function createAiEngine({ db, sendMessage, aiLog = () => { } } = {}) {
                     kind: 'text',
                     wamid: r.wamid || '',
                     phone_number_id: r.phone_number_id || inboundPhoneNumberId || null,
-                    ts_ms: Date.now(), // ✅ mantém ts_ms nos históricos novos
+                    ts_ms: Date.now(),
+                    reply_to_wamid: reply_to_wamid || null, // opcional (ajuda debug)
                 });
             }
         }
