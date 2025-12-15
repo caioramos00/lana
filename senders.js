@@ -138,135 +138,6 @@ function oggCrc32(pageBuf) {
   return crc >>> 0;
 }
 
-function analyzeOggOpusFile(filePath) {
-  const abs = String(filePath || '');
-  const buf = fs.readFileSync(abs);
-  const size = buf.length;
-
-  const out = {
-    filePath: abs,
-    fileName: path.basename(abs),
-    sizeBytes: size,
-    sha256: crypto.createHash('sha256').update(buf).digest('hex'),
-    headHex: buf.subarray(0, 32).toString('hex'),
-    isOgg: buf.subarray(0, 4).toString('ascii') === 'OggS',
-    opusHead: null,
-    opusTags: null,
-    ogg: {
-      pages: 0,
-      lastGranulePos: null,
-      durationSec: null,
-      bitrateBps: null,
-      crcOkPages: 0,
-      crcBadPages: 0,
-      firstBadCrc: null,
-    },
-  };
-
-  if (!out.isOgg) return out;
-
-  let preSkip = 0;
-  let lastGranule = null;
-
-  let off = 0;
-  while (off + 27 <= buf.length) {
-    if (buf.subarray(off, off + 4).toString('ascii') !== 'OggS') break;
-
-    const headerType = buf.readUInt8(off + 5);
-    const granulePos = buf.readBigUInt64LE(off + 6);
-    const pageSegments = buf.readUInt8(off + 26);
-
-    const segTableOff = off + 27;
-    const segTableEnd = segTableOff + pageSegments;
-    if (segTableEnd > buf.length) break;
-
-    let dataLen = 0;
-    for (let i = 0; i < pageSegments; i++) dataLen += buf.readUInt8(segTableOff + i);
-
-    const dataOff = segTableEnd;
-    const dataEnd = dataOff + dataLen;
-    if (dataEnd > buf.length) break;
-
-    out.ogg.pages += 1;
-
-    // CRC check
-    try {
-      const stored = buf.readUInt32LE(off + 22) >>> 0;
-      const computed = oggCrc32(buf.subarray(off, dataEnd)) >>> 0;
-      if (stored === computed) out.ogg.crcOkPages += 1;
-      else {
-        out.ogg.crcBadPages += 1;
-        if (!out.ogg.firstBadCrc) {
-          out.ogg.firstBadCrc = { page: out.ogg.pages, stored, computed };
-        }
-      }
-    } catch { /* ignore */ }
-
-    if (headerType & 0x04) lastGranule = granulePos;
-    else lastGranule = granulePos;
-
-    const pageData = buf.subarray(dataOff, dataEnd);
-
-    if (!out.opusHead) {
-      const idx = pageData.indexOf(Buffer.from('OpusHead'));
-      if (idx >= 0 && idx + 19 <= pageData.length) {
-        const p = pageData.subarray(idx, idx + 19);
-        const version = p.readUInt8(8);
-        const channels = p.readUInt8(9);
-        preSkip = p.readUInt16LE(10);
-        const inputSampleRate = p.readUInt32LE(12);
-        const outputGain = p.readInt16LE(16);
-        const channelMappingFamily = p.readUInt8(18);
-
-        out.opusHead = { version, channels, preSkip, inputSampleRate, outputGain, channelMappingFamily };
-      }
-    }
-
-    if (!out.opusTags) {
-      const tidx = pageData.indexOf(Buffer.from('OpusTags'));
-      if (tidx >= 0 && tidx + 12 <= pageData.length) {
-        const base = tidx + 8;
-        if (base + 4 <= pageData.length) {
-          const vendorLen = pageData.readUInt32LE(base);
-          const vStart = base + 4;
-          const vEnd = vStart + vendorLen;
-          if (vEnd <= pageData.length) {
-            const vendor = pageData.subarray(vStart, vEnd).toString('utf8');
-            out.opusTags = { vendorLen, vendor };
-          }
-        }
-      }
-    }
-
-    off = dataEnd;
-  }
-
-  out.ogg.lastGranulePos = (lastGranule != null) ? String(lastGranule) : null;
-
-  if (lastGranule != null) {
-    const g = lastGranule;
-    const ps = BigInt(preSkip || 0);
-    const samples = (g > ps) ? (g - ps) : g;
-    const durationSec = Number(samples) / 48000; // OggOpus timeline é 48k
-    out.ogg.durationSec = Number.isFinite(durationSec) ? durationSec : null;
-
-    if (out.ogg.durationSec && out.ogg.durationSec > 0) {
-      out.ogg.bitrateBps = Math.round((size * 8) / out.ogg.durationSec);
-    }
-  }
-
-  return out;
-}
-
-function logAudioInfo(label, filePath, extra = {}) {
-  try {
-    const info = analyzeOggOpusFile(filePath);
-    console.log(`[AUDIO][INFO][${label}]`, JSON.stringify({ ...info, ...extra }));
-  } catch (e) {
-    console.log(`[AUDIO][INFO][${label}] failed:`, e?.message || String(e));
-  }
-}
-
 async function metaPostMessage({ phoneNumberId, token, version, payload }) {
   const apiVersion = version || 'v24.0';
   const url = `https://graph.facebook.com/${apiVersion}/${phoneNumberId}/messages`;
@@ -654,17 +525,6 @@ async function elevenTtsToTempFile(text, settings, opts = {}) {
   const outPath = path.join(os.tmpdir(), name);
 
   fs.writeFileSync(outPath, buf);
-
-  // LOGS IMPORTANTES
-  console.log('[AUDIO][ELEVEN][HTTP]', JSON.stringify({
-    status: r.status,
-    contentType: String(r.headers?.['content-type'] || ''),
-    contentLength: String(r.headers?.['content-length'] || ''),
-    outputFormat,
-  }));
-
-  logAudioInfo('elevenlabs-file', outPath, { source: 'elevenlabs', outputFormat });
-
   return outPath;
 }
 
@@ -673,29 +533,6 @@ async function sendTtsVoiceNote(contato, text, opts = {}) {
   if (!to) return { ok: false, reason: 'missing-to' };
 
   let tmpFile = null;
-
-  function findResponseOpusPath() {
-    const mainDir = (() => {
-      try {
-        const mf = require.main?.filename ? String(require.main.filename) : '';
-        return mf ? path.dirname(mf) : null;
-      } catch { return null; }
-    })();
-
-    const candidates = [
-      opts.response_opus_path ? String(opts.response_opus_path) : null,
-      path.join(process.cwd(), 'response.opus'),
-      mainDir ? path.join(mainDir, 'response.opus') : null,
-      path.join(__dirname, 'response.opus'),
-      path.join(__dirname, '..', 'response.opus'),
-      path.join(__dirname, '..', '..', 'response.opus'),
-    ].filter(Boolean);
-
-    for (const p of candidates) {
-      try { if (fs.existsSync(p)) return { found: p, candidates }; } catch { }
-    }
-    return { found: null, candidates };
-  }
 
   try {
     const settings = await getSettings();
@@ -707,18 +544,14 @@ async function sendTtsVoiceNote(contato, text, opts = {}) {
       return { ok: false, reason: 'missing-meta-credentials', phone_number_id: phoneNumberId || null };
     }
 
-    // helper com escopo certo
     const uploadVoiceFile = async (filePath, filename) => {
-      const mimesToTry = [
-        'audio/ogg; codecs=opus',
-        'audio/ogg',
-        'audio/opus',
-      ];
+      // mantém os 3 mimes por segurança (sem logs)
+      const mimesToTry = ['audio/ogg; codecs=opus', 'audio/ogg', 'audio/opus'];
 
       let lastErr = null;
       for (const mt of mimesToTry) {
         try {
-          const up = await metaUploadMediaFromPath({
+          return await metaUploadMediaFromPath({
             phoneNumberId,
             token,
             version: settings?.meta_api_version || 'v24.0',
@@ -726,59 +559,20 @@ async function sendTtsVoiceNote(contato, text, opts = {}) {
             mimeType: mt,
             filename,
           });
-          console.log('[AUDIO][META][UPLOAD]', JSON.stringify({ id: up.id, ...up.upload }));
-          return up;
         } catch (e) {
           lastErr = e;
-          console.log('[AUDIO][META][UPLOAD][fail]', JSON.stringify({
-            mimeType: mt,
-            error: e?.message || String(e),
-          }));
         }
       }
       throw lastErr || new Error('upload failed');
     };
 
-    // ✅ DEBUG: enviar response.opus
-    if (opts && opts.send_response_opus) {
-      const { found, candidates } = findResponseOpusPath();
-      console.log('[AUDIO][response.opus][search]', JSON.stringify({
-        found,
-        candidates,
-        cwd: process.cwd(),
-        dirname: __dirname,
-      }));
-
-      if (!found) {
-        return { ok: false, reason: 'missing-response-opus', tried: { candidates, cwd: process.cwd(), dirname: __dirname } };
-      }
-
-      logAudioInfo('response.opus', found, { source: 'debug', note: 'will-upload-as-voice.ogg' });
-
-      const info = analyzeOggOpusFile(found);
-      if (!info.isOgg) {
-        return { ok: false, reason: 'response-opus-not-ogg', filePath: found, headHex: info.headHex };
-      }
-      if (info.ogg?.crcBadPages > 0) {
-        return { ok: false, reason: 'response-opus-bad-crc', filePath: found, firstBadCrc: info.ogg.firstBadCrc };
-      }
-
-      const up = await uploadVoiceFile(found, 'voice.ogg');
-      const rSend = await sendAudioByMediaId(to, up.id, { ...opts, voice_note: true });
-      return { ...rSend, uploaded_media_id: up.id, sent_from: 'response.opus', filePath: found };
-    }
-
-    // 1) gera áudio (Eleven)
+    // 1) gera áudio
     tmpFile = await elevenTtsToTempFile(text, settings, opts);
 
-    // 2) log antes do upload
-    logAudioInfo('before-upload', tmpFile, { source: 'tmp-eleven' });
-
-    // 🚫 NÃO patch aqui (quebra CRC e mata reprodução)
-    // patchOpusHeadInputSampleRate(tmpFile, 24000);
-
-    // 3) upload + send
+    // 2) upload
     const up = await uploadVoiceFile(tmpFile, 'voice.ogg');
+
+    // 3) envia como voice note
     const rSend = await sendAudioByMediaId(to, up.id, { ...opts, voice_note: true });
 
     const cfg = resolveElevenConfig(settings, opts);
@@ -802,10 +596,8 @@ module.exports = {
   sendMessage,
   sendImage,
 
-  // áudio
   sendAudioByMediaId,
   sendAudioFromPath,
 
-  // definitivo: TTS -> voice note
   sendTtsVoiceNote,
 };
