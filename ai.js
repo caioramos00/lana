@@ -177,6 +177,7 @@ function createAiEngine({ db, sendMessage, aiLog = () => { } } = {}) {
         blocoText,
         mensagemAtualBloco,
         excludeWamids,
+        replyToWamid,
 
         // ✅ IMPLEMENTAÇÃO 1: snapshot do histórico (congelado no flush)
         historicoStrSnapshot,
@@ -275,12 +276,15 @@ function createAiEngine({ db, sendMessage, aiLog = () => { } } = {}) {
 
         if (!outMessages.length) return;
 
+        const replyId = String(replyToWamid || '').trim();
+
         for (let i = 0; i < outMessages.length; i++) {
             const msg = outMessages[i];
             if (i > 0) await humanDelayForOutboundText(msg);
 
             const r = await sendMessage(wa_id, msg, {
                 meta_phone_number_id: inboundPhoneNumberId || null,
+                ...(i === 0 && replyId ? { reply_to_wamid: replyId } : {}),
             });
 
             if (!r?.ok) {

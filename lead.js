@@ -253,6 +253,7 @@ function createLeadStore({
       }
 
       const lastMsg = batch[batch.length - 1] || null;
+      const replyToWamid = String(lastMsg?.wamid || '').trim();
       const mensagemAtualBloco = String(lastMsg?.text || '').trim();
 
       const excludeWamids = new Set(batch.map(b => b.wamid).filter(Boolean));
@@ -294,6 +295,7 @@ function createLeadStore({
             blocoText: mergedText,
             mensagemAtualBloco,
             excludeWamids,
+            replyToWamid,
 
             // ✅ IMPLEMENTAÇÃO 1: passa o snapshot pro ai.js
             historicoStrSnapshot,

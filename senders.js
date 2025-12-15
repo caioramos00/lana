@@ -123,12 +123,18 @@ async function sendMessage(contato, texto, opts = {}) {
       return { ok: false, reason: 'missing-meta-credentials', phone_number_id: phoneNumberId || null };
     }
 
+    const replyTo = String(opts.reply_to_wamid || opts.replyToWamid || '').trim() || null;
+
     const payload = {
       messaging_product: 'whatsapp',
       to,
       type: 'text',
       text: { body: text },
     };
+
+    if (replyTo) {
+      payload.context = { message_id: replyTo };
+    }
 
     const data = await metaPostMessage({
       phoneNumberId,
@@ -146,7 +152,7 @@ async function sendMessage(contato, texto, opts = {}) {
         text,
         ts: Date.now(),
       });
-    } catch {}
+    } catch { }
 
     return { ok: true, provider: 'meta', phone_number_id: phoneNumberId, wamid: data?.messages?.[0]?.id || '' };
   } catch (e) {
@@ -212,7 +218,7 @@ async function sendImage(contato, urlOrItems, captionOrOpts, opts = {}) {
               media: { type: 'image', link: url },
               ts: Date.now(),
             });
-          } catch {}
+          } catch { }
 
           results.push({ ok: true, wamid: data?.messages?.[0]?.id || '' });
         } catch (e) {
