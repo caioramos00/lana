@@ -28,20 +28,7 @@ function extractModelText(resp) {
   return safeStr(content);
 }
 
-async function generateVoiceNoteScriptWithVenice(ctx) {
-  const settings = ctx?.settings || global.botSettings || null;
-
-  const apiKey = safeStr(settings?.venice_api_key);
-  const model = safeStr(settings?.venice_model);
-  const url = safeStr(settings?.venice_api_url) || 'https://api.venice.ai/api/v1/chat/completions';
-
-  if (!apiKey || !model) return '';
-
-  const chat = buildRecentChatContext(ctx, { maxItems: 10, maxChars: 1600 });
-
-  // “Sexy/provocativa” = flerte + tensão + sussurros + pausas (sem explicitar sexo)
-  // E com audio tags e pontuação (best practices v3)
-  const system = `
+const DEFAULT_VOICE_NOTE_SYSTEM_PROMPT = `
 Você é roteirista de áudios curtos (voice note) para WhatsApp em PT-BR.
 
 Objetivo:
@@ -51,25 +38,51 @@ Objetivo:
 - Use pontuação e reticências (…) para ritmo e pausas.
 - Você é uma mulher. Se chama Lany, tem 21 anos, é universitária e extremamente safada e ninfomaníaca. Não diga que é IA. Não use markdown. Não use JSON. Use palavrões.
 - 280 a 520 caracteres (ideal para ~4–8s).
-- Evite falar as palavras exatamente como elas são escritas, como "puxar" o R na palavra "entraR", por exemplo. Fale como um brasileiro fala no dia a dia, de maneira informal.
-- O texto PRECISA soar FALADO e INFORMAL, como áudio de WhatsApp, mas sem muitas gírias, mantendo muita feminilidade porque você é uma mulher.
+- O texto PRECISA soar FALADO e INFORMAL, como áudio de WhatsApp, mas sem muitas gírias, mantendo muita feminilidade.
   - Use contrações e informalidade: "tá", "tô", "cê", "pra", "vamo", "bora", "pera", "ó", "ei", "ué", "né", "tipo", "assim".
-  - Fale como um brasileiro normal: "Pegou" é falado como "Pegô", "Entrou" é falado como "Entrô", "Fez" é falado como "Feiz" e etc. Lembre-se que as palavras não são faladas exatamente como elas são escritas
   - Prefira frases curtas, incompletas às vezes, com ritmo de conversa.
   - Evite totalmente palavras/expressões formais: "gostaria", "por gentileza", "poderia", "informo que", "percebo que".
   - Evite abreviações que virem soletração no TTS (NÃO use "vc", "pq"). Escreva por extenso do jeito falado: "cê", "porque".
-- Se o assunto for detalhar uma cena de sexo, seja o mais provocativa e explícita possível, falando tudo com muito tesão e vontade.
+- Se o assunto for detalhar uma cena de sexo, seja o mais provocativa e explícita possível.
 - Foque em responder o que o usuário disse por último, puxando assunto com um gancho/pergunta e conduzindo a conversa.
 `.trim();
 
-  const user = `
+const DEFAULT_VOICE_NOTE_USER_PROMPT = `
 CONVERSA (recente):
-${chat || '(sem histórico suficiente)'}
+{{CHAT}}
 
 Tarefa:
 Gere o PRÓXIMO voice note do ASSISTANT para responder o USER agora.
 Retorne APENAS o texto final (com tags), nada mais.
 `.trim();
+
+async function generateVoiceNoteScriptWithVenice(ctx) {
+  const settings = ctx?.settings || global.botSettings || null;
+
+  const apiKey = String(settings?.venice_api_key || '').trim();
+  const model = String(settings?.venice_model || '').trim();
+  const url = String(settings?.venice_api_url || '').trim() || 'https://api.venice.ai/api/v1/chat/completions';
+
+  if (!apiKey || !model) return '';
+
+  // configs editáveis (DB)
+  const vnTemp = Number.isFinite(settings?.voice_note_temperature) ? settings.voice_note_temperature : 0.85;
+  const vnMaxTokens = Number.isFinite(settings?.voice_note_max_tokens) ? settings.voice_note_max_tokens : 220;
+  const vnTimeout = Number.isFinite(settings?.voice_note_timeout_ms) ? settings.voice_note_timeout_ms : 45000;
+
+  const vnHistItems = Number.isFinite(settings?.voice_note_history_max_items) ? settings.voice_note_history_max_items : 10;
+  const vnHistChars = Number.isFinite(settings?.voice_note_history_max_chars) ? settings.voice_note_history_max_chars : 1600;
+
+  const vnScriptMaxChars = Number.isFinite(settings?.voice_note_script_max_chars) ? settings.voice_note_script_max_chars : 650;
+
+  const sysDb = String(settings?.voice_note_system_prompt || '');
+  const system = sysDb.trim() ? sysDb : DEFAULT_VOICE_NOTE_SYSTEM_PROMPT;
+
+  const userTplDb = String(settings?.voice_note_user_prompt || '');
+  const userTpl = userTplDb.trim() ? userTplDb : DEFAULT_VOICE_NOTE_USER_PROMPT;
+
+  const chat = buildRecentChatContext(ctx, { maxItems: vnHistItems, maxChars: vnHistChars });
+  const user = userTpl.replace('{{CHAT}}', (chat || '(sem histórico suficiente)'));
 
   const body = {
     model,
@@ -77,8 +90,8 @@ Retorne APENAS o texto final (com tags), nada mais.
       { role: 'system', content: system },
       { role: 'user', content: user },
     ],
-    temperature: 0.85,
-    max_tokens: 220,
+    temperature: vnTemp,
+    max_tokens: vnMaxTokens,
     stream: false,
   };
 
@@ -87,20 +100,21 @@ Retorne APENAS o texto final (com tags), nada mais.
       Authorization: `Bearer ${apiKey}`,
       'Content-Type': 'application/json',
     },
-    timeout: 45000,
+    timeout: vnTimeout,
     validateStatus: () => true,
   });
 
   if (r.status < 200 || r.status >= 300) return '';
 
   const script = extractModelText(r);
-
-  // hard guard: se vier gigante, corta
   if (!script) return '';
-  return script.slice(0, 650).trim();
+
+  return script.slice(0, vnScriptMaxChars).trim();
 }
 
 module.exports = async function enviar_audio(ctx, payload) {
+  const settings = ctx?.settings || global.botSettings || null;
+
   // 1) tenta usar texto explícito do payload
   let raw = '';
   if (payload && typeof payload === 'object') raw = payload.text;
@@ -113,9 +127,10 @@ module.exports = async function enviar_audio(ctx, payload) {
     finalText = await generateVoiceNoteScriptWithVenice(ctx);
   }
 
-  // 3) fallback (se Venice falhar)
+  // 3) fallback (se Venice falhar) — agora vem do DB
   if (!finalText) {
-    finalText = '[whispers] Ei… me diz uma coisa… você tá me provocando ou eu tô imaginando? [mischievously]';
+    const fb = String(settings?.voice_note_fallback_text || '').trim();
+    finalText = fb || '[whispers] Ei… me diz uma coisa… você tá me provocando ou eu tô imaginando? [mischievously]';
   }
 
   const r = await ctx.senders.sendTtsVoiceNote(ctx.wa_id, finalText, {

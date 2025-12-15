@@ -317,6 +317,75 @@
           <hr class="my-3" />
 
           <div class="col-12">
+            <h3 class="mt-3">Voice Note (enviar_audio.js) • Geração do script</h3>
+            <div class="form-text">Essas configs controlam o prompt e parâmetros usados só para gerar o texto do áudio.
+            </div>
+          </div>
+
+          <div class="col-md-3">
+            <label class="form-label">VoiceNote Temperature</label>
+            <input type="number" class="form-control" name="voice_note_temperature"
+              value="<%= (s.voice_note_temperature !== undefined && s.voice_note_temperature !== null) ? s.voice_note_temperature : 0.85 %>"
+              min="0" max="2" step="0.05">
+          </div>
+
+          <div class="col-md-3">
+            <label class="form-label">VoiceNote Max Tokens</label>
+            <input type="number" class="form-control" name="voice_note_max_tokens"
+              value="<%= (s.voice_note_max_tokens !== undefined && s.voice_note_max_tokens !== null) ? s.voice_note_max_tokens : 220 %>"
+              min="16" max="4096" step="1">
+          </div>
+
+          <div class="col-md-3">
+            <label class="form-label">VoiceNote Timeout (ms)</label>
+            <input type="number" class="form-control" name="voice_note_timeout_ms"
+              value="<%= (s.voice_note_timeout_ms !== undefined && s.voice_note_timeout_ms !== null) ? s.voice_note_timeout_ms : 45000 %>"
+              min="1000" max="180000" step="500">
+          </div>
+
+          <div class="col-md-3">
+            <label class="form-label">Hist Max Items</label>
+            <input type="number" class="form-control" name="voice_note_history_max_items"
+              value="<%= (s.voice_note_history_max_items !== undefined && s.voice_note_history_max_items !== null) ? s.voice_note_history_max_items : 10 %>"
+              min="1" max="50" step="1">
+          </div>
+
+          <div class="col-md-4">
+            <label class="form-label">Hist Max Chars</label>
+            <input type="number" class="form-control" name="voice_note_history_max_chars"
+              value="<%= (s.voice_note_history_max_chars !== undefined && s.voice_note_history_max_chars !== null) ? s.voice_note_history_max_chars : 1600 %>"
+              min="200" max="8000" step="50">
+          </div>
+
+          <div class="col-md-4">
+            <label class="form-label">Script Max Chars (hard cut)</label>
+            <input type="number" class="form-control" name="voice_note_script_max_chars"
+              value="<%= (s.voice_note_script_max_chars !== undefined && s.voice_note_script_max_chars !== null) ? s.voice_note_script_max_chars : 650 %>"
+              min="200" max="4000" step="50">
+          </div>
+
+          <div class="col-md-4">
+            <label class="form-label">Fallback Text (se Venice falhar)</label>
+            <input type="text" class="form-control" name="voice_note_fallback_text"
+              value="<%= (s.voice_note_fallback_text || '') %>">
+          </div>
+
+          <div class="col-12">
+            <label class="form-label">VoiceNote • System Prompt</label>
+            <textarea class="form-control" name="voice_note_system_prompt" rows="10"
+              placeholder="Prompt do roteiro de áudio..."><%- (s.voice_note_system_prompt || '' ) %></textarea>
+          </div>
+
+          <div class="col-12">
+            <label class="form-label">VoiceNote • User Prompt Template</label>
+            <div class="form-text">Use <code>{{CHAT}}</code> para inserir o histórico.</div>
+            <textarea class="form-control" name="voice_note_user_prompt" rows="6"
+              placeholder="Template do user prompt..."><%- (s.voice_note_user_prompt || '' ) %></textarea>
+          </div>
+
+          <hr class="my-3" />
+
+          <div class="col-12">
             <h3 class="mt-3">Mensagens fixas (AI)</h3>
           </div>
 

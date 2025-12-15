@@ -121,6 +121,16 @@ async function initDatabase() {
         ai_out_delay_total_min_ms INTEGER,
         ai_out_delay_total_max_ms INTEGER,
 
+        voice_note_system_prompt TEXT,
+        voice_note_user_prompt TEXT,
+        voice_note_temperature DOUBLE PRECISION,
+        voice_note_max_tokens INTEGER,
+        voice_note_timeout_ms INTEGER,
+        voice_note_history_max_items INTEGER,
+        voice_note_history_max_chars INTEGER,
+        voice_note_script_max_chars INTEGER,
+        voice_note_fallback_text TEXT,
+
         updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
       );
     `);
@@ -165,6 +175,17 @@ async function initDatabase() {
     await alter(`ALTER TABLE bot_settings ADD COLUMN IF NOT EXISTS eleven_similarity_boost DOUBLE PRECISION;`);
     await alter(`ALTER TABLE bot_settings ADD COLUMN IF NOT EXISTS eleven_style DOUBLE PRECISION;`);
     await alter(`ALTER TABLE bot_settings ADD COLUMN IF NOT EXISTS eleven_use_speaker_boost BOOLEAN;`);
+
+    await alter(`ALTER TABLE bot_settings ADD COLUMN IF NOT EXISTS voice_note_system_prompt TEXT;`);
+    await alter(`ALTER TABLE bot_settings ADD COLUMN IF NOT EXISTS voice_note_user_prompt TEXT;`);
+    await alter(`ALTER TABLE bot_settings ADD COLUMN IF NOT EXISTS voice_note_temperature DOUBLE PRECISION;`);
+    await alter(`ALTER TABLE bot_settings ADD COLUMN IF NOT EXISTS voice_note_max_tokens INTEGER;`);
+    await alter(`ALTER TABLE bot_settings ADD COLUMN IF NOT EXISTS voice_note_timeout_ms INTEGER;`);
+    await alter(`ALTER TABLE bot_settings ADD COLUMN IF NOT EXISTS voice_note_history_max_items INTEGER;`);
+    await alter(`ALTER TABLE bot_settings ADD COLUMN IF NOT EXISTS voice_note_history_max_chars INTEGER;`);
+    await alter(`ALTER TABLE bot_settings ADD COLUMN IF NOT EXISTS voice_note_script_max_chars INTEGER;`);
+    await alter(`ALTER TABLE bot_settings ADD COLUMN IF NOT EXISTS voice_note_fallback_text TEXT;`);
+
 
     const delayCols = [
       'ai_in_delay_base_min_ms', 'ai_in_delay_base_max_ms', 'ai_in_delay_per_char_min_ms', 'ai_in_delay_per_char_max_ms',
@@ -242,6 +263,19 @@ async function initDatabase() {
              eleven_model_id = COALESCE(eleven_model_id, 'eleven_v3'),
              eleven_output_format = COALESCE(eleven_output_format, 'ogg_opus'),
              eleven_use_speaker_boost = COALESCE(eleven_use_speaker_boost, FALSE)
+
+             voice_note_temperature = COALESCE(voice_note_temperature, 0.85),
+              voice_note_max_tokens = COALESCE(voice_note_max_tokens, 220),
+              voice_note_timeout_ms = COALESCE(voice_note_timeout_ms, 45000),
+              voice_note_history_max_items = COALESCE(voice_note_history_max_items, 10),
+              voice_note_history_max_chars = COALESCE(voice_note_history_max_chars, 1600),
+              voice_note_script_max_chars = COALESCE(voice_note_script_max_chars, 650),
+              voice_note_fallback_text = COALESCE(
+                voice_note_fallback_text,
+                '[whispers] Ei… me diz uma coisa… você tá me provocando ou eu tô imaginando? [mischievously]'
+              ),
+              voice_note_system_prompt = COALESCE(voice_note_system_prompt, ''),
+              voice_note_user_prompt = COALESCE(voice_note_user_prompt, ''),
        WHERE id = 1;
     `);
 
@@ -337,6 +371,16 @@ async function getBotSettings({ bypassCache = false } = {}) {
       eleven_style,
       eleven_use_speaker_boost,
 
+      voice_note_system_prompt,
+voice_note_user_prompt,
+voice_note_temperature,
+voice_note_max_tokens,
+voice_note_timeout_ms,
+voice_note_history_max_items,
+voice_note_history_max_chars,
+voice_note_script_max_chars,
+voice_note_fallback_text,
+
       updated_at
     FROM bot_settings
     WHERE id = 1
@@ -417,6 +461,17 @@ async function updateBotSettings(payload) {
       eleven_similarity_boost,
       eleven_style,
       eleven_use_speaker_boost,
+
+      voice_note_system_prompt,
+      voice_note_user_prompt,
+      voice_note_temperature,
+      voice_note_max_tokens,
+      voice_note_timeout_ms,
+      voice_note_history_max_items,
+      voice_note_history_max_chars,
+      voice_note_script_max_chars,
+      voice_note_fallback_text,
+
     } = payload;
 
     let dMin = clampInt(toIntOrNull(inbound_debounce_min_ms), { min: 200, max: 15000 });
@@ -494,6 +549,14 @@ async function updateBotSettings(payload) {
 
     const elevenSpeakerBoost = toBoolOrNull(eleven_use_speaker_boost);
 
+    const vnTemp = clampFloat(toFloatOrNull(voice_note_temperature), { min: 0, max: 2 });
+    const vnMaxTokens = clampInt(toIntOrNull(voice_note_max_tokens), { min: 16, max: 4096 });
+    const vnTimeout = clampInt(toIntOrNull(voice_note_timeout_ms), { min: 1000, max: 180000 });
+
+    const vnHistItems = clampInt(toIntOrNull(voice_note_history_max_items), { min: 1, max: 50 });
+    const vnHistChars = clampInt(toIntOrNull(voice_note_history_max_chars), { min: 200, max: 8000 });
+    const vnScriptMaxChars = clampInt(toIntOrNull(voice_note_script_max_chars), { min: 200, max: 4000 });
+
     await client.query(
       `
       UPDATE bot_settings
@@ -561,6 +624,16 @@ async function updateBotSettings(payload) {
              eleven_similarity_boost = COALESCE($52, eleven_similarity_boost),
              eleven_style = COALESCE($53, eleven_style),
              eleven_use_speaker_boost = COALESCE($54, eleven_use_speaker_boost),
+
+             , voice_note_system_prompt = COALESCE($55, voice_note_system_prompt)
+, voice_note_user_prompt = COALESCE($56, voice_note_user_prompt)
+, voice_note_temperature = COALESCE($57, voice_note_temperature)
+, voice_note_max_tokens = COALESCE($58, voice_note_max_tokens)
+, voice_note_timeout_ms = COALESCE($59, voice_note_timeout_ms)
+, voice_note_history_max_items = COALESCE($60, voice_note_history_max_items)
+, voice_note_history_max_chars = COALESCE($61, voice_note_history_max_chars)
+, voice_note_script_max_chars = COALESCE($62, voice_note_script_max_chars)
+, voice_note_fallback_text = COALESCE($63, voice_note_fallback_text)
 
              updated_at            = NOW()
        WHERE id = 1
@@ -630,6 +703,19 @@ async function updateBotSettings(payload) {
         Number.isFinite(elevenSimilarity) ? elevenSimilarity : null,
         Number.isFinite(elevenStyle) ? elevenStyle : null,
         elevenSpeakerBoost,
+
+        (voice_note_system_prompt || '').trim() || null,
+        (voice_note_user_prompt || '').trim() || null,
+
+        Number.isFinite(vnTemp) ? vnTemp : null,
+        Number.isFinite(vnMaxTokens) ? vnMaxTokens : null,
+        Number.isFinite(vnTimeout) ? vnTimeout : null,
+
+        Number.isFinite(vnHistItems) ? vnHistItems : null,
+        Number.isFinite(vnHistChars) ? vnHistChars : null,
+        Number.isFinite(vnScriptMaxChars) ? vnScriptMaxChars : null,
+
+        (voice_note_fallback_text || '').trim() || null,
       ]
     );
 
