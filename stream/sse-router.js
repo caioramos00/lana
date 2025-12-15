@@ -5,7 +5,7 @@ const { bus } = require('./events-bus');
 const sseRouter = express.Router();
 
 function checkAuth(req) {
-    const want = (process.env.STREAM_TOKEN || '').trim();
+    const want = ('').trim();
     if (!want) return true;
     const h = String(req.get('authorization') || '');
     if (!h.toLowerCase().startsWith('bearer ')) return false;

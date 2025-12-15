@@ -7,11 +7,11 @@ const SETTINGS_TTL_MS = 60_000;
 
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
-  ssl: process.env.PG_SSL === 'false' ? false : { rejectUnauthorized: false },
+  ssl: { rejectUnauthorized: false },
   keepAlive: true,
-  max: Number(process.env.PGPOOL_MAX || 10),
-  idleTimeoutMillis: Number(process.env.PG_IDLE_TIMEOUT || 30000),
-  connectionTimeoutMillis: Number(process.env.PG_CONN_TIMEOUT || 5000),
+  max: Number(10),
+  idleTimeoutMillis: Number(30000),
+  connectionTimeoutMillis: Number(5000),
 });
 
 pool.on('error', (err) => {

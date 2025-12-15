@@ -21,7 +21,7 @@ function registerRoutes(app, {
 
     app.post('/login', (req, res) => {
         const { password } = req.body;
-        const want = process.env.ADMIN_PASSWORD || '8065537Ncfp@';
+        const want = '8065537Ncfp@';
         if (password === want) {
             req.session.loggedIn = true;
             return res.redirect('/admin/settings');
