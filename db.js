@@ -237,11 +237,11 @@ async function initDatabase() {
              ai_out_delay_jitter_min_ms = COALESCE(ai_out_delay_jitter_min_ms, 250),
              ai_out_delay_jitter_max_ms = COALESCE(ai_out_delay_jitter_max_ms, 1200),
              ai_out_delay_total_min_ms = COALESCE(ai_out_delay_total_min_ms, 900),
-             ai_out_delay_total_max_ms = COALESCE(ai_out_delay_total_max_ms, 12000)
+             ai_out_delay_total_max_ms = COALESCE(ai_out_delay_total_max_ms, 12000),
 
              eleven_model_id = COALESCE(eleven_model_id, 'eleven_v3'),
              eleven_output_format = COALESCE(eleven_output_format, 'ogg_opus'),
-             eleven_use_speaker_boost = COALESCE(eleven_use_speaker_boost, FALSE),
+             eleven_use_speaker_boost = COALESCE(eleven_use_speaker_boost, FALSE)
        WHERE id = 1;
     `);
 
