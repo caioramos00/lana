@@ -509,12 +509,6 @@ function createAiEngine({ db, sendMessage, aiLog = () => { } } = {}) {
       maxOutMessages: cfg.max_out_messages,
     });
 
-    const outItems = normalizeAgentMessages(agent, {
-      batchItems: batch_items,
-      fallbackReplyToWamid,
-      maxOutMessages: cfg.max_out_messages,
-    });
-
     // envia mensagens (se houver)
     for (let i = 0; i < outItems.length; i++) {
       const { text: msg, reply_to_wamid } = outItems[i];
