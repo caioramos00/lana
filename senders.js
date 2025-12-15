@@ -31,6 +31,20 @@ setInterval(() => {
   }
 }, 6 * 60 * 60 * 1000);
 
+function patchOpusHeadInputSampleRate(filePath, targetHz = 24000) {
+  const buf = fs.readFileSync(filePath);
+  const idx = buf.indexOf(Buffer.from('OpusHead'));
+  if (idx < 0) return false;
+
+  // OpusHead(8) + version(1) + channels(1) + preskip(2) = 12 bytes
+  const rateOff = idx + 12;
+  if (rateOff + 4 > buf.length) return false;
+
+  buf.writeUInt32LE(Number(targetHz) >>> 0, rateOff);
+  fs.writeFileSync(filePath, buf);
+  return true;
+}
+
 function rememberInboundMetaPhoneNumberId(wa_id, phone_number_id) {
   const key = String(wa_id || '').trim();
   const pnid = String(phone_number_id || '').trim();
@@ -480,10 +494,12 @@ async function elevenTtsToTempFile(text, settings, opts = {}) {
 
   const buf = Buffer.from(r.data);
 
-  const name = `tts_${Date.now()}_${crypto.randomUUID()}.ogg`;
+  const name = `tts_${Date.now()}_${crypto.randomUUID()}.opus`;
+
   const outPath = path.join(os.tmpdir(), name);
 
   fs.writeFileSync(outPath, buf);
+  patchOpusHeadInputSampleRate(outPath, 24000);
   return outPath;
 }
 
@@ -510,7 +526,7 @@ async function sendTtsVoiceNote(contato, text, opts = {}) {
       token,
       version: settings?.meta_api_version || 'v24.0',
       filePath: tmpFile,
-      mimeType: 'audio/ogg',
+      mimeType: 'audio/ogg; codecs=opus',
     });
 
     // 3) envia audio referenciando media id
