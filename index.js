@@ -67,7 +67,7 @@ function readBatchingFromSettings(settings) {
 
   let inboundDebounceMinMs = Number.isFinite(dMin) ? dMin : 1800;
   let inboundDebounceMaxMs = Number.isFinite(dMax) ? dMax : 3200;
-  let inboundMaxWaitMs     = Number.isFinite(maxW) ? maxW : 12000;
+  let inboundMaxWaitMs = Number.isFinite(maxW) ? maxW : 12000;
 
   if (inboundDebounceMinMs > inboundDebounceMaxMs) {
     const tmp = inboundDebounceMinMs;
@@ -99,6 +99,8 @@ function readBatchingFromSettings(settings) {
     inboundDebounceMinMs: batching.inboundDebounceMinMs,
     inboundDebounceMaxMs: batching.inboundDebounceMaxMs,
     inboundMaxWaitMs: batching.inboundMaxWaitMs,
+    debugDebounce: true,
+    debugLog: aiLog,
 
     onFlushBlock: async (payload) => {
       return ai.handleInboundBlock({ ...payload, lead });

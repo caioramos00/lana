@@ -7,8 +7,30 @@ function createLeadStore({
   inboundMaxWaitMs = 12000,
 
   onFlushBlock,
+
+  // ✅ NOVO: logs do debounce
+  debugDebounce = false,
+  debugLog,
 } = {}) {
   const leadStore = new Map();
+
+  // ✅ logger seguro
+  const _logFn = typeof debugLog === 'function' ? debugLog : console.log;
+  function dlog(event, obj) {
+    if (!debugDebounce) return;
+    try {
+      const ts = new Date().toISOString();
+      _logFn(`[DEBOUNCE][${event}] ${ts} ${obj ? JSON.stringify(obj) : ''}`);
+    } catch {
+      // nunca quebra o bot por causa de log
+    }
+  }
+
+  function previewText(s, max = 80) {
+    const t = String(s || '').replace(/\s+/g, ' ').trim();
+    if (t.length <= max) return t;
+    return t.slice(0, max) + `... (len=${t.length})`;
+  }
 
   // ✅ config mutável (pra atualizar pelo painel sem restart)
   const cfg = {
@@ -36,6 +58,12 @@ function createLeadStore({
     cfg.inboundDebounceMinMs = Math.min(nextMin, nextMax);
     cfg.inboundDebounceMaxMs = Math.max(nextMin, nextMax);
     cfg.inboundMaxWaitMs = nextWait;
+
+    dlog('CONFIG_UPDATE', {
+      inboundDebounceMinMs: cfg.inboundDebounceMinMs,
+      inboundDebounceMaxMs: cfg.inboundDebounceMaxMs,
+      inboundMaxWaitMs: cfg.inboundMaxWaitMs,
+    });
   }
 
   function randInt(min, max) {
@@ -68,6 +96,9 @@ function createLeadStore({
         pending_max_timer: null,
         processing: false,
         flushRequested: false,
+
+        // ✅ NOVO: identifica burst
+        pending_burst_id: 0,
       };
       leadStore.set(key, st);
     }
@@ -125,27 +156,59 @@ function createLeadStore({
       .join('\n');
   }
 
-  async function flushLead(wa_id) {
+  // ✅ flush com "reason" (debounce | maxWait | manual)
+  async function flushLead(wa_id, meta = {}) {
     const st = getLead(wa_id);
     if (!st) return;
 
+    const reason = meta?.reason || 'manual';
+    const burstId = meta?.burstId || st.pending_burst_id || 0;
+    const t0 = now();
+
     if (st.processing) {
       st.flushRequested = true;
+      dlog('FLUSH_SKIPPED_PROCESSING', {
+        wa_id,
+        reason,
+        burstId,
+        pendingLen: st.pending_inbound?.length || 0,
+      });
       return;
     }
 
     if (!st.pending_inbound || st.pending_inbound.length === 0) {
       clearLeadTimers(st);
       st.pending_first_ts = null;
+      dlog('FLUSH_EMPTY', { wa_id, reason, burstId });
       return;
     }
 
+    const pendingLenBefore = st.pending_inbound.length;
+    const firstTs = st.pending_first_ts || null;
+    const lastItemBefore = st.pending_inbound[pendingLenBefore - 1] || null;
+    const lastTs = lastItemBefore?.ts || null;
+
+    dlog('FLUSH_BEGIN', {
+      wa_id,
+      reason,
+      burstId,
+      pendingLenBefore,
+      sinceFirstMs: firstTs ? (t0 - firstTs) : null,
+      sinceLastMs: lastTs ? (t0 - lastTs) : null,
+      lastPreview: lastItemBefore ? previewText(lastItemBefore.text) : null,
+    });
+
     const batch = st.pending_inbound.splice(0, st.pending_inbound.length);
+
+    // encerra burst atual
     clearLeadTimers(st);
     st.pending_first_ts = null;
 
     const mergedText = batch.map(b => b.text).join('\n').trim();
-    if (!mergedText) return;
+    if (!mergedText) {
+      dlog('FLUSH_ABORT_EMPTY_MERGED', { wa_id, reason, burstId, batchCount: batch.length });
+      return;
+    }
 
     const lastMsg = batch[batch.length - 1] || null;
     const mensagemAtualBloco = String(lastMsg?.text || '').trim();
@@ -156,6 +219,17 @@ function createLeadStore({
       batch.map(b => b.inboundPhoneNumberId).filter(Boolean).slice(-1)[0] ||
       st.meta_phone_number_id ||
       null;
+
+    dlog('FLUSH_BATCH_READY', {
+      wa_id,
+      reason,
+      burstId,
+      batchCount: batch.length,
+      mergedLen: mergedText.length,
+      mensagemAtualBlocoPreview: previewText(mensagemAtualBloco),
+      excludeWamidsCount: excludeWamids.size,
+      inboundPhoneNumberId: lastInboundPhoneNumberId,
+    });
 
     st.processing = true;
     st.flushRequested = false;
@@ -168,27 +242,65 @@ function createLeadStore({
           blocoText: mergedText,
           mensagemAtualBloco,
           excludeWamids,
+
+          // ✅ NOVO: debug opcional (não quebra ai.js, ele ignora campos extras)
+          __debounce_debug: {
+            reason,
+            burstId,
+            firstTs,
+            lastTs,
+            flushAt: t0,
+            pendingLenBefore,
+            batchCount: batch.length,
+          },
         });
       }
     } finally {
       st.processing = false;
+      dlog('FLUSH_END', {
+        wa_id,
+        reason,
+        burstId,
+        tookMs: now() - t0,
+        pendingLenAfter: st.pending_inbound?.length || 0,
+        flushRequested: !!st.flushRequested,
+      });
     }
 
+    // se chegaram msgs enquanto processava, reagenda
     if ((st.pending_inbound && st.pending_inbound.length > 0) || st.flushRequested) {
       st.flushRequested = false;
 
       if (!st.pending_first_ts && st.pending_inbound.length > 0) {
         st.pending_first_ts = now();
+        // novo burst id para esse “resto”
+        st.pending_burst_id = (st.pending_burst_id || 0) + 1;
+
+        const maxWaitMs = cfg.inboundMaxWaitMs;
         clearTimeout(st.pending_max_timer);
         st.pending_max_timer = setTimeout(() => {
-          flushLead(wa_id).catch(() => { });
-        }, cfg.inboundMaxWaitMs);
+          flushLead(wa_id, { reason: 'maxWait', burstId: st.pending_burst_id }).catch(() => { });
+        }, maxWaitMs);
+
+        dlog('MAXWAIT_SCHEDULED_AFTER_FLUSH', {
+          wa_id,
+          burstId: st.pending_burst_id,
+          inMs: maxWaitMs,
+        });
       }
 
+      const debounceMs = computeDebounceMs();
       clearTimeout(st.pending_timer);
       st.pending_timer = setTimeout(() => {
-        flushLead(wa_id).catch(() => { });
-      }, computeDebounceMs());
+        flushLead(wa_id, { reason: 'debounce', burstId: st.pending_burst_id }).catch(() => { });
+      }, debounceMs);
+
+      dlog('DEBOUNCE_RESCHEDULED_AFTER_FLUSH', {
+        wa_id,
+        burstId: st.pending_burst_id,
+        inMs: debounceMs,
+        pendingLen: st.pending_inbound.length,
+      });
     }
   }
 
@@ -199,26 +311,55 @@ function createLeadStore({
     const cleanText = String(text || '').trim();
     if (!cleanText) return;
 
+    const t = now();
+
     st.pending_inbound.push({
       text: cleanText,
       wamid: wamid || '',
       inboundPhoneNumberId: inboundPhoneNumberId || null,
-      ts: now(),
+      ts: t,
     });
 
+    // inicia burst se necessário
+    let startedBurst = false;
     if (!st.pending_first_ts) {
-      st.pending_first_ts = now();
+      startedBurst = true;
+      st.pending_first_ts = t;
+      st.pending_burst_id = (st.pending_burst_id || 0) + 1;
+
+      const maxWaitMs = cfg.inboundMaxWaitMs;
 
       clearTimeout(st.pending_max_timer);
       st.pending_max_timer = setTimeout(() => {
-        flushLead(wa_id).catch(() => { });
-      }, cfg.inboundMaxWaitMs);
+        flushLead(wa_id, { reason: 'maxWait', burstId: st.pending_burst_id }).catch(() => { });
+      }, maxWaitMs);
+
+      dlog('MAXWAIT_SCHEDULED', {
+        wa_id,
+        burstId: st.pending_burst_id,
+        inMs: maxWaitMs,
+      });
     }
 
+    // agenda debounce (sempre)
+    const debounceMs = computeDebounceMs();
     clearTimeout(st.pending_timer);
     st.pending_timer = setTimeout(() => {
-      flushLead(wa_id).catch(() => { });
-    }, computeDebounceMs());
+      flushLead(wa_id, { reason: 'debounce', burstId: st.pending_burst_id }).catch(() => { });
+    }, debounceMs);
+
+    dlog('ENQUEUE', {
+      wa_id,
+      burstId: st.pending_burst_id,
+      startedBurst,
+      processing: !!st.processing,
+      pendingLen: st.pending_inbound.length,
+      sinceFirstMs: st.pending_first_ts ? (t - st.pending_first_ts) : null,
+      debounceInMs: debounceMs,
+      textPreview: previewText(cleanText),
+      wamid: wamid || '',
+      inboundPhoneNumberId: inboundPhoneNumberId || null,
+    });
   }
 
   setInterval(() => {
@@ -236,7 +377,8 @@ function createLeadStore({
     pushHistory,
     buildHistoryString,
     enqueueInboundText,
-    updateConfig, // ✅ novo
+    updateConfig,
+    flushLead, // ✅ opcional (se quiser testar manualmente)
   };
 }
 
