@@ -18,6 +18,7 @@ module.exports = async function enviar_audio(ctx, payload) {
       phone_number_id: r.phone_number_id || ctx.inboundPhoneNumberId || null,
       ts_ms: Date.now(),
       reply_to_wamid: ctx.replyToWamid || null,
+      send_response_opus: true
     });
   }
 
