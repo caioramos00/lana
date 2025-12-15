@@ -1,18 +1,40 @@
 module.exports = async function enviar_audio(ctx, payload) {
-  const text = (payload && payload.text)
-    ? String(payload.text)
-    : 'Posso te explicar rapidinho por áudio. É só seguir o passo a passo que dá certo.';
+  let sendResponseOpus = false;
+  let text = '';
 
-  // ✅ se você não passar isso aqui, NUNCA entra no branch do response.opus
-  const sendResponseOpus = !!(payload && payload.send_response_opus);
+  // payload pode vir como string (muito comum em “actions”)
+  if (typeof payload === 'string') {
+    const p = payload.trim();
+    if (p === '__response_opus__' || p === 'response.opus' || p === 'response_opus') {
+      sendResponseOpus = true;
+      text = 'ok';
+    } else {
+      text = p;
+    }
+  } else {
+    text = (payload && payload.text) ? String(payload.text) : '';
+    sendResponseOpus = !!(payload && (payload.send_response_opus || payload.mode === 'response_opus' || payload.debug === 'response_opus'));
+
+    if (String(text || '').trim() === '__response_opus__') {
+      sendResponseOpus = true;
+      text = 'ok';
+    }
+  }
+
+  if (!text) {
+    text = 'Posso te explicar rapidinho por áudio. É só seguir o passo a passo que dá certo.';
+  }
+
+  console.log('[AUDIO][DEBUG][enviar_audio]', JSON.stringify({
+    payloadType: typeof payload,
+    sendResponseOpus,
+    hasText: !!text,
+  }));
 
   const r = await ctx.senders.sendTtsVoiceNote(ctx.wa_id, text, {
     meta_phone_number_id: ctx.inboundPhoneNumberId || null,
     ...(ctx.replyToWamid ? { reply_to_wamid: ctx.replyToWamid } : {}),
-
-    // ✅ DEBUG toggle
     send_response_opus: sendResponseOpus,
-    // (opcional) se quiser apontar um caminho diferente:
     // response_opus_path: payload?.response_opus_path,
   });
 
