@@ -473,8 +473,9 @@ async function elevenTtsToTempFile(text, settings, opts = {}) {
   });
 
   if (r.status < 200 || r.status >= 300) {
-    const msg = (typeof r.data === 'string' ? r.data : '') || '';
-    throw new Error(`ElevenLabs HTTP ${r.status} ${msg.slice(0, 400)}`);
+    let msg = '';
+    try { msg = Buffer.from(r.data || []).toString('utf8'); } catch { }
+    throw new Error(`ElevenLabs HTTP ${r.status} ${msg.slice(0, 800)}`);
   }
 
   const buf = Buffer.from(r.data);
