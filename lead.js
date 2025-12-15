@@ -8,7 +8,7 @@ function createLeadStore({
 
   onFlushBlock,
 
-  // ✅ NOVO: logs do debounce
+  // ✅ logs do debounce
   debugDebounce = false,
   debugLog,
 } = {}) {
@@ -32,7 +32,6 @@ function createLeadStore({
     return t.slice(0, max) + `... (len=${t.length})`;
   }
 
-  // ✅ config mutável (pra atualizar pelo painel sem restart)
   const cfg = {
     inboundDebounceMinMs,
     inboundDebounceMaxMs,
@@ -40,6 +39,7 @@ function createLeadStore({
   };
 
   function now() { return Date.now(); }
+  function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 
   function normMs(v, def, min, max) {
     const n = Number(v);
@@ -97,8 +97,11 @@ function createLeadStore({
         processing: false,
         flushRequested: false,
 
-        // ✅ NOVO: identifica burst
+        // ✅ identifica burst
         pending_burst_id: 0,
+
+        // ✅ IMPLEMENTAÇÃO 2: guard de flushing (evita flush concorrente no "late join window")
+        flushing: false,
       };
       leadStore.set(key, st);
     }
@@ -119,14 +122,18 @@ function createLeadStore({
     }
   }
 
+  // ✅ IMPLEMENTAÇÃO 1: salvar ts_ms em cada item do histórico
   function pushHistory(wa_id, role, text, extra = {}) {
     const st = getLead(wa_id);
     if (!st) return;
 
+    const tsMs = Number.isFinite(extra.ts_ms) ? extra.ts_ms : now();
+
     st.history.push({
       role,
       text: String(text || ''),
-      ts: new Date().toISOString(),
+      ts: new Date(tsMs).toISOString(),
+      ts_ms: tsMs,
       ...extra,
     });
 
@@ -137,13 +144,18 @@ function createLeadStore({
     }
   }
 
+  // ✅ IMPLEMENTAÇÃO 1: buildHistoryString com cutoff por maxTsMs
   function buildHistoryString(st, opts = {}) {
     const hist = Array.isArray(st?.history) ? st.history : [];
     const excludeWamids = opts.excludeWamids;
+    const maxTsMs = opts.maxTsMs;
 
     return hist
       .slice(-maxMsgs)
       .filter((m) => {
+        // corta tudo que foi gravado depois do cutoff (evita "histórico adiantado")
+        if (Number.isFinite(maxTsMs) && Number.isFinite(m?.ts_ms) && m.ts_ms > maxTsMs) return false;
+
         if (!excludeWamids || !(excludeWamids instanceof Set)) return true;
         if (m?.role === 'user' && m?.wamid && excludeWamids.has(m.wamid)) return false;
         return true;
@@ -165,6 +177,7 @@ function createLeadStore({
     const burstId = meta?.burstId || st.pending_burst_id || 0;
     const t0 = now();
 
+    // se já está processando a IA, marca que precisa flushar depois
     if (st.processing) {
       st.flushRequested = true;
       dlog('FLUSH_SKIPPED_PROCESSING', {
@@ -176,131 +189,178 @@ function createLeadStore({
       return;
     }
 
-    if (!st.pending_inbound || st.pending_inbound.length === 0) {
-      clearLeadTimers(st);
-      st.pending_first_ts = null;
-      dlog('FLUSH_EMPTY', { wa_id, reason, burstId });
-      return;
-    }
-
-    const pendingLenBefore = st.pending_inbound.length;
-    const firstTs = st.pending_first_ts || null;
-    const lastItemBefore = st.pending_inbound[pendingLenBefore - 1] || null;
-    const lastTs = lastItemBefore?.ts || null;
-
-    dlog('FLUSH_BEGIN', {
-      wa_id,
-      reason,
-      burstId,
-      pendingLenBefore,
-      sinceFirstMs: firstTs ? (t0 - firstTs) : null,
-      sinceLastMs: lastTs ? (t0 - lastTs) : null,
-      lastPreview: lastItemBefore ? previewText(lastItemBefore.text) : null,
-    });
-
-    const batch = st.pending_inbound.splice(0, st.pending_inbound.length);
-
-    // encerra burst atual
-    clearLeadTimers(st);
-    st.pending_first_ts = null;
-
-    const mergedText = batch.map(b => b.text).join('\n').trim();
-    if (!mergedText) {
-      dlog('FLUSH_ABORT_EMPTY_MERGED', { wa_id, reason, burstId, batchCount: batch.length });
-      return;
-    }
-
-    const lastMsg = batch[batch.length - 1] || null;
-    const mensagemAtualBloco = String(lastMsg?.text || '').trim();
-
-    const excludeWamids = new Set(batch.map(b => b.wamid).filter(Boolean));
-
-    const lastInboundPhoneNumberId =
-      batch.map(b => b.inboundPhoneNumberId).filter(Boolean).slice(-1)[0] ||
-      st.meta_phone_number_id ||
-      null;
-
-    dlog('FLUSH_BATCH_READY', {
-      wa_id,
-      reason,
-      burstId,
-      batchCount: batch.length,
-      mergedLen: mergedText.length,
-      mensagemAtualBlocoPreview: previewText(mensagemAtualBloco),
-      excludeWamidsCount: excludeWamids.size,
-      inboundPhoneNumberId: lastInboundPhoneNumberId,
-    });
-
-    st.processing = true;
-    st.flushRequested = false;
-
-    try {
-      if (typeof onFlushBlock === 'function') {
-        await onFlushBlock({
-          wa_id,
-          inboundPhoneNumberId: lastInboundPhoneNumberId,
-          blocoText: mergedText,
-          mensagemAtualBloco,
-          excludeWamids,
-
-          // ✅ NOVO: debug opcional (não quebra ai.js, ele ignora campos extras)
-          __debounce_debug: {
-            reason,
-            burstId,
-            firstTs,
-            lastTs,
-            flushAt: t0,
-            pendingLenBefore,
-            batchCount: batch.length,
-          },
-        });
-      }
-    } finally {
-      st.processing = false;
-      dlog('FLUSH_END', {
+    // ✅ IMPLEMENTAÇÃO 2: se já está em flushing (late join / montagem), não concorre
+    if (st.flushing) {
+      st.flushRequested = true;
+      dlog('FLUSH_SKIPPED_FLUSHING', {
         wa_id,
         reason,
         burstId,
-        tookMs: now() - t0,
-        pendingLenAfter: st.pending_inbound?.length || 0,
-        flushRequested: !!st.flushRequested,
+        pendingLen: st.pending_inbound?.length || 0,
       });
+      return;
     }
 
-    // se chegaram msgs enquanto processava, reagenda
-    if ((st.pending_inbound && st.pending_inbound.length > 0) || st.flushRequested) {
+    st.flushing = true;
+    try {
+      if (!st.pending_inbound || st.pending_inbound.length === 0) {
+        clearLeadTimers(st);
+        st.pending_first_ts = null;
+        dlog('FLUSH_EMPTY', { wa_id, reason, burstId });
+        return;
+      }
+
+      const pendingLenBefore = st.pending_inbound.length;
+      const firstTs = st.pending_first_ts || null;
+      const lastItemBefore = st.pending_inbound[pendingLenBefore - 1] || null;
+      const lastTsBefore = lastItemBefore?.ts || null;
+
+      dlog('FLUSH_BEGIN', {
+        wa_id,
+        reason,
+        burstId,
+        pendingLenBefore,
+        sinceFirstMs: firstTs ? (t0 - firstTs) : null,
+        sinceLastMs: lastTsBefore ? (t0 - lastTsBefore) : null,
+        lastPreview: lastItemBefore ? previewText(lastItemBefore.text) : null,
+      });
+
+      // ✅ IMPLEMENTAÇÃO 2: "late join window" (pega msg que chegou no limite do flush)
+      // Ajuda MUITO no corte tipo: msg chegou 100~300ms depois do flush começar.
+      // Mantém curtinho pra não "travar" o bot.
+      if (reason === 'debounce' || reason === 'maxWait') {
+        await sleep(350);
+      }
+
+      // se durante o late-join tudo foi drenado por algum motivo, sai
+      if (!st.pending_inbound || st.pending_inbound.length === 0) {
+        clearLeadTimers(st);
+        st.pending_first_ts = null;
+        dlog('FLUSH_EMPTY_AFTER_LATEJOIN', { wa_id, reason, burstId });
+        return;
+      }
+
+      const batch = st.pending_inbound.splice(0, st.pending_inbound.length);
+
+      // encerra burst atual
+      clearLeadTimers(st);
+      st.pending_first_ts = null;
+
+      const mergedText = batch.map(b => b.text).join('\n').trim();
+      if (!mergedText) {
+        dlog('FLUSH_ABORT_EMPTY_MERGED', { wa_id, reason, burstId, batchCount: batch.length });
+        return;
+      }
+
+      const lastMsg = batch[batch.length - 1] || null;
+      const mensagemAtualBloco = String(lastMsg?.text || '').trim();
+
+      const excludeWamids = new Set(batch.map(b => b.wamid).filter(Boolean));
+
+      const lastInboundPhoneNumberId =
+        batch.map(b => b.inboundPhoneNumberId).filter(Boolean).slice(-1)[0] ||
+        st.meta_phone_number_id ||
+        null;
+
+      // ✅ IMPLEMENTAÇÃO 1: cutoff do histórico baseado no TS do último item do batch
+      const historyMaxTsMs = Number.isFinite(lastMsg?.ts) ? lastMsg.ts : t0;
+
+      // snapshot congelado do histórico (sem msgs que chegaram depois do batch)
+      const historicoStrSnapshot = buildHistoryString(st, {
+        excludeWamids,
+        maxTsMs: historyMaxTsMs,
+      });
+
+      dlog('FLUSH_BATCH_READY', {
+        wa_id,
+        reason,
+        burstId,
+        batchCount: batch.length,
+        mergedLen: mergedText.length,
+        mensagemAtualBlocoPreview: previewText(mensagemAtualBloco),
+        excludeWamidsCount: excludeWamids.size,
+        inboundPhoneNumberId: lastInboundPhoneNumberId,
+        historyMaxTsMs,
+      });
+
+      st.processing = true;
       st.flushRequested = false;
 
-      if (!st.pending_first_ts && st.pending_inbound.length > 0) {
-        st.pending_first_ts = now();
-        // novo burst id para esse “resto”
-        st.pending_burst_id = (st.pending_burst_id || 0) + 1;
+      try {
+        if (typeof onFlushBlock === 'function') {
+          await onFlushBlock({
+            wa_id,
+            inboundPhoneNumberId: lastInboundPhoneNumberId,
+            blocoText: mergedText,
+            mensagemAtualBloco,
+            excludeWamids,
 
-        const maxWaitMs = cfg.inboundMaxWaitMs;
-        clearTimeout(st.pending_max_timer);
-        st.pending_max_timer = setTimeout(() => {
-          flushLead(wa_id, { reason: 'maxWait', burstId: st.pending_burst_id }).catch(() => { });
-        }, maxWaitMs);
+            // ✅ IMPLEMENTAÇÃO 1: passa o snapshot pro ai.js
+            historicoStrSnapshot,
+            historyMaxTsMs,
 
-        dlog('MAXWAIT_SCHEDULED_AFTER_FLUSH', {
+            // debug opcional
+            __debounce_debug: {
+              reason,
+              burstId,
+              firstTs,
+              lastTsBefore,
+              flushAt: t0,
+              pendingLenBefore,
+              batchCount: batch.length,
+              historyMaxTsMs,
+            },
+          });
+        }
+      } finally {
+        st.processing = false;
+        dlog('FLUSH_END', {
           wa_id,
-          burstId: st.pending_burst_id,
-          inMs: maxWaitMs,
+          reason,
+          burstId,
+          tookMs: now() - t0,
+          pendingLenAfter: st.pending_inbound?.length || 0,
+          flushRequested: !!st.flushRequested,
         });
       }
 
-      const debounceMs = computeDebounceMs();
-      clearTimeout(st.pending_timer);
-      st.pending_timer = setTimeout(() => {
-        flushLead(wa_id, { reason: 'debounce', burstId: st.pending_burst_id }).catch(() => { });
-      }, debounceMs);
+      // se chegaram msgs enquanto processava, reagenda
+      if ((st.pending_inbound && st.pending_inbound.length > 0) || st.flushRequested) {
+        st.flushRequested = false;
 
-      dlog('DEBOUNCE_RESCHEDULED_AFTER_FLUSH', {
-        wa_id,
-        burstId: st.pending_burst_id,
-        inMs: debounceMs,
-        pendingLen: st.pending_inbound.length,
-      });
+        if (!st.pending_first_ts && st.pending_inbound.length > 0) {
+          st.pending_first_ts = now();
+          // novo burst id para esse “resto”
+          st.pending_burst_id = (st.pending_burst_id || 0) + 1;
+
+          const maxWaitMs = cfg.inboundMaxWaitMs;
+          clearTimeout(st.pending_max_timer);
+          st.pending_max_timer = setTimeout(() => {
+            flushLead(wa_id, { reason: 'maxWait', burstId: st.pending_burst_id }).catch(() => { });
+          }, maxWaitMs);
+
+          dlog('MAXWAIT_SCHEDULED_AFTER_FLUSH', {
+            wa_id,
+            burstId: st.pending_burst_id,
+            inMs: maxWaitMs,
+          });
+        }
+
+        const debounceMs = computeDebounceMs();
+        clearTimeout(st.pending_timer);
+        st.pending_timer = setTimeout(() => {
+          flushLead(wa_id, { reason: 'debounce', burstId: st.pending_burst_id }).catch(() => { });
+        }, debounceMs);
+
+        dlog('DEBOUNCE_RESCHEDULED_AFTER_FLUSH', {
+          wa_id,
+          burstId: st.pending_burst_id,
+          inMs: debounceMs,
+          pendingLen: st.pending_inbound.length,
+        });
+      }
+    } finally {
+      st.flushing = false;
     }
   }
 
@@ -353,6 +413,7 @@ function createLeadStore({
       burstId: st.pending_burst_id,
       startedBurst,
       processing: !!st.processing,
+      flushing: !!st.flushing,
       pendingLen: st.pending_inbound.length,
       sinceFirstMs: st.pending_first_ts ? (t - st.pending_first_ts) : null,
       debounceInMs: debounceMs,
@@ -378,7 +439,7 @@ function createLeadStore({
     buildHistoryString,
     enqueueInboundText,
     updateConfig,
-    flushLead, // ✅ opcional (se quiser testar manualmente)
+    flushLead,
   };
 }
 

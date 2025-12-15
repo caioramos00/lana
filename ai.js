@@ -177,6 +177,11 @@ function createAiEngine({ db, sendMessage, aiLog = () => { } } = {}) {
         blocoText,
         mensagemAtualBloco,
         excludeWamids,
+
+        // ✅ IMPLEMENTAÇÃO 1: snapshot do histórico (congelado no flush)
+        historicoStrSnapshot,
+        historyMaxTsMs,
+
         lead,
     }) {
         if (!lead || typeof lead.getLead !== 'function') {
@@ -205,7 +210,11 @@ function createAiEngine({ db, sendMessage, aiLog = () => { } } = {}) {
         await humanDelayForInboundText(bloco || atual);
 
         const facts = buildFactsJson(st, inboundPhoneNumberId);
-        const historicoStr = lead.buildHistoryString(st, { excludeWamids });
+
+        // ✅ usa o snapshot se veio do flush; se não veio, cai no comportamento antigo
+        const historicoStr = (typeof historicoStrSnapshot === 'string')
+            ? historicoStrSnapshot
+            : lead.buildHistoryString(st, { excludeWamids });
 
         const msgParaPrompt = (bloco && atual && bloco !== atual)
             ? `BLOCO_USUARIO:\n${bloco}\n\nMENSAGEM_ATUAL_BLOCO:\n${atual}`
@@ -215,9 +224,15 @@ function createAiEngine({ db, sendMessage, aiLog = () => { } } = {}) {
 
         // ✅ mantém seus logs atuais
         aiLog(`[AI][CTX][${wa_id}] phone_number_id=${inboundPhoneNumberId || ''}`);
+
+        // ✅ extra: deixa explícito quando veio snapshot (não muda nada, só debug)
+        if (typeof historicoStrSnapshot === 'string') {
+            aiLog(`[AI][CTX][${wa_id}] historySnapshot=ON cutoffTsMs=${Number.isFinite(historyMaxTsMs) ? historyMaxTsMs : ''}`);
+        }
+
         aiLog(`[AI][SYSTEM_PROMPT_RENDERED] (omitted) chars=${(rendered || '').length} sha256=${sha256Of(rendered || '')}`);
 
-        // ✅ NOVO: loga exatamente “o que foi pra IA”
+        // ✅ loga exatamente “o que foi pra IA”
         logAiRequest({
             wa_id,
             inboundPhoneNumberId,
@@ -277,6 +292,7 @@ function createAiEngine({ db, sendMessage, aiLog = () => { } } = {}) {
                     kind: 'text',
                     wamid: r.wamid || '',
                     phone_number_id: r.phone_number_id || inboundPhoneNumberId || null,
+                    ts_ms: Date.now(), // ✅ mantém ts_ms nos históricos novos
                 });
             }
         }
