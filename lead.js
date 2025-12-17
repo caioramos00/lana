@@ -26,7 +26,6 @@ function createLeadStore({
     previewTextMaxLen,
     debugDebounce,
 
-    // ✅ DEDUPE INBOUND
     inboundDedupeTtlMs: 10 * 60 * 1000, // 10 min
     inboundDedupeMax: 300,             // por lead
   };
