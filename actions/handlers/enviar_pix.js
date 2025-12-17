@@ -1,4 +1,5 @@
 // actions/handlers/enviar_pix.js
+const crypto = require('crypto');
 const { CONFIG, getPixForCtx } = require('../config');
 const veltrax = require('../../veltrax');
 
@@ -62,11 +63,34 @@ function maskEmail(email) {
   return `${(u || '').slice(0, 2)}***@${d}`;
 }
 
+function sanitizeKey(v, maxLen = 28) {
+  // só deixa a-zA-Z0-9_
+  const s = String(v || '')
+    .trim()
+    .replace(/\s+/g, '_')
+    .replace(/[^\w]/g, '_')
+    .replace(/_+/g, '_')
+    .replace(/^_+|_+$/g, '');
+
+  if (!s) return 'fase';
+  return s.length > maxLen ? s.slice(0, maxLen) : s;
+}
+
+function makeExternalId({ wa_id, extKey }) {
+  // ts base36 encurta bastante, randHex garante unicidade prática
+  const ts = Date.now().toString(36);
+  const rand = crypto.randomBytes(10).toString('hex'); // 80 bits
+  const key = sanitizeKey(extKey, 28);
+  const wa = String(wa_id || '').replace(/\D/g, '').slice(-18) || 'wa';
+  return `ord_${wa}_${key}_${ts}_${rand}`;
+}
+
 module.exports = async function enviar_pix(ctx) {
   const wa_id = String(ctx?.wa_id || ctx?.waId || '').trim();
   const fase = String(ctx?.agent?.proxima_fase || '').trim();
   const offer_id = pickOfferId(ctx);
 
+  // 1) resolve valor: offer_id > fallback fase
   const offer = offer_id ? findOfferById(offer_id) : null;
   const amount = offer && Number.isFinite(Number(offer.preco))
     ? Number(offer.preco)
@@ -74,13 +98,13 @@ module.exports = async function enviar_pix(ctx) {
 
   const amountFmt = moneyBRL(amount);
 
-  // payer fixo (modo teste)
+  // 2) payer: FIXO (modo teste)
   const payer_name = String('Cliente').trim();
   const payer_email = String('cliente@teste.com').trim() || null;
   const payer_document = String('50728383829').replace(/\D/g, '') || null;
   const payer_phone = normalizePhone(ctx?.lead?.phone || ctx?.agent?.phone || wa_id);
 
-  // callback url
+  // 3) callback url
   const clientCallbackUrl = buildClientCallbackUrl();
   if (!clientCallbackUrl) {
     console.error('[VELTRAX][CFG][MISSING_CALLBACK]', {
@@ -95,17 +119,13 @@ module.exports = async function enviar_pix(ctx) {
     return { ok: false, reason: 'missing-callback-base-url' };
   }
 
-  // external_id único por tentativa
-  const prevAttempt = Number(ctx?.agent?.veltrax_attempt || 0);
-  const attempt = Number.isFinite(prevAttempt) ? (prevAttempt + 1) : 1;
-  if (ctx?.agent) ctx.agent.veltrax_attempt = attempt;
-
+  // 4) external_id: “impossível” repetir na prática (timestamp + crypto random)
   const extKey = offer_id || (fase || 'fase');
-  let external_id = `ord_${wa_id}_${extKey}_r${attempt}`;
 
-  // cria depósito (logs + retry 409)
+  // 5) cria depósito (logs + retry 409 com external_id NOVO)
   let data = null;
   let lastErr = null;
+  let external_id = null;
 
   const safePayerForLog = {
     name: payer_name,
@@ -127,7 +147,7 @@ module.exports = async function enviar_pix(ctx) {
   });
 
   for (let i = 0; i < 2; i++) {
-    const extId = (i === 0) ? external_id : `${external_id}_retry${Date.now()}`;
+    const extId = makeExternalId({ wa_id, extKey });
     const payload = mkPayload(extId);
 
     try {
@@ -169,9 +189,9 @@ module.exports = async function enviar_pix(ctx) {
         meta: e?.meta || null,
       });
 
-      // retry só pra 409 (conflito)
+      // retry só pra 409 (conflito) — com external_id novo
       if (httpStatus === 409 && i === 0) {
-        console.warn('[VELTRAX][DEPOSIT][RETRY_409]', { old_external_id: extId });
+        console.warn('[VELTRAX][DEPOSIT][RETRY_409_NEW_EXTERNAL_ID]', { prev_external_id: extId });
         continue;
       }
 
@@ -182,9 +202,8 @@ module.exports = async function enviar_pix(ctx) {
   if (!data) {
     const httpStatus = lastErr?.http_status || null;
 
-    // mensagem pro usuário
     if (httpStatus === 409) {
-      await ctx.sendText(`Deu conflito ao gerar o Pix (pedido duplicado). Vou gerar outro. Tenta de novo agora.`, { reply_to_wamid: ctx.replyToWamid });
+      await ctx.sendText(`Deu conflito ao gerar o Pix (pedido duplicado). Tenta de novo.`, { reply_to_wamid: ctx.replyToWamid });
     } else if (lastErr?.code === 'VELTRAX_CONFIG') {
       await ctx.sendText(`Config da Veltrax incompleta (client_id/client_secret).`, { reply_to_wamid: ctx.replyToWamid });
     } else {
