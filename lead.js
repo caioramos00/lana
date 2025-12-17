@@ -25,6 +25,10 @@ function createLeadStore({
     lateJoinWindowMs,
     previewTextMaxLen,
     debugDebounce,
+
+    // ✅ DEDUPE INBOUND
+    inboundDedupeTtlMs: 10 * 60 * 1000, // 10 min
+    inboundDedupeMax: 300,             // por lead
   };
 
   const _logFn = typeof debugLog === 'function' ? debugLog : console.log;
@@ -33,10 +37,11 @@ function createLeadStore({
     try {
       const ts = new Date().toISOString();
       _logFn(`[DEBOUNCE][${event}] ${ts} ${obj ? JSON.stringify(obj) : ''}`);
-    } catch {
-      // nunca quebra o bot por causa de log
-    }
+    } catch { }
   }
+
+  function now() { return Date.now(); }
+  function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 
   function getCooldownState(wa_id) {
     const st = getLead(wa_id);
@@ -105,9 +110,6 @@ function createLeadStore({
     return t.slice(0, limit) + `... (len=${t.length})`;
   }
 
-  function now() { return Date.now(); }
-  function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
-
   function toIntOrNull(v) {
     if (v === undefined || v === null) return null;
     const n = Number(String(v).trim());
@@ -141,8 +143,6 @@ function createLeadStore({
     const nextMaxMsgs = clampInt(toIntOrNull(next.maxMsgs), { min: 5, max: 500 });
     if (Number.isFinite(nextMaxMsgs)) {
       cfg.maxMsgs = nextMaxMsgs;
-
-      // ✅ aplica imediatamente nos históricos já existentes
       for (const st of leadStore.values()) {
         if (Array.isArray(st?.history) && st.history.length > cfg.maxMsgs) {
           st.history.splice(0, st.history.length - cfg.maxMsgs);
@@ -153,8 +153,6 @@ function createLeadStore({
     const nextTtlMs = clampInt(toIntOrNull(next.ttlMs), { min: 60_000, max: 2_147_000_000 });
     if (Number.isFinite(nextTtlMs)) {
       cfg.ttlMs = nextTtlMs;
-
-      // ✅ reajusta expiresAt “ao vivo”
       const t = now();
       for (const st of leadStore.values()) {
         st.expiresAt = t + cfg.ttlMs;
@@ -222,6 +220,9 @@ function createLeadStore({
           last_reason: null,
           msgs_since_start: 0,
         },
+
+        // ✅ inbound dedupe
+        __seen_in_wamids: new Map(), // wamid -> ts_ms
       };
       leadStore.set(key, st);
     }
@@ -240,6 +241,43 @@ function createLeadStore({
       clearTimeout(st.pending_max_timer);
       st.pending_max_timer = null;
     }
+  }
+
+  // ✅ DEDUPE helpers
+  function _cleanupSeenInbound(st) {
+    const m = st?.__seen_in_wamids;
+    if (!(m instanceof Map)) return;
+
+    const t = now();
+    for (const [k, v] of m.entries()) {
+      if (!v || (t - v) > cfg.inboundDedupeTtlMs) m.delete(k);
+    }
+
+    // limita tamanho
+    const max = cfg.inboundDedupeMax;
+    if (m.size > max) {
+      const arr = Array.from(m.entries()).sort((a, b) => (a[1] || 0) - (b[1] || 0));
+      const drop = m.size - max;
+      for (let i = 0; i < drop; i++) m.delete(arr[i][0]);
+    }
+  }
+
+  function markInboundWamidSeen(wa_id, wamid) {
+    const st = getLead(wa_id);
+    if (!st) return { ok: false, duplicate: false };
+
+    const w = String(wamid || '').trim();
+    if (!w) return { ok: false, duplicate: false };
+
+    if (!(st.__seen_in_wamids instanceof Map)) st.__seen_in_wamids = new Map();
+    _cleanupSeenInbound(st);
+
+    if (st.__seen_in_wamids.has(w)) {
+      return { ok: true, duplicate: true };
+    }
+
+    st.__seen_in_wamids.set(w, now());
+    return { ok: true, duplicate: false };
   }
 
   function pushHistory(wa_id, role, text, extra = {}) {
@@ -272,7 +310,6 @@ function createLeadStore({
       .slice(-cfg.maxMsgs)
       .filter((m) => {
         if (Number.isFinite(maxTsMs) && Number.isFinite(m?.ts_ms) && m.ts_ms > maxTsMs) return false;
-
         if (!excludeWamids || !(excludeWamids instanceof Set)) return true;
         if (m?.role === 'user' && m?.wamid && excludeWamids.has(m.wamid)) return false;
         return true;
@@ -413,10 +450,8 @@ function createLeadStore({
             excludeWamids,
             replyToWamid,
             batch_items,
-
             historicoStrSnapshot,
             historyMaxTsMs,
-
             __debounce_debug: {
               reason,
               burstId,
@@ -485,6 +520,13 @@ function createLeadStore({
 
     const cleanText = String(text || '').trim();
     if (!cleanText) return;
+
+    // ✅ corta duplicado aqui também
+    const ded = markInboundWamidSeen(wa_id, wamid);
+    if (ded?.duplicate) {
+      dlog('INBOUND_DUP_SKIPPED', { wa_id, wamid: String(wamid || ''), textPreview: previewText(cleanText) });
+      return;
+    }
 
     const t = now();
     bumpCooldownOnUserMsg(wa_id);
@@ -559,6 +601,9 @@ function createLeadStore({
     startCooldown,
     stopCooldown,
     bumpCooldownOnUserMsg,
+
+    // ✅ exporta se quiser logar/usar no routes.js
+    markInboundWamidSeen,
   };
 }
 

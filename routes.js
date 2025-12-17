@@ -8,7 +8,6 @@ function registerRoutes(app, {
   publishMessage,
   publishAck,
   publishState,
-
   ai,
 } = {}) {
   function checkAuth(req, res, next) {
@@ -52,7 +51,6 @@ function registerRoutes(app, {
         system_prompt: global.botSettings.system_prompt,
       };
 
-      // ✅ aplica ao vivo (sem restart)
       if (lead && typeof lead.updateConfig === 'function') {
         lead.updateConfig({
           inboundDebounceMinMs: global.botSettings.inbound_debounce_min_ms,
@@ -156,6 +154,16 @@ function registerRoutes(app, {
             const wamid = m.id;
             const type = m.type;
 
+            // ✅ DEDUPE AQUI (entrada)
+            if (lead && typeof lead.markInboundWamidSeen === 'function') {
+              const r = lead.markInboundWamidSeen(wa_id, wamid);
+              if (r?.duplicate) {
+                // Se quiser logar:
+                // console.log(`[${wa_id}] DUP inbound wamid=${wamid} type=${type}`);
+                continue;
+              }
+            }
+
             try {
               const stLead = lead.getLead(wa_id);
               if (stLead && inboundPhoneNumberId) stLead.meta_phone_number_id = inboundPhoneNumberId;
@@ -181,7 +189,6 @@ function registerRoutes(app, {
 
             publishState({ wa_id, etapa: 'RECEBIDO', vars: { kind: type }, ts: Date.now() });
 
-            // fluxo normal (sem comandos de teste)
             if (type === 'text') {
               lead.enqueueInboundText({
                 wa_id,
