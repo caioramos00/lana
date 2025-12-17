@@ -30,11 +30,14 @@ function createAiEngine({ db, sendMessage, aiLog = () => { } } = {}) {
     return cooldownActive && !breakCooldown;
   }
 
-  function stripSalesActions(agent) {
+  function stripSalesActions(agent, { keepShowOffers = true } = {}) {
     if (!agent || typeof agent !== 'object') return agent;
     if (!agent.acoes || typeof agent.acoes !== 'object') agent.acoes = {};
 
-    agent.acoes.mostrar_ofertas = false;
+    // ✅ NÃO bloqueia mostrar_ofertas (a pedido)
+    if (!keepShowOffers) agent.acoes.mostrar_ofertas = false;
+
+    // ✅ ainda bloqueia cobrança/entrega automática durante cooldown
     agent.acoes.enviar_pix = false;
     agent.acoes.enviar_link_acesso = false;
 
@@ -588,23 +591,11 @@ function createAiEngine({ db, sendMessage, aiLog = () => { } } = {}) {
     const blockSales = shouldBlockSalesActions({ cooldownActive, breakCooldown });
 
     if (blockSales) {
-      // 1) desliga flags de venda (mesmo que o modelo tenha ligado)
-      stripSalesActions(agent);
+      // ✅ durante cooldown a gente só impede PIX/LINK
+      // ✅ mas deixa mostrar_ofertas passar normal
+      stripSalesActions(agent, { keepShowOffers: true });
 
-      // 2) opcionalmente, se você quiser ser “duro” e substituir a fala inteira:
-      //    (recomendado pra evitar o modelo continuar vendendo em texto)
-      const fallback = [
-        'tô por aqui.',
-        'me fala como tá teu dia.',
-      ];
-
-      const forced = forceSafeNonSellingReply(agent, fallback);
-
-      // sobrescreve agent com o forced (mantém compatibilidade com normalizeAgentMessages)
-      agent.messages = forced.messages;
-      agent.intent_detectada = forced.intent_detectada;
-      agent.proxima_fase = forced.proxima_fase;
-      agent.acoes = forced.acoes;
+      // ❌ não substitui mensagens (senão mata conversão e trava UX)
     }
 
     const fallbackReplyToWamid = String(replyToWamid || '').trim() || null;
@@ -645,13 +636,13 @@ function createAiEngine({ db, sendMessage, aiLog = () => { } } = {}) {
     const triedLink = !!agent?.acoes?.enviar_link_acesso;
 
     if (!blockSales) {
-      if ((triedShowOffers || triedPix || triedLink) && typeof lead.startCooldown === 'function') {
-        const reason = triedPix ? 'pix' : (triedShowOffers ? 'offer' : 'link');
+      // ✅ inicia cooldown só quando tentou PIX/LINK (não por mostrar_ofertas)
+      if ((triedPix || triedLink) && typeof lead.startCooldown === 'function') {
+        const reason = triedPix ? 'pix' : 'link';
         lead.startCooldown(wa_id, { durationMs: cfg.salesCooldownMs, reason });
       }
 
-      // ✅ se o usuário disparou gatilho forte, você pode “encerrar” cooldown manualmente também
-      // (útil se você quiser que, quando ele pede pix, o cooldown não atrapalhe)
+      // ✅ se o user deu gatilho forte, encerra cooldown (como já fazia)
       if (breakCooldown && typeof lead.stopCooldown === 'function') {
         lead.stopCooldown(wa_id, { reason: 'break_by_user_intent' });
       }
