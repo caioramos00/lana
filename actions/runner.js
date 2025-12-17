@@ -3,8 +3,6 @@ const crypto = require('crypto');
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 
 function truthyActionValue(v) {
-  // suporta: true/false (seu formato atual)
-  // e também: { enabled: true, ... } se você quiser no futuro
   if (v === true) return { enabled: true, payload: null };
   if (v && typeof v === 'object') {
     const enabled = (v.enabled === undefined) ? true : !!v.enabled;
