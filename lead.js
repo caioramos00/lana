@@ -521,13 +521,6 @@ function createLeadStore({
     const cleanText = String(text || '').trim();
     if (!cleanText) return;
 
-    // ✅ corta duplicado aqui também
-    const ded = markInboundWamidSeen(wa_id, wamid);
-    if (ded?.duplicate) {
-      dlog('INBOUND_DUP_SKIPPED', { wa_id, wamid: String(wamid || ''), textPreview: previewText(cleanText) });
-      return;
-    }
-
     const t = now();
     bumpCooldownOnUserMsg(wa_id);
 
