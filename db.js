@@ -709,8 +709,6 @@ veltrax_webhook_path = COALESCE($68, veltrax_webhook_path),
         vtxClientSecret,
         vtxCbBase,
         vtxWebhookPath,
-
-        (voice_note_fallback_text || '').trim() || null,
       ]
     );
 
