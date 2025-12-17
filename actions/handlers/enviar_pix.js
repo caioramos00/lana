@@ -37,8 +37,20 @@ function normalizePhone(v) {
 }
 
 function buildClientCallbackUrl() {
-  const base = String(global.veltraxConfig?.callback_base_url || '').trim().replace(/\/+$/, '');
-  const path = String(global.veltraxConfig?.webhook_path || '/webhook/veltrax').trim() || '/webhook/veltrax';
+  const base =
+    String(
+      global.veltraxConfig?.callback_base_url ||
+      global.botSettings?.veltrax_callback_base_url ||
+      ''
+    ).trim().replace(/\/+$/, '');
+
+  const path =
+    String(
+      global.veltraxConfig?.webhook_path ||
+      global.botSettings?.veltrax_webhook_path ||
+      '/webhook/veltrax'
+    ).trim() || '/webhook/veltrax';
+
   if (!base) return null;
   return `${base}${path.startsWith('/') ? '' : '/'}${path}`;
 }
