@@ -235,7 +235,11 @@ module.exports = async function enviar_pix(ctx) {
   }
 
   // mensagens
-  await ctx.sendText(`Segue o Pix pra confirmar:`, { reply_to_wamid: ctx.replyToWamid });
+  // ✅ juntar: "Segue o Pix...", "Valor: ...", "Copia e cola:" numa única mensagem com quebras de linha
+  await ctx.sendText(
+    `Segue o Pix pra confirmar:\nValor: ${amountFmt}\nCopia e cola:`,
+    { reply_to_wamid: ctx.replyToWamid }
+  );
   await ctx.delay();
 
   if (offer?.titulo) {
@@ -243,12 +247,7 @@ module.exports = async function enviar_pix(ctx) {
     await ctx.delay();
   }
 
-  await ctx.sendText(`Valor: ${amountFmt}`, { reply_to_wamid: ctx.replyToWamid });
-  await ctx.delay();
-
   if (qrcode) {
-    await ctx.sendText(`Copia e cola:`, { reply_to_wamid: ctx.replyToWamid });
-    await ctx.delay();
     await ctx.sendText(qrcode, { reply_to_wamid: ctx.replyToWamid });
   } else {
     await ctx.sendText(`Não veio o código Pix. Vou precisar gerar de novo.`, { reply_to_wamid: ctx.replyToWamid });

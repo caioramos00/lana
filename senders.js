@@ -352,6 +352,256 @@ async function sendImage(contato, urlOrItems, captionOrOpts, opts = {}) {
   }
 }
 
+// =========================
+// ✅ SEND VIDEO (NOVO)
+// - mesmo padrão do sendImage
+// =========================
+async function sendVideo(contato, urlOrItems, captionOrOpts, opts = {}) {
+  if (typeof captionOrOpts === 'object' && captionOrOpts) {
+    opts = captionOrOpts;
+    captionOrOpts = undefined;
+  }
+
+  const to = String(contato || '').trim();
+  if (!to) return { ok: false, reason: 'missing-to' };
+
+  const isArray = Array.isArray(urlOrItems);
+  const items = isArray
+    ? urlOrItems
+    : [{ url: urlOrItems, caption: captionOrOpts }];
+
+  const delayBetweenMs = opts.delayBetweenMs || [250, 900];
+
+  try {
+    const settings = await getSettings();
+    const { phoneNumberId, token } = await resolveMetaCredentialsForContato(to, settings, opts);
+
+    if (!phoneNumberId || !token) {
+      return { ok: false, reason: 'missing-meta-credentials', phone_number_id: phoneNumberId || null };
+    }
+
+    const results = [];
+    for (let i = 0; i < items.length; i++) {
+      const url = String(items[i]?.url || '').trim();
+      const caption = String(items[i]?.caption || '').trim();
+
+      if (!/^https?:\/\//i.test(url)) {
+        results.push({ ok: false, reason: 'invalid-url', url });
+      } else {
+        const payload = {
+          messaging_product: 'whatsapp',
+          to,
+          type: 'video',
+          video: caption ? { link: url, caption } : { link: url },
+        };
+
+        const replyTo = String(opts.reply_to_wamid || opts.replyToWamid || '').trim() || null;
+        if (replyTo) payload.context = { message_id: replyTo };
+
+        try {
+          const data = await metaPostMessage({
+            phoneNumberId,
+            token,
+            version: settings?.meta_api_version || 'v24.0',
+            payload,
+          });
+
+          try {
+            publishMessage({
+              dir: 'out',
+              wa_id: to,
+              wamid: (data?.messages && data.messages[0]?.id) ? String(data.messages[0].id) : '',
+              kind: 'video',
+              text: caption || '',
+              media: { type: 'video', link: url },
+              ts: Date.now(),
+            });
+          } catch { }
+
+          results.push({ ok: true, wamid: data?.messages?.[0]?.id || '' });
+        } catch (e) {
+          results.push({ ok: false, reason: 'meta-send-failed', error: e?.message || String(e) });
+        }
+      }
+
+      if (i < items.length - 1) {
+        await delayBetween(delayBetweenMs);
+      }
+    }
+
+    const okAll = results.every((r) => r?.ok);
+    return isArray ? { ok: okAll, results, provider: 'meta', phone_number_id: (await resolveMetaCredentialsForContato(to, await getSettings(), opts)).phoneNumberId } : results[0];
+  } catch (e) {
+    return { ok: false, error: e?.message || String(e) };
+  }
+}
+
+// =========================
+// ✅ SEND AUDIO BY LINK (NOVO)
+// - útil pra “enviar_audios.js” entregar áudio por URL
+// =========================
+async function sendAudioByLink(contato, urlOrItems, opts = {}) {
+  const to = String(contato || '').trim();
+  if (!to) return { ok: false, reason: 'missing-to' };
+
+  const isArray = Array.isArray(urlOrItems);
+  const items = isArray ? urlOrItems : [{ url: urlOrItems }];
+
+  const delayBetweenMs = opts.delayBetweenMs || [250, 900];
+
+  try {
+    const settings = await getSettings();
+    const { phoneNumberId, token } = await resolveMetaCredentialsForContato(to, settings, opts);
+
+    if (!phoneNumberId || !token) {
+      return { ok: false, reason: 'missing-meta-credentials', phone_number_id: phoneNumberId || null };
+    }
+
+    const replyTo = String(opts.reply_to_wamid || opts.replyToWamid || '').trim() || null;
+
+    const results = [];
+    for (let i = 0; i < items.length; i++) {
+      const url = String(items[i]?.url || '').trim();
+
+      if (!/^https?:\/\//i.test(url)) {
+        results.push({ ok: false, reason: 'invalid-url', url });
+      } else {
+        const payload = {
+          messaging_product: 'whatsapp',
+          to,
+          type: 'audio',
+          audio: { link: url },
+        };
+
+        if (replyTo) payload.context = { message_id: replyTo };
+
+        try {
+          const data = await metaPostMessage({
+            phoneNumberId,
+            token,
+            version: settings?.meta_api_version || 'v24.0',
+            payload,
+          });
+
+          try {
+            publishMessage({
+              dir: 'out',
+              wa_id: to,
+              wamid: (data?.messages && data.messages[0]?.id) ? String(data.messages[0].id) : '',
+              kind: 'audio',
+              text: '',
+              media: { type: 'audio', link: url },
+              ts: Date.now(),
+            });
+          } catch { }
+
+          results.push({ ok: true, wamid: data?.messages?.[0]?.id || '' });
+        } catch (e) {
+          results.push({ ok: false, reason: 'meta-send-failed', error: e?.message || String(e) });
+        }
+      }
+
+      if (i < items.length - 1) {
+        await delayBetween(delayBetweenMs);
+      }
+    }
+
+    const okAll = results.every((r) => r?.ok);
+    return isArray ? { ok: okAll, results, provider: 'meta', phone_number_id: phoneNumberId } : results[0];
+  } catch (e) {
+    return { ok: false, error: e?.message || String(e) };
+  }
+}
+
+// =========================
+// ✅ SEND DOCUMENT BY LINK (NOVO)
+// =========================
+async function sendDocumentByLink(contato, urlOrItems, captionOrOpts, opts = {}) {
+  if (typeof captionOrOpts === 'object' && captionOrOpts) {
+    opts = captionOrOpts;
+    captionOrOpts = undefined;
+  }
+
+  const to = String(contato || '').trim();
+  if (!to) return { ok: false, reason: 'missing-to' };
+
+  const isArray = Array.isArray(urlOrItems);
+  const items = isArray
+    ? urlOrItems
+    : [{ url: urlOrItems, caption: captionOrOpts, filename: opts.filename }];
+
+  const delayBetweenMs = opts.delayBetweenMs || [250, 900];
+
+  try {
+    const settings = await getSettings();
+    const { phoneNumberId, token } = await resolveMetaCredentialsForContato(to, settings, opts);
+
+    if (!phoneNumberId || !token) {
+      return { ok: false, reason: 'missing-meta-credentials', phone_number_id: phoneNumberId || null };
+    }
+
+    const replyTo = String(opts.reply_to_wamid || opts.replyToWamid || '').trim() || null;
+
+    const results = [];
+    for (let i = 0; i < items.length; i++) {
+      const url = String(items[i]?.url || '').trim();
+      const caption = String(items[i]?.caption || '').trim();
+      const filename = String(items[i]?.filename || opts.filename || '').trim();
+
+      if (!/^https?:\/\//i.test(url)) {
+        results.push({ ok: false, reason: 'invalid-url', url });
+      } else {
+        const doc = { link: url };
+        if (caption) doc.caption = caption;
+        if (filename) doc.filename = filename;
+
+        const payload = {
+          messaging_product: 'whatsapp',
+          to,
+          type: 'document',
+          document: doc,
+        };
+
+        if (replyTo) payload.context = { message_id: replyTo };
+
+        try {
+          const data = await metaPostMessage({
+            phoneNumberId,
+            token,
+            version: settings?.meta_api_version || 'v24.0',
+            payload,
+          });
+
+          try {
+            publishMessage({
+              dir: 'out',
+              wa_id: to,
+              wamid: (data?.messages && data.messages[0]?.id) ? String(data.messages[0].id) : '',
+              kind: 'document',
+              text: caption || '',
+              media: { type: 'document', link: url, filename: filename || '' },
+              ts: Date.now(),
+            });
+          } catch { }
+
+          results.push({ ok: true, wamid: data?.messages?.[0]?.id || '' });
+        } catch (e) {
+          results.push({ ok: false, reason: 'meta-send-failed', error: e?.message || String(e) });
+        }
+      }
+
+      if (i < items.length - 1) {
+        await delayBetween(delayBetweenMs);
+      }
+    }
+
+    const okAll = results.every((r) => r?.ok);
+    return isArray ? { ok: okAll, results, provider: 'meta', phone_number_id: phoneNumberId } : results[0];
+  } catch (e) {
+    return { ok: false, error: e?.message || String(e) };
+  }
+}
+
 async function sendAudioByMediaId(contato, mediaId, opts = {}) {
   const to = String(contato || '').trim();
   const id = String(mediaId || '').trim();
@@ -622,6 +872,10 @@ module.exports = {
   resolveMetaCredentialsForContato,
   sendMessage,
   sendImage,
+
+  sendVideo,
+  sendAudioByLink,
+  sendDocumentByLink,
 
   sendAudioByMediaId,
   sendAudioFromPath,
