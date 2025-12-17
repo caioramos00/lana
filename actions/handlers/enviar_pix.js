@@ -1,5 +1,11 @@
-const { CONFIG, getPixForCtx, moneyBRL } = require('../config');
+// actions/handlers/enviar_pix.js
+const { CONFIG, getPixForCtx } = require('../config');
 const veltrax = require('../../veltrax');
+
+function moneyBRL(n) {
+  const v = Number(n || 0);
+  return `R$ ${v.toFixed(2).replace('.', ',')}`;
+}
 
 function findOfferById(offerId) {
   const id = String(offerId || '').trim();
@@ -50,31 +56,11 @@ module.exports = async function enviar_pix(ctx) {
 
   const amountFmt = moneyBRL(amount);
 
-  // 2) payer: se Veltrax exigir, precisa vir do usuário (não inventar CPF/email)
-  const payer_name =
-    String(ctx?.lead?.nome || ctx?.agent?.nome || 'Cliente').trim() || 'Cliente';
-
-  const payer_email =
-    String(ctx?.lead?.email || ctx?.agent?.payer_email || ctx?.agent?.email || '').trim() || null;
-
-  const payer_document =
-    String(ctx?.lead?.cpf || ctx?.agent?.payer_document || ctx?.agent?.cpf || '').replace(/\D/g, '') || null;
-
-  const payer_phone =
-    normalizePhone(ctx?.lead?.phone || ctx?.agent?.phone || wa_id);
-
-  if (!payer_document || !payer_email) {
-    await ctx.sendText(`Pra gerar o Pix, preciso de 2 dados.`, { reply_to_wamid: ctx.replyToWamid });
-    await ctx.delay();
-    if (!payer_document) {
-      await ctx.sendText(`Me manda seu CPF (só números).`, { reply_to_wamid: ctx.replyToWamid });
-      await ctx.delay();
-    }
-    if (!payer_email) {
-      await ctx.sendText(`Me manda seu e-mail.`, { reply_to_wamid: ctx.replyToWamid });
-    }
-    return { ok: false, reason: 'missing-payer', need: { cpf: !payer_document, email: !payer_email } };
-  }
+  // 2) payer: FIXO (modo teste) — NÃO pede nada pro usuário
+  const payer_name = String('Cliente').trim();
+  const payer_email = String('cliente@teste.com').trim() || null;
+  const payer_document = String('50728383829').replace(/\D/g, '') || null;
+  const payer_phone = normalizePhone(ctx?.lead?.phone || ctx?.agent?.phone || wa_id);
 
   // 3) callback url
   const clientCallbackUrl = buildClientCallbackUrl();
@@ -84,7 +70,6 @@ module.exports = async function enviar_pix(ctx) {
   }
 
   // 4) external_id único por tentativa (pra poder recriar se expirar)
-  // tenta guardar tentativas no ctx.agent (lead store)
   const prevAttempt = Number(ctx?.agent?.veltrax_attempt || 0);
   const attempt = Number.isFinite(prevAttempt) ? (prevAttempt + 1) : 1;
   if (ctx?.agent) ctx.agent.veltrax_attempt = attempt;
@@ -115,7 +100,7 @@ module.exports = async function enviar_pix(ctx) {
   const status = String(data?.qrCodeResponse?.status || 'PENDING');
   const qrcode = data?.qrCodeResponse?.qrcode || null;
 
-  // salva no lead pra você conseguir bater no webhook depois (mínimo)
+  // salva no lead pra bater no webhook depois
   if (ctx?.agent) {
     ctx.agent.veltrax_external_id = external_id;
     ctx.agent.veltrax_transaction_id = transaction_id;
