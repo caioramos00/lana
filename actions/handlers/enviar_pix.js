@@ -3,7 +3,6 @@ const { getPixForCtx } = require('../config');
 module.exports = async function enviar_pix(ctx) {
   const pix = getPixForCtx(ctx);
 
-  // ✅ tudo configurado aqui (backend), não no prompt
   await ctx.sendText(`Segue o Pix pra confirmar:`, { reply_to_wamid: ctx.replyToWamid });
   await ctx.delay();
   await ctx.sendText(`Chave: ${pix.chave}`, { reply_to_wamid: ctx.replyToWamid });
