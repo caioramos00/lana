@@ -29,7 +29,7 @@ function hashActionPayload(payload) {
   }
 }
 
-function createActionRunner({ db, senders, publishState, aiLog = () => {} } = {}) {
+function createActionRunner({ db, senders, publishState, aiLog = () => { } } = {}) {
   // ✅ whitelist: só executa o que existir aqui
   const handlers = {
     mostrar_ofertas: require('./handlers/mostrar_ofertas'),
@@ -103,7 +103,7 @@ function createActionRunner({ db, senders, publishState, aiLog = () => {} } = {}
       const last = stActions.ran[sig] || 0;
       const now = Date.now();
       if (now - last < DEFAULT_COOLDOWN_MS) {
-        aiLog(`[ACTIONS] cooldown: ${name} (${Math.round((DEFAULT_COOLDOWN_MS - (now - last))/1000)}s)`);
+        aiLog(`[ACTIONS] cooldown: ${name} (${Math.round((DEFAULT_COOLDOWN_MS - (now - last)) / 1000)}s)`);
         continue;
       }
 

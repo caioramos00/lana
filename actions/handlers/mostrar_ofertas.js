@@ -1,10 +1,24 @@
 const { CONFIG } = require('../config');
 
-module.exports = async function mostrar_ofertas(ctx) {
-  const ofertas = Array.isArray(CONFIG.ofertas) ? CONFIG.ofertas : [];
-  if (!ofertas.length) return { ok: false, reason: 'no-offers' };
+function pickOfferSet(ctx, payload) {
+  const setFromPayload = payload && typeof payload === 'object' ? payload.set : null;
+  if (setFromPayload && CONFIG.offerSets?.[setFromPayload]) return setFromPayload;
+
+  const intent = String(ctx?.agent?.intent_detectada || '').trim();
+  const setFromIntent = CONFIG.intentToOfferSet?.[intent];
+  if (setFromIntent && CONFIG.offerSets?.[setFromIntent]) return setFromIntent;
+
+  return 'VIP';
+}
+
+module.exports = async function mostrar_ofertas(ctx, payload) {
+  const set = pickOfferSet(ctx, payload);
+  const ofertas = Array.isArray(CONFIG.offerSets?.[set]) ? CONFIG.offerSets[set] : [];
+
+  if (!ofertas.length) return { ok: false, reason: 'no-offers-for-set', set };
 
   await ctx.sendText(`Tenho essas opções agora:`, { reply_to_wamid: ctx.replyToWamid });
+
   for (const o of ofertas) {
     await ctx.delay(200, 650);
     await ctx.sendText(
@@ -13,5 +27,5 @@ module.exports = async function mostrar_ofertas(ctx) {
     );
   }
 
-  return { ok: true, count: ofertas.length };
+  return { ok: true, set, count: ofertas.length };
 };
