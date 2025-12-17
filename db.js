@@ -702,6 +702,8 @@ veltrax_webhook_path = COALESCE($68, veltrax_webhook_path),
         Number.isFinite(vnHistChars) ? vnHistChars : null,
         Number.isFinite(vnScriptMaxChars) ? vnScriptMaxChars : null,
 
+        (voice_note_fallback_text || '').trim() || null,
+
         vtxApiBase,
         vtxClientId,
         vtxClientSecret,
