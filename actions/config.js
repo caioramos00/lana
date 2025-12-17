@@ -16,7 +16,7 @@ const CONFIG = {
 
   offerSets: {
     VIP: [
-      { id: 'vip_basic', titulo: 'Plano Básico', preco: 19.90, resumo: 'Acesso imediato + suporte.' },
+      { id: 'vip_basic', titulo: 'Plano Básico', preco: 2.90, resumo: 'Acesso imediato + suporte.' },
       { id: 'vip_pro', titulo: 'Plano Pro', preco: 49.90, resumo: 'Tudo do Básico + bônus.' },
     ],
 
