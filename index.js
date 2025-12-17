@@ -111,7 +111,6 @@ function readLeadFromSettings(settings) {
     aiLog,
   });
 
-  // ✅ pega do DB (settings)
   const batching = readBatchingFromSettings(global.botSettings);
   const leadCfg = readLeadFromSettings(global.botSettings);
 
