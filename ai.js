@@ -16,6 +16,55 @@ function createAiEngine({ db, sendMessage, aiLog = () => { } } = {}) {
     aiLog,
   });
 
+  function looksLikeStrongBuyIntent(userText) {
+    const t = String(userText || '').toLowerCase();
+
+    // ✅ gatilhos fortes (ajuste livre)
+    // - pedir preço/plano/vip
+    // - pedir pix/pagar/fechar
+    // - pedir o produto diretamente (foto/vídeo/chamada/mimo etc.)
+    return /(\bvip\b|\bplano\b|\bpacote\b|\bpreço\b|\bquanto\b|\bval(or|e)\b|\bmanda\b.*\bpix\b|\bpix\b|\bpagar\b|\bfechou\b|\bquero\b|\bcompro\b|\bassin(at|a)tur\b|\bfoto\b|\bvídeo\b|\bvideo\b|\bchamada\b|\bao vivo\b|\bmimo\b|\blanche\b|\bacademia\b)/i.test(t);
+  }
+
+  function shouldBlockSalesActions({ cooldownActive, breakCooldown }) {
+    return cooldownActive && !breakCooldown;
+  }
+
+  function stripSalesActions(agent) {
+    if (!agent || typeof agent !== 'object') return agent;
+    if (!agent.acoes || typeof agent.acoes !== 'object') agent.acoes = {};
+
+    agent.acoes.mostrar_ofertas = false;
+    agent.acoes.enviar_pix = false;
+    agent.acoes.enviar_link_acesso = false;
+
+    return agent;
+  }
+
+  function forceSafeNonSellingReply(agent, fallbackTextList) {
+    // Se o modelo ainda “fala de venda” no texto, a gente substitui por mensagens neutras.
+    // Isso garante o cooldown de verdade (não só flags).
+    const out = {
+      messages: [],
+      intent_detectada: 'SMALLTALK',
+      proxima_fase: 'AQUECENDO',
+      acoes: {
+        mostrar_ofertas: false,
+        enviar_pix: false,
+        enviar_link_acesso: false,
+        enviar_audio: false,
+        enviar_video: false,
+      },
+    };
+
+    const msgs = Array.isArray(fallbackTextList) ? fallbackTextList : ['to por aqui.', 'me diz uma coisa.'];
+    for (let i = 0; i < Math.min(3, msgs.length); i++) {
+      out.messages.push({ text: String(msgs[i] || '').trim(), reply_to_wamid: null });
+    }
+
+    return out;
+  }
+
   function extractJsonObject(str) {
     const s = String(str || '').trim();
     if (s.startsWith('{') && s.endsWith('}')) return s;
@@ -183,6 +232,12 @@ function createAiEngine({ db, sendMessage, aiLog = () => { } } = {}) {
       totalMax: 12000,
     });
 
+    const salesCooldownMs =
+      clampInt(toNumberOrNull(s.ai_sales_cooldown_ms), { min: 0, max: 7 * 24 * 60 * 60 * 1000 }) ?? (15 * 60 * 1000);
+
+    const salesCooldownMinUserMsgs =
+      clampInt(toNumberOrNull(s.ai_sales_cooldown_min_user_msgs), { min: 0, max: 200 }) ?? 12;
+
     return {
       venice_api_url,
       temperature,
@@ -197,6 +252,8 @@ function createAiEngine({ db, sendMessage, aiLog = () => { } } = {}) {
       msg_parse_error,
       inboundDelay,
       outboundDelay,
+      salesCooldownMs,
+      salesCooldownMinUserMsgs,
     };
   }
 
@@ -259,6 +316,11 @@ function createAiEngine({ db, sendMessage, aiLog = () => { } } = {}) {
     const totalUserMsgs = (st?.history || []).filter(x => x.role === 'user').length;
     const status_lead = totalUserMsgs <= 1 ? 'NOVO' : 'EM_CONVERSA';
 
+    const cd = st?.cooldown || null;
+    const cdUntil = cd && Number.isFinite(cd.active_until_ts) ? cd.active_until_ts : null;
+    const cooldown_ativo = cdUntil ? (now < cdUntil) : false;
+    const cooldown_restante_ms = cooldown_ativo ? Math.max(0, cdUntil - now) : 0;
+
     return {
       status_lead,
       horas_desde_ultima_mensagem_usuario: Math.round(hoursSince * 100) / 100,
@@ -266,6 +328,11 @@ function createAiEngine({ db, sendMessage, aiLog = () => { } } = {}) {
       ja_comprou_vip: false,
       lead_pediu_pra_parar: false,
       meta_phone_number_id: inboundPhoneNumberId || st?.meta_phone_number_id || null,
+
+      cooldown_ativo,
+      cooldown_restante_ms,
+      cooldown_msgs_desde_inicio: cd ? (cd.msgs_since_start || 0) : 0,
+      cooldown_motivo: cd ? (cd.last_reason || null) : null,
     };
   }
 
@@ -421,6 +488,7 @@ function createAiEngine({ db, sendMessage, aiLog = () => { } } = {}) {
     }
 
     const st = lead.getLead(wa_id);
+    const cd = (typeof lead.getCooldownState === 'function') ? lead.getCooldownState(wa_id) : null;
     if (!st) return;
 
     const settings = global.botSettings || await db.getBotSettings();
@@ -439,6 +507,14 @@ function createAiEngine({ db, sendMessage, aiLog = () => { } } = {}) {
 
     const bloco = String(blocoText || '').trim();
     const atual = String(mensagemAtualBloco || '').trim();
+
+    const userTextForIntent = (atual || bloco || '').trim();
+    const cooldownActive = (typeof lead.isCooldownActive === 'function') ? lead.isCooldownActive(wa_id) : false;
+    const breakCooldown = looksLikeStrongBuyIntent(userTextForIntent);
+
+    if (cooldownActive) {
+      aiLog(`[AI][COOLDOWN][${wa_id}] active=YES break=${breakCooldown ? 'YES' : 'NO'} msgs_since=${cd?.msgs_since_start || 0} until=${cd?.active_until_ts || ''}`);
+    }
 
     await humanDelayForInboundText(bloco || atual, cfg.inboundDelay);
 
@@ -501,6 +577,36 @@ function createAiEngine({ db, sendMessage, aiLog = () => { } } = {}) {
 
     const agent = parsed.data;
 
+    // ✅ se o modelo não veio no formato esperado, a gente cai fora
+    if (!agent || typeof agent !== 'object') {
+      await sendMessage(wa_id, cfg.msg_parse_error, {
+        meta_phone_number_id: inboundPhoneNumberId || null,
+      });
+      return;
+    }
+
+    const blockSales = shouldBlockSalesActions({ cooldownActive, breakCooldown });
+
+    if (blockSales) {
+      // 1) desliga flags de venda (mesmo que o modelo tenha ligado)
+      stripSalesActions(agent);
+
+      // 2) opcionalmente, se você quiser ser “duro” e substituir a fala inteira:
+      //    (recomendado pra evitar o modelo continuar vendendo em texto)
+      const fallback = [
+        'tô por aqui.',
+        'me fala como tá teu dia.',
+      ];
+
+      const forced = forceSafeNonSellingReply(agent, fallback);
+
+      // sobrescreve agent com o forced (mantém compatibilidade com normalizeAgentMessages)
+      agent.messages = forced.messages;
+      agent.intent_detectada = forced.intent_detectada;
+      agent.proxima_fase = forced.proxima_fase;
+      agent.acoes = forced.acoes;
+    }
+
     const fallbackReplyToWamid = String(replyToWamid || '').trim() || null;
 
     const outItems = normalizeAgentMessages(agent, {
@@ -529,6 +635,25 @@ function createAiEngine({ db, sendMessage, aiLog = () => { } } = {}) {
           ts_ms: Date.now(),
           reply_to_wamid: reply_to_wamid || null,
         });
+      }
+    }
+
+    // ✅ inicia cooldown quando houver ação de venda relevante
+    // (mesmo que não tenha mensagem, o modelo pode ter tentado acionar)
+    const triedShowOffers = !!agent?.acoes?.mostrar_ofertas;
+    const triedPix = !!agent?.acoes?.enviar_pix;
+    const triedLink = !!agent?.acoes?.enviar_link_acesso;
+
+    if (!blockSales) {
+      if ((triedShowOffers || triedPix || triedLink) && typeof lead.startCooldown === 'function') {
+        const reason = triedPix ? 'pix' : (triedShowOffers ? 'offer' : 'link');
+        lead.startCooldown(wa_id, { durationMs: cfg.salesCooldownMs, reason });
+      }
+
+      // ✅ se o usuário disparou gatilho forte, você pode “encerrar” cooldown manualmente também
+      // (útil se você quiser que, quando ele pede pix, o cooldown não atrapalhe)
+      if (breakCooldown && typeof lead.stopCooldown === 'function') {
+        lead.stopCooldown(wa_id, { reason: 'break_by_user_intent' });
       }
     }
 

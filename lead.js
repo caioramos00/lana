@@ -38,6 +38,66 @@ function createLeadStore({
     }
   }
 
+  function getCooldownState(wa_id) {
+    const st = getLead(wa_id);
+    if (!st) return null;
+    if (!st.cooldown) {
+      st.cooldown = { active_until_ts: null, last_started_ts: null, last_reason: null, msgs_since_start: 0 };
+    }
+    return st.cooldown;
+  }
+
+  function isCooldownActive(wa_id) {
+    const cd = getCooldownState(wa_id);
+    if (!cd) return false;
+    const until = Number.isFinite(cd.active_until_ts) ? cd.active_until_ts : null;
+    if (!until) return false;
+    return now() < until;
+  }
+
+  function startCooldown(wa_id, { durationMs = 15 * 60 * 1000, reason = 'offer' } = {}) {
+    const cd = getCooldownState(wa_id);
+    if (!cd) return;
+
+    const t = now();
+    const dur = Number.isFinite(durationMs) ? Math.max(0, durationMs) : 0;
+
+    cd.last_started_ts = t;
+    cd.active_until_ts = t + dur;
+    cd.last_reason = reason;
+    cd.msgs_since_start = 0;
+
+    dlog('COOLDOWN_START', {
+      wa_id,
+      reason,
+      durationMs: dur,
+      until: cd.active_until_ts,
+    });
+  }
+
+  function stopCooldown(wa_id, { reason = 'manual' } = {}) {
+    const cd = getCooldownState(wa_id);
+    if (!cd) return;
+
+    cd.active_until_ts = null;
+    cd.last_reason = reason;
+
+    dlog('COOLDOWN_STOP', { wa_id, reason });
+  }
+
+  function bumpCooldownOnUserMsg(wa_id) {
+    const cd = getCooldownState(wa_id);
+    if (!cd) return;
+    cd.msgs_since_start = (cd.msgs_since_start || 0) + 1;
+
+    dlog('COOLDOWN_BUMP', {
+      wa_id,
+      msgs_since_start: cd.msgs_since_start,
+      active: isCooldownActive(wa_id),
+      until: cd.active_until_ts || null,
+    });
+  }
+
   function previewText(s, max) {
     const limit = Number.isFinite(Number(max)) ? Number(max) : cfg.previewTextMaxLen;
     const t = String(s || '').replace(/\s+/g, ' ').trim();
@@ -156,6 +216,12 @@ function createLeadStore({
 
         pending_burst_id: 0,
         flushing: false,
+        cooldown: {
+          active_until_ts: null,
+          last_started_ts: null,
+          last_reason: null,
+          msgs_since_start: 0,
+        },
       };
       leadStore.set(key, st);
     }
@@ -421,6 +487,7 @@ function createLeadStore({
     if (!cleanText) return;
 
     const t = now();
+    bumpCooldownOnUserMsg(wa_id);
 
     st.pending_inbound.push({
       text: cleanText,
@@ -487,6 +554,11 @@ function createLeadStore({
     enqueueInboundText,
     updateConfig,
     flushLead,
+    getCooldownState,
+    isCooldownActive,
+    startCooldown,
+    stopCooldown,
+    bumpCooldownOnUserMsg,
   };
 }
 
