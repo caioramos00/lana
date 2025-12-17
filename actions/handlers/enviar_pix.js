@@ -55,12 +55,18 @@ function buildClientCallbackUrl() {
   return `${base}${path.startsWith('/') ? '' : '/'}${path}`;
 }
 
+function maskEmail(email) {
+  const s = String(email || '').trim();
+  if (!s || !s.includes('@')) return null;
+  const [u, d] = s.split('@');
+  return `${(u || '').slice(0, 2)}***@${d}`;
+}
+
 module.exports = async function enviar_pix(ctx) {
   const wa_id = String(ctx?.wa_id || ctx?.waId || '').trim();
   const fase = String(ctx?.agent?.proxima_fase || '').trim();
   const offer_id = pickOfferId(ctx);
 
-  // 1) resolve valor: offer_id (se existir) > fallback por fase
   const offer = offer_id ? findOfferById(offer_id) : null;
   const amount = offer && Number.isFinite(Number(offer.preco))
     ? Number(offer.preco)
@@ -68,51 +74,140 @@ module.exports = async function enviar_pix(ctx) {
 
   const amountFmt = moneyBRL(amount);
 
-  // 2) payer: FIXO (modo teste) — NÃO pede nada pro usuário
+  // payer fixo (modo teste)
   const payer_name = String('Cliente').trim();
   const payer_email = String('cliente@teste.com').trim() || null;
   const payer_document = String('50728383829').replace(/\D/g, '') || null;
   const payer_phone = normalizePhone(ctx?.lead?.phone || ctx?.agent?.phone || wa_id);
 
-  // 3) callback url
+  // callback url
   const clientCallbackUrl = buildClientCallbackUrl();
   if (!clientCallbackUrl) {
+    console.error('[VELTRAX][CFG][MISSING_CALLBACK]', {
+      wa_id,
+      base_from_settings: global.botSettings?.veltrax_callback_base_url || null,
+      path_from_settings: global.botSettings?.veltrax_webhook_path || null,
+      base_from_global: global.veltraxConfig?.callback_base_url || null,
+      path_from_global: global.veltraxConfig?.webhook_path || null,
+    });
+
     await ctx.sendText(`Config de pagamento incompleta (callback URL).`, { reply_to_wamid: ctx.replyToWamid });
     return { ok: false, reason: 'missing-callback-base-url' };
   }
 
-  // 4) external_id único por tentativa (pra poder recriar se expirar)
+  // external_id único por tentativa
   const prevAttempt = Number(ctx?.agent?.veltrax_attempt || 0);
   const attempt = Number.isFinite(prevAttempt) ? (prevAttempt + 1) : 1;
   if (ctx?.agent) ctx.agent.veltrax_attempt = attempt;
 
   const extKey = offer_id || (fase || 'fase');
-  const external_id = `ord_${wa_id}_${extKey}_r${attempt}`;
+  let external_id = `ord_${wa_id}_${extKey}_r${attempt}`;
 
-  // 5) cria depósito na Veltrax
-  let data;
-  try {
-    data = await veltrax.createDeposit({
-      amount,
-      external_id,
-      clientCallbackUrl,
-      payer: {
-        name: payer_name,
-        email: payer_email,
-        document: payer_document,
-        phone: payer_phone || undefined,
-      },
-    });
-  } catch (e) {
-    await ctx.sendText(`Deu erro ao gerar o Pix. Tenta de novo.`, { reply_to_wamid: ctx.replyToWamid });
-    return { ok: false, reason: 'veltrax-error', message: e?.message };
+  // cria depósito (logs + retry 409)
+  let data = null;
+  let lastErr = null;
+
+  const safePayerForLog = {
+    name: payer_name,
+    email: maskEmail(payer_email),
+    document_last4: payer_document ? payer_document.slice(-4) : null,
+    phone_last4: payer_phone ? String(payer_phone).slice(-4) : null,
+  };
+
+  const mkPayload = (extId) => ({
+    amount,
+    external_id: extId,
+    clientCallbackUrl,
+    payer: {
+      name: payer_name,
+      email: payer_email,
+      document: payer_document,
+      phone: payer_phone || undefined,
+    },
+  });
+
+  for (let i = 0; i < 2; i++) {
+    const extId = (i === 0) ? external_id : `${external_id}_retry${Date.now()}`;
+    const payload = mkPayload(extId);
+
+    try {
+      data = await veltrax.createDeposit(payload);
+      external_id = extId;
+
+      console.log('[VELTRAX][DEPOSIT][OK]', {
+        wa_id,
+        offer_id,
+        fase,
+        amount,
+        external_id,
+        callback: clientCallbackUrl,
+      });
+
+      lastErr = null;
+      break;
+    } catch (e) {
+      lastErr = e;
+
+      const httpStatus = e?.http_status || null;
+      const reqId = e?.request_id || null;
+
+      console.error('[VELTRAX][DEPOSIT][ERROR]', {
+        wa_id,
+        offer_id,
+        fase,
+        amount,
+        external_id: extId,
+        callback: clientCallbackUrl,
+        payer: safePayerForLog,
+
+        code: e?.code || null,
+        http_status: httpStatus,
+        request_id: reqId,
+
+        message: e?.message || String(e),
+        response_data: e?.response_data || null,
+        meta: e?.meta || null,
+      });
+
+      // retry só pra 409 (conflito)
+      if (httpStatus === 409 && i === 0) {
+        console.warn('[VELTRAX][DEPOSIT][RETRY_409]', { old_external_id: extId });
+        continue;
+      }
+
+      break;
+    }
+  }
+
+  if (!data) {
+    const httpStatus = lastErr?.http_status || null;
+
+    // mensagem pro usuário
+    if (httpStatus === 409) {
+      await ctx.sendText(`Deu conflito ao gerar o Pix (pedido duplicado). Vou gerar outro. Tenta de novo agora.`, { reply_to_wamid: ctx.replyToWamid });
+    } else if (lastErr?.code === 'VELTRAX_CONFIG') {
+      await ctx.sendText(`Config da Veltrax incompleta (client_id/client_secret).`, { reply_to_wamid: ctx.replyToWamid });
+    } else {
+      await ctx.sendText(`Deu erro ao gerar o Pix. Tenta de novo.`, { reply_to_wamid: ctx.replyToWamid });
+    }
+
+    return {
+      ok: false,
+      reason: 'veltrax-error',
+      code: lastErr?.code || null,
+      http_status: httpStatus,
+      request_id: lastErr?.request_id || null,
+      message: lastErr?.message || null,
+      response_data: lastErr?.response_data || null,
+      meta: lastErr?.meta || null,
+    };
   }
 
   const transaction_id = data?.qrCodeResponse?.transactionId || null;
   const status = String(data?.qrCodeResponse?.status || 'PENDING');
   const qrcode = data?.qrCodeResponse?.qrcode || null;
 
-  // salva no lead pra bater no webhook depois
+  // salva no lead
   if (ctx?.agent) {
     ctx.agent.veltrax_external_id = external_id;
     ctx.agent.veltrax_transaction_id = transaction_id;
@@ -120,7 +215,7 @@ module.exports = async function enviar_pix(ctx) {
     ctx.agent.offer_id = offer_id || ctx.agent.offer_id || null;
   }
 
-  // 6) mensagens
+  // mensagens
   await ctx.sendText(`Segue o Pix pra confirmar:`, { reply_to_wamid: ctx.replyToWamid });
   await ctx.delay();
 
