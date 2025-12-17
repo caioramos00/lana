@@ -27,7 +27,7 @@ const CONFIG = {
     ],
 
     VIDEOS: [
-      { id: 'video_individual', titulo: 'Vídeo individual', preco: 19.90, resumo: 'Vídeo curto sob pedido.' },
+      { id: 'video_individual', titulo: 'Vídeo individual', preco: 1.90, resumo: 'Vídeo curto sob pedido.' },
       { id: 'pack_videos', titulo: 'Pack de vídeos', preco: 59.90, resumo: 'Pacote com vários vídeos.' },
       { id: 'videos_fetiche', titulo: 'Vídeos de fetiche', preco: 79.90, resumo: 'Conteúdo temático sob pedido.' },
     ],

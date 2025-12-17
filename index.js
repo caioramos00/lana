@@ -38,19 +38,30 @@ async function bootstrapDb() {
       const settings = await db.getBotSettings({ bypassCache: true });
 
       global.botSettings = settings;
+
       global.veniceConfig = {
         venice_api_key: settings.venice_api_key,
         venice_model: settings.venice_model,
         system_prompt: settings.system_prompt,
       };
 
+      global.veltraxConfig = {
+        api_base_url: String(settings.veltrax_api_base_url || 'https://api.veltraxpay.com').trim(),
+        client_id: String(settings.veltrax_client_id || '').trim(),
+        client_secret: String(settings.veltrax_client_secret || '').trim(),
+        callback_base_url: String(settings.veltrax_callback_base_url || '').trim(),
+        webhook_path: String(settings.veltrax_webhook_path || '/webhook/veltrax').trim(),
+      };
+
       return;
     } catch (e) {
       attempt++;
       await new Promise(r => setTimeout(r, 1500 * attempt));
+      console.error('[DB][BOOTSTRAP][RETRY]', { attempt, code: e?.code, message: e?.message });
     }
   }
-  console.error('[DB][BOOTSTRAP][ERROR]', err);
+
+  console.error('[DB][BOOTSTRAP][ERROR] failed after retries');
   throw new Error('Falha ao iniciar DB');
 }
 
