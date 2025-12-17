@@ -56,7 +56,7 @@ async function bootstrapDb() {
 
 function isAiDebugOn() {
   const v = global.botSettings?.ai_debug;
-  if (v === undefined || v === null) return true; // default antigo
+  if (v === undefined || v === null) return true;
   return !!v;
 }
 
