@@ -129,11 +129,18 @@ async function initDatabase() {
     await alter(`ALTER TABLE bot_settings ADD COLUMN IF NOT EXISTS voice_note_script_max_chars INTEGER;`);
     await alter(`ALTER TABLE bot_settings ADD COLUMN IF NOT EXISTS voice_note_fallback_text TEXT;`);
 
+    await alter(`ALTER TABLE bot_settings ADD COLUMN IF NOT EXISTS veltrax_api_base_url TEXT;`);
+    await alter(`ALTER TABLE bot_settings ADD COLUMN IF NOT EXISTS veltrax_client_id TEXT;`);
+    await alter(`ALTER TABLE bot_settings ADD COLUMN IF NOT EXISTS veltrax_client_secret TEXT;`);
+    await alter(`ALTER TABLE bot_settings ADD COLUMN IF NOT EXISTS veltrax_callback_base_url TEXT;`);
+    await alter(`ALTER TABLE bot_settings ADD COLUMN IF NOT EXISTS veltrax_webhook_path TEXT;`);
+
+
     const delayCols = [
-      'ai_in_delay_base_min_ms','ai_in_delay_base_max_ms','ai_in_delay_per_char_min_ms','ai_in_delay_per_char_max_ms',
-      'ai_in_delay_cap_ms','ai_in_delay_jitter_min_ms','ai_in_delay_jitter_max_ms','ai_in_delay_total_min_ms','ai_in_delay_total_max_ms',
-      'ai_out_delay_base_min_ms','ai_out_delay_base_max_ms','ai_out_delay_per_char_min_ms','ai_out_delay_per_char_max_ms',
-      'ai_out_delay_cap_ms','ai_out_delay_jitter_min_ms','ai_out_delay_jitter_max_ms','ai_out_delay_total_min_ms','ai_out_delay_total_max_ms',
+      'ai_in_delay_base_min_ms', 'ai_in_delay_base_max_ms', 'ai_in_delay_per_char_min_ms', 'ai_in_delay_per_char_max_ms',
+      'ai_in_delay_cap_ms', 'ai_in_delay_jitter_min_ms', 'ai_in_delay_jitter_max_ms', 'ai_in_delay_total_min_ms', 'ai_in_delay_total_max_ms',
+      'ai_out_delay_base_min_ms', 'ai_out_delay_base_max_ms', 'ai_out_delay_per_char_min_ms', 'ai_out_delay_per_char_max_ms',
+      'ai_out_delay_cap_ms', 'ai_out_delay_jitter_min_ms', 'ai_out_delay_jitter_max_ms', 'ai_out_delay_total_min_ms', 'ai_out_delay_total_max_ms',
     ];
     for (const c of delayCols) {
       await alter(`ALTER TABLE bot_settings ADD COLUMN IF NOT EXISTS ${c} INTEGER;`);
@@ -215,6 +222,10 @@ async function initDatabase() {
              voice_note_system_prompt = COALESCE(voice_note_system_prompt, ''),
              voice_note_user_prompt = COALESCE(voice_note_user_prompt, ''),
 
+             veltrax_api_base_url = COALESCE(veltrax_api_base_url, 'https://api.veltraxpay.com'),
+             veltrax_callback_base_url = COALESCE(veltrax_callback_base_url, ''),
+             veltrax_webhook_path = COALESCE(veltrax_webhook_path, '/webhook/veltrax'),
+
              updated_at = NOW()
        WHERE id = 1;
     `);
@@ -236,7 +247,7 @@ async function initDatabase() {
     await client.query('COMMIT');
     console.log('[DB] Tabelas (bot_settings, bot_meta_numbers) OK.');
   } catch (err) {
-    await client.query('ROLLBACK').catch(() => {});
+    await client.query('ROLLBACK').catch(() => { });
     console.error('[DB][INIT][ERROR]', {
       code: err?.code,
       message: err?.message,
@@ -332,6 +343,13 @@ voice_note_history_max_chars,
 voice_note_script_max_chars,
 voice_note_fallback_text,
 
+veltrax_api_base_url,
+veltrax_client_id,
+veltrax_client_secret,
+veltrax_callback_base_url,
+veltrax_webhook_path,
+
+
       updated_at
     FROM bot_settings
     WHERE id = 1
@@ -423,6 +441,12 @@ async function updateBotSettings(payload) {
       voice_note_script_max_chars,
       voice_note_fallback_text,
 
+      veltrax_api_base_url,
+      veltrax_client_id,
+      veltrax_client_secret,
+      veltrax_callback_base_url,
+      veltrax_webhook_path,
+
     } = payload;
 
     let dMin = clampInt(toIntOrNull(inbound_debounce_min_ms), { min: 200, max: 15000 });
@@ -508,6 +532,12 @@ async function updateBotSettings(payload) {
     const vnHistChars = clampInt(toIntOrNull(voice_note_history_max_chars), { min: 200, max: 8000 });
     const vnScriptMaxChars = clampInt(toIntOrNull(voice_note_script_max_chars), { min: 200, max: 4000 });
 
+    const vtxApiBase = (veltrax_api_base_url || '').trim() || null;
+    const vtxClientId = (veltrax_client_id || '').trim() || null;
+    const vtxClientSecret = (veltrax_client_secret || '').trim() || null;
+    const vtxCbBase = (veltrax_callback_base_url || '').trim() || null;
+    const vtxWebhookPath = (veltrax_webhook_path || '').trim() || null;
+
     await client.query(
       `
       UPDATE bot_settings
@@ -585,6 +615,12 @@ async function updateBotSettings(payload) {
             voice_note_history_max_chars = COALESCE($61, voice_note_history_max_chars),
             voice_note_script_max_chars = COALESCE($62, voice_note_script_max_chars),
             voice_note_fallback_text = COALESCE($63, voice_note_fallback_text),
+
+            veltrax_api_base_url = COALESCE($64, veltrax_api_base_url),
+veltrax_client_id = COALESCE($65, veltrax_client_id),
+veltrax_client_secret = COALESCE($66, veltrax_client_secret),
+veltrax_callback_base_url = COALESCE($67, veltrax_callback_base_url),
+veltrax_webhook_path = COALESCE($68, veltrax_webhook_path),
 
             updated_at = NOW()
        WHERE id = 1
@@ -665,6 +701,12 @@ async function updateBotSettings(payload) {
         Number.isFinite(vnHistItems) ? vnHistItems : null,
         Number.isFinite(vnHistChars) ? vnHistChars : null,
         Number.isFinite(vnScriptMaxChars) ? vnScriptMaxChars : null,
+
+        vtxApiBase,
+        vtxClientId,
+        vtxClientSecret,
+        vtxCbBase,
+        vtxWebhookPath,
 
         (voice_note_fallback_text || '').trim() || null,
       ]

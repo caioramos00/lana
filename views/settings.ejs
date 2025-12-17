@@ -41,6 +41,46 @@
           <hr class="my-3" />
 
           <div class="col-12">
+            <h3 class="mt-3">Pagamentos • Veltrax</h3>
+            <div class="form-text">Tudo salvo no DB (sem env var). Usado para gerar PIX via API e receber webhook.</div>
+          </div>
+
+          <div class="col-12">
+            <label class="form-label">Veltrax API Base URL</label>
+            <input type="text" class="form-control" name="veltrax_api_base_url"
+              value="<%= (s.veltrax_api_base_url !== undefined && s.veltrax_api_base_url !== null) ? s.veltrax_api_base_url : 'https://api.veltraxpay.com' %>">
+            <div class="form-text">Normalmente: https://api.veltraxpay.com</div>
+          </div>
+
+          <div class="col-md-6">
+            <label class="form-label">Veltrax client_id</label>
+            <input type="text" class="form-control" name="veltrax_client_id" value="<%= (s.veltrax_client_id || '') %>"
+              placeholder="seu_client_id">
+          </div>
+
+          <div class="col-md-6">
+            <label class="form-label">Veltrax client_secret</label>
+            <input type="text" class="form-control" name="veltrax_client_secret"
+              value="<%= (s.veltrax_client_secret || '') %>" placeholder="seu_client_secret">
+          </div>
+
+          <div class="col-md-8">
+            <label class="form-label">Callback Base URL (domínio público do seu server)</label>
+            <input type="text" class="form-control" name="veltrax_callback_base_url"
+              value="<%= (s.veltrax_callback_base_url || '') %>" placeholder="https://seu-dominio.com">
+            <div class="form-text">Usado para montar o clientCallbackUrl do depósito.</div>
+          </div>
+
+          <div class="col-md-4">
+            <label class="form-label">Webhook Path</label>
+            <input type="text" class="form-control" name="veltrax_webhook_path"
+              value="<%= (s.veltrax_webhook_path !== undefined && s.veltrax_webhook_path !== null) ? s.veltrax_webhook_path : '/webhook/veltrax' %>">
+            <div class="form-text">Ex.: /webhook/veltrax</div>
+          </div>
+
+          <hr class="my-3" />
+
+          <div class="col-12">
             <h3 class="mt-3">Logs</h3>
           </div>
 

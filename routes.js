@@ -45,6 +45,14 @@ function registerRoutes(app, {
     try {
       await db.updateBotSettings(req.body || {});
       global.botSettings = await db.getBotSettings({ bypassCache: true });
+      global.veltraxConfig = {
+        api_base_url: (global.botSettings.veltrax_api_base_url || 'https://api.veltraxpay.com').trim(),
+        client_id: (global.botSettings.veltrax_client_id || '').trim(),
+        client_secret: (global.botSettings.veltrax_client_secret || '').trim(),
+        callback_base_url: (global.botSettings.veltrax_callback_base_url || '').trim(),
+        webhook_path: (global.botSettings.veltrax_webhook_path || '/webhook/veltrax').trim(),
+      };
+      
       global.veniceConfig = {
         venice_api_key: global.botSettings.venice_api_key,
         venice_model: global.botSettings.venice_model,
