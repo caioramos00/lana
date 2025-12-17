@@ -1,15 +1,18 @@
 const { CONFIG } = require('../config');
 
-module.exports = async function enviar_video(ctx) {
-  const url = CONFIG.media.videoUrl;
+module.exports = async function enviar_video(ctx, payload) {
+  const p = payload || {};
+  const url = String(p.url || (CONFIG?.media?.videoUrl || '')).trim();
   if (!url) return { ok: false, reason: 'missing-videoUrl' };
 
   if (typeof ctx.senders.sendVideo !== 'function') {
     return { ok: false, reason: 'sendVideo-not-implemented' };
   }
 
+  const caption = String(p.caption || 'Segue o vídeo 👇').trim();
+
   const r = await ctx.senders.sendVideo(ctx.wa_id, url, {
-    caption: 'Segue o vídeo 👇',
+    caption,
     meta_phone_number_id: ctx.inboundPhoneNumberId || null,
     ...(ctx.replyToWamid ? { reply_to_wamid: ctx.replyToWamid } : {}),
   });
