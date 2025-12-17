@@ -94,4 +94,30 @@ function getPixForCtx(ctx) {
   return { ...CONFIG.pix, valor: v, valorFmt: moneyBRL(v) };
 }
 
-module.exports = { CONFIG, getPixForCtx };
+let _offerIndex = null;
+
+function buildOfferIndex() {
+  const idx = {};
+  const sets = CONFIG.offerSets || {};
+  for (const [setName, arr] of Object.entries(sets)) {
+    const list = Array.isArray(arr) ? arr : [];
+    for (const o of list) {
+      if (o?.id) idx[String(o.id)] = { ...o, offerSet: setName };
+    }
+  }
+  return idx;
+}
+
+function getOfferById(offerId) {
+  const id = String(offerId || '').trim();
+  if (!id) return null;
+  if (!_offerIndex) _offerIndex = buildOfferIndex();
+  return _offerIndex[id] || null;
+}
+
+function listAllOffers() {
+  if (!_offerIndex) _offerIndex = buildOfferIndex();
+  return Object.values(_offerIndex);
+}
+
+module.exports = { CONFIG, getPixForCtx, moneyBRL, getOfferById, listAllOffers };

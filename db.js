@@ -244,6 +244,36 @@ async function initDatabase() {
       );
     `);
 
+    // 6) veltrax deposits
+    await client.query(`
+  CREATE TABLE IF NOT EXISTS veltrax_deposits (
+    id SERIAL PRIMARY KEY,
+    wa_id VARCHAR(32) NOT NULL,
+    offer_id TEXT,
+    amount NUMERIC(12,2) NOT NULL,
+    external_id TEXT NOT NULL UNIQUE,
+    transaction_id TEXT UNIQUE,
+    status TEXT DEFAULT 'PENDING',
+
+    payer_name TEXT,
+    payer_email TEXT,
+    payer_document TEXT,
+    payer_phone TEXT,
+
+    fee NUMERIC(12,2),
+    net_amount NUMERIC(12,2),
+    end_to_end TEXT,
+
+    raw_webhook JSONB,
+
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+  );
+`);
+
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_veltrax_deposits_wa_offer ON veltrax_deposits (wa_id, offer_id);`);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_veltrax_deposits_status ON veltrax_deposits (status);`);
+
     await client.query('COMMIT');
     console.log('[DB] Tabelas (bot_settings, bot_meta_numbers) OK.');
   } catch (err) {
@@ -780,6 +810,98 @@ async function deleteMetaNumber(id) {
   await pool.query(`DELETE FROM bot_meta_numbers WHERE id = $1`, [id]);
 }
 
+async function createVeltraxDepositRow({
+  wa_id, offer_id, amount, external_id, transaction_id, status,
+  payer_name, payer_email, payer_document, payer_phone,
+}) {
+  const { rows } = await pool.query(
+    `
+    INSERT INTO veltrax_deposits
+      (wa_id, offer_id, amount, external_id, transaction_id, status,
+       payer_name, payer_email, payer_document, payer_phone, updated_at)
+    VALUES
+      ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10, NOW())
+    RETURNING *
+    `,
+    [wa_id, offer_id || null, amount, external_id, transaction_id || null, status || 'PENDING',
+      payer_name || null, payer_email || null, payer_document || null, payer_phone || null]
+  );
+  return rows[0] || null;
+}
+
+async function updateVeltraxDepositFromWebhook(payload) {
+  const transaction_id = payload?.transaction_id || payload?.transactionId || null;
+  const external_id = payload?.external_id || payload?.externalId || null;
+  const status = payload?.status || null;
+
+  if (!transaction_id && !external_id) return null;
+
+  const amount = payload?.amount != null ? Number(payload.amount) : null;
+  const fee = payload?.fee != null ? Number(payload.fee) : null;
+
+  const net_amount =
+    payload?.net_amount != null ? Number(payload.net_amount)
+      : (payload?.net_amout != null ? Number(payload.net_amout) : null); // docs tem typo
+
+  const end_to_end = payload?.end_to_end || payload?.endToEnd || null;
+
+  const { rows } = await pool.query(
+    `
+    UPDATE veltrax_deposits
+       SET status = COALESCE($3, status),
+           transaction_id = COALESCE($1, transaction_id),
+           fee = COALESCE($4, fee),
+           net_amount = COALESCE($5, net_amount),
+           end_to_end = COALESCE($6, end_to_end),
+           raw_webhook = COALESCE($7::jsonb, raw_webhook),
+           updated_at = NOW()
+     WHERE (transaction_id = $1 AND $1 IS NOT NULL)
+        OR (external_id = $2 AND $2 IS NOT NULL)
+     RETURNING *
+    `,
+    [
+      transaction_id,
+      external_id,
+      status,
+      Number.isFinite(fee) ? fee : null,
+      Number.isFinite(net_amount) ? net_amount : null,
+      end_to_end,
+      payload ? JSON.stringify(payload) : null,
+    ]
+  );
+
+  return rows[0] || null;
+}
+
+async function countVeltraxAttempts(wa_id, offer_id) {
+  const { rows } = await pool.query(
+    `SELECT COUNT(*)::int AS c FROM veltrax_deposits WHERE wa_id = $1 AND offer_id = $2`,
+    [wa_id, offer_id || null]
+  );
+  return rows[0]?.c || 0;
+}
+
+async function getLatestPendingVeltraxDeposit(wa_id, offer_id, maxAgeMs) {
+  const { rows } = await pool.query(
+    `
+    SELECT *
+      FROM veltrax_deposits
+     WHERE wa_id = $1
+       AND offer_id = $2
+       AND status IN ('PENDING', 'CREATED')
+     ORDER BY id DESC
+     LIMIT 1
+    `,
+    [wa_id, offer_id || null]
+  );
+  const row = rows[0] || null;
+  if (!row) return null;
+
+  const createdAt = row.created_at ? new Date(row.created_at).getTime() : 0;
+  if (maxAgeMs && createdAt && (Date.now() - createdAt) > maxAgeMs) return null;
+  return row;
+}
+
 module.exports = {
   pool,
   initDatabase,
@@ -791,4 +913,8 @@ module.exports = {
   createMetaNumber,
   updateMetaNumber,
   deleteMetaNumber,
+  createVeltraxDepositRow,
+  updateVeltraxDepositFromWebhook,
+  countVeltraxAttempts,
+  getLatestPendingVeltraxDeposit,
 };

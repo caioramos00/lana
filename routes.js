@@ -52,7 +52,7 @@ function registerRoutes(app, {
         callback_base_url: (global.botSettings.veltrax_callback_base_url || '').trim(),
         webhook_path: (global.botSettings.veltrax_webhook_path || '/webhook/veltrax').trim(),
       };
-      
+
       global.veniceConfig = {
         venice_api_key: global.botSettings.venice_api_key,
         venice_model: global.botSettings.venice_model,
@@ -78,6 +78,62 @@ function registerRoutes(app, {
       res.status(500).send('Erro ao salvar settings.');
     }
   });
+
+  // -------------------- VELTRAX WEBHOOK --------------------
+  function getVeltraxWebhookPaths() {
+    const p = String(global.veltraxConfig?.webhook_path || '/webhook/veltrax').trim() || '/webhook/veltrax';
+    // segurança: registra também o default
+    const list = new Set(['/webhook/veltrax', p]);
+    return [...list];
+  }
+
+  for (const webhookPath of getVeltraxWebhookPaths()) {
+    app.post(webhookPath, async (req, res) => {
+      res.sendStatus(200);
+
+      try {
+        const payload = req.body || {};
+        const row = await db.updateVeltraxDepositFromWebhook(payload);
+
+        // log mínimo
+        const tid = payload?.transaction_id || payload?.transactionId || row?.transaction_id || '';
+        const ext = payload?.external_id || payload?.externalId || row?.external_id || '';
+        const st = payload?.status || row?.status || '';
+        console.log('[VELTRAX][WEBHOOK]', { status: st, transaction_id: tid, external_id: ext });
+
+        if (row?.wa_id && String(st).toUpperCase() === 'COMPLETED') {
+          // avisa o sistema (você decide o que faz depois)
+          publishState?.({
+            wa_id: row.wa_id,
+            etapa: 'VELTRAX_COMPLETED',
+            vars: {
+              offer_id: row.offer_id,
+              amount: Number(row.amount),
+              external_id: row.external_id,
+              transaction_id: row.transaction_id,
+            },
+            ts: Date.now(),
+          });
+
+          // se existir método no lead, marca como pago
+          try {
+            if (lead && typeof lead.markPaymentCompleted === 'function') {
+              lead.markPaymentCompleted(row.wa_id, {
+                provider: 'veltrax',
+                offer_id: row.offer_id,
+                amount: Number(row.amount),
+                external_id: row.external_id,
+                transaction_id: row.transaction_id,
+              });
+            }
+          } catch { }
+        }
+      } catch (e) {
+        // sem spam de log
+        console.log('[VELTRAX][WEBHOOK][ERR]', { message: e?.message });
+      }
+    });
+  }
 
   app.post('/admin/settings/meta/save', checkAuth, async (req, res) => {
     try {
