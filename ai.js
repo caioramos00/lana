@@ -471,6 +471,36 @@ function createAiEngine({ db, sendMessage, aiLog = () => { } } = {}) {
     return { status: r.status, data: r.data };
   }
 
+  function leadAskedForAudio(userText) {
+    const t = String(userText || '').toLowerCase();
+    return /(\báudio\b|\baudio\b|\bmanda( um)? áudio\b|\bmanda( um)? audio\b|\bvoz\b|\bme manda.*(áudio|audio)\b|\bgrava\b)/i.test(t);
+  }
+
+  function stripUrls(text) {
+    return String(text || '').replace(/https?:\/\/\S+/gi, '').replace(/\s+/g, ' ').trim();
+  }
+
+  function makeAutoShortScriptFromText(text) {
+    const clean = stripUrls(text);
+    if (!clean) return 'tlg. é isso.';
+
+    const words = clean.split(/\s+/).filter(Boolean);
+    const cut = words.slice(0, 12).join(' ');
+    return (cut.endsWith('.') || cut.endsWith('!') || cut.endsWith('?')) ? cut : (cut + '.');
+  }
+
+  function makeFreeScriptFromOutItems(outItems) {
+    const texts = (Array.isArray(outItems) ? outItems : [])
+      .map(x => String(x?.text || '').trim())
+      .filter(Boolean);
+
+    const joined = stripUrls(texts.join(' ')).trim();
+    if (!joined) return 'fala aí.';
+
+    const maxChars = 4500;
+    return joined.length <= maxChars ? joined : joined.slice(0, maxChars);
+  }
+
   async function handleInboundBlock({
     wa_id,
     inboundPhoneNumberId,
@@ -512,6 +542,12 @@ function createAiEngine({ db, sendMessage, aiLog = () => { } } = {}) {
     const atual = String(mensagemAtualBloco || '').trim();
 
     const userTextForIntent = (atual || bloco || '').trim();
+    const askedAudio = leadAskedForAudio(userTextForIntent);
+
+    const audioState = (typeof lead.getAudioState === 'function')
+      ? lead.getAudioState(wa_id)
+      : (st.audio_policy || { text_streak_count: 0, next_audio_at: 12 });
+
     const cooldownActive = (typeof lead.isCooldownActive === 'function') ? lead.isCooldownActive(wa_id) : false;
     const breakCooldown = looksLikeStrongBuyIntent(userTextForIntent);
 
@@ -522,6 +558,15 @@ function createAiEngine({ db, sendMessage, aiLog = () => { } } = {}) {
     await humanDelayForInboundText(bloco || atual, cfg.inboundDelay);
 
     const facts = buildFactsJson(st, inboundPhoneNumberId);
+
+    facts.audio_policy = {
+      lead_pediu_audio: !!askedAudio,
+      text_streak_count: audioState?.text_streak_count ?? 0,
+      next_audio_at: audioState?.next_audio_at ?? null,
+      auto_min: 10,
+      auto_max: 15,
+      auto_max_seconds: 5,
+    };
 
     const historicoStr = (typeof historicoStrSnapshot === 'string')
       ? historicoStrSnapshot
@@ -626,6 +671,70 @@ function createAiEngine({ db, sendMessage, aiLog = () => { } } = {}) {
           ts_ms: Date.now(),
           reply_to_wamid: reply_to_wamid || null,
         });
+      }
+    }
+
+    const stAfterTexts = lead.getLead(wa_id);
+    const aAfter = (typeof lead.getAudioState === 'function')
+      ? lead.getAudioState(wa_id)
+      : (stAfterTexts?.audio_policy || null);
+
+    const modelWantsAudio = !!agent?.acoes?.enviar_audio;
+
+    // se actions.js também mandar áudio via enviar_audio, a gente neutraliza aqui pra não duplicar.
+    // (aqui o backend vira "fonte da verdade" do envio de áudio)
+    if (agent?.acoes && typeof agent.acoes === 'object') {
+      agent.acoes.enviar_audio = false;
+    }
+
+    const autoDue =
+      !askedAudio &&
+      !modelWantsAudio &&
+      aAfter &&
+      Number.isFinite(aAfter.text_streak_count) &&
+      Number.isFinite(aAfter.next_audio_at) &&
+      aAfter.text_streak_count >= aAfter.next_audio_at;
+
+    const shouldSendAudio = askedAudio || modelWantsAudio || autoDue;
+
+    if (shouldSendAudio) {
+      let mode = 'AUTO_CURTO';
+      if (askedAudio) mode = 'PEDIDO_LEAD';
+      else if (modelWantsAudio) mode = 'MODEL';
+
+      // script
+      let script = '';
+      if (mode === 'AUTO_CURTO') {
+        const lastText = outItems.length ? outItems[outItems.length - 1].text : '';
+        script = makeAutoShortScriptFromText(lastText);
+      } else {
+        script = makeFreeScriptFromOutItems(outItems);
+      }
+
+      // delay humano antes do áudio (opcional, mas deixa natural)
+      try {
+        await humanDelayForOutboundText(script, cfg.outboundDelay);
+      } catch { }
+
+      const rAudio = await senders.sendTtsVoiceNote(wa_id, script, {
+        meta_phone_number_id: inboundPhoneNumberId || null,
+        ...(fallbackReplyToWamid ? { reply_to_wamid: fallbackReplyToWamid } : {}),
+      });
+
+      if (!rAudio?.ok) {
+        aiLog(`[AI][AUDIO][${wa_id}] FAIL mode=${mode}`, rAudio);
+      } else {
+        // registra no histórico como "não-text" pra resetar streak automaticamente
+        lead.pushHistory(wa_id, 'assistant', `[AUDIO:${mode}]`, {
+          kind: 'audio',
+          audio_kind: mode,
+          wamid: rAudio.wamid || '',
+          phone_number_id: rAudio.phone_number_id || inboundPhoneNumberId || null,
+          ts_ms: Date.now(),
+          reply_to_wamid: fallbackReplyToWamid || null,
+        });
+
+        aiLog(`[AI][AUDIO][${wa_id}] OK mode=${mode} streak_reset next_at=${lead.getAudioState(wa_id)?.next_audio_at}`);
       }
     }
 

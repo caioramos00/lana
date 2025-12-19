@@ -190,6 +190,31 @@ function createLeadStore({
     return randInt(cfg.inboundDebounceMinMs, cfg.inboundDebounceMaxMs);
   }
 
+  function ensureAudioState(st) {
+    if (!st) return null;
+
+    if (!st.audio_policy || typeof st.audio_policy !== 'object') {
+      st.audio_policy = {
+        text_streak_count: 0,     // quantos TEXT do bot seguidos desde o último NÃO-TEXTO
+        next_audio_at: randInt(10, 15), // alvo aleatório 10..15
+        last_audio_ts: null,
+        last_audio_kind: null,    // AUTO_CURTO | PEDIDO_LEAD | MODEL
+      };
+    }
+
+    // sane defaults
+    if (!Number.isFinite(st.audio_policy.text_streak_count)) st.audio_policy.text_streak_count = 0;
+    if (!Number.isFinite(st.audio_policy.next_audio_at)) st.audio_policy.next_audio_at = randInt(10, 15);
+
+    return st.audio_policy;
+  }
+
+  function getAudioState(wa_id) {
+    const st = getLead(wa_id);
+    if (!st) return null;
+    return ensureAudioState(st);
+  }
+
   function getLead(wa_id) {
     const key = String(wa_id || '').trim();
     if (!key) return null;
@@ -220,7 +245,13 @@ function createLeadStore({
           msgs_since_start: 0,
         },
 
-        // ✅ inbound dedupe
+        audio_policy: {
+          text_streak_count: 0,
+          next_audio_at: randInt(10, 15),
+          last_audio_ts: null,
+          last_audio_kind: null,
+        },
+
         __seen_in_wamids: new Map(), // wamid -> ts_ms
       };
       leadStore.set(key, st);
@@ -292,6 +323,20 @@ function createLeadStore({
       ts_ms: tsMs,
       ...extra,
     });
+
+    if (role === 'assistant') {
+      const a = ensureAudioState(st);
+      const kind = String(extra?.kind || 'text').trim().toLowerCase();
+
+      if (kind === 'text') {
+        a.text_streak_count = (a.text_streak_count || 0) + 1;
+      } else {
+        a.text_streak_count = 0;
+        a.next_audio_at = randInt(10, 15);
+        a.last_audio_ts = tsMs;
+        a.last_audio_kind = String(extra?.audio_kind || kind || '').trim() || null;
+      }
+    }
 
     if (role === 'user') st.last_user_ts = now();
 
@@ -593,8 +638,7 @@ function createLeadStore({
     startCooldown,
     stopCooldown,
     bumpCooldownOnUserMsg,
-
-    // ✅ exporta se quiser logar/usar no routes.js
+    getAudioState,
     markInboundWamidSeen,
   };
 }
