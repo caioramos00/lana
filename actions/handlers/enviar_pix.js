@@ -81,20 +81,13 @@ module.exports = async function enviar_pix(ctx) {
   const payer_document = String('50728383829').replace(/\D/g, '') || null;
   const payer_phone = normalizePhone(ctx?.lead?.phone || ctx?.agent?.phone || wa_id);
 
-  // provider
   const provider = pix.pickProviderFromCtx(ctx, { offer });
 
-  // callback url por provider
   const clientCallbackUrl = pix.buildCallbackUrl(provider);
-  if (!clientCallbackUrl) {
-    console.error('[PIX][CFG][MISSING_CALLBACK]', {
-      wa_id,
-      provider,
-      veltrax_callback_base_url: global.botSettings?.veltrax_callback_base_url || null,
-      veltrax_webhook_path: global.botSettings?.veltrax_webhook_path || null,
-      rapdyn_callback_base_url: global.botSettings?.rapdyn_callback_base_url || null,
-      rapdyn_webhook_path: global.botSettings?.rapdyn_webhook_path || null,
-    });
+
+  // ✅ só exige callback se o provider realmente precisar (ex.: veltrax)
+  if (provider === 'veltrax' && !clientCallbackUrl) {
+    console.error('[PIX][CFG][MISSING_CALLBACK]', { wa_id, provider });
     await ctx.sendText(`Config de pagamento incompleta (callback URL).`, { reply_to_wamid: ctx.replyToWamid });
     return { ok: false, reason: 'missing-callback-base-url', provider };
   }
@@ -125,7 +118,7 @@ module.exports = async function enviar_pix(ctx) {
           document: payer_document,
           phone: payer_phone,
         },
-        meta: { wa_id, offer_id, fase },
+        meta: { wa_id, offer_id, fase, product_name: offer?.titulo || null },
       });
       external_id = extId;
       lastErr = null;
