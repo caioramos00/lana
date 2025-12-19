@@ -711,7 +711,7 @@ async function sendTtsVoiceNote(contato, text, opts = {}) {
     tmpFile = await elevenTtsToTempFile(finalText, settings, opts);
 
     const up = await uploadVoiceFile(tmpFile, 'voice.ogg');
-    const rSend = await sendAudioByMediaId(to, up.id, { ...opts, voice_note: true });
+    const rSend = await sendAudio(to, up.id, { ...opts, voice_note: true });
 
     const cfg = resolveElevenConfig(settings, opts);
     return {
