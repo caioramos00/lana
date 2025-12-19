@@ -865,25 +865,32 @@ function createAiEngine({ db, sendMessage, aiLog = () => { } } = {}) {
       maxOutMessages: cfg.max_out_messages,
     });
 
-    for (let i = 0; i < outItems.length; i++) {
-      const { text: msg, reply_to_wamid } = outItems[i];
-      if (i > 0) await humanDelayForOutboundText(msg, cfg.outboundDelay);
+    const modelWantsAudio = !!agent?.acoes?.enviar_audio;
+    const audioOnlyBecauseModel = modelWantsAudio === true;
 
-      const r = await sendMessage(wa_id, msg, {
-        meta_phone_number_id: inboundPhoneNumberId || null,
-        ...(reply_to_wamid ? { reply_to_wamid } : {}),
-      });
+    if (audioOnlyBecauseModel) {
+      aiLog(`[AI][AUDIO_ONLY][${wa_id}] enviar_audio=true -> suprimindo ${outItems.length} msg(s) de texto`);
+    } else {
+      for (let i = 0; i < outItems.length; i++) {
+        const { text: msg, reply_to_wamid } = outItems[i];
+        if (i > 0) await humanDelayForOutboundText(msg, cfg.outboundDelay);
 
-      if (!r?.ok) aiLog(`[AI][SEND][${wa_id}] FAIL`, r);
-
-      if (r?.ok) {
-        lead.pushHistory(wa_id, 'assistant', msg, {
-          kind: 'text',
-          wamid: r.wamid || '',
-          phone_number_id: r.phone_number_id || inboundPhoneNumberId || null,
-          ts_ms: Date.now(),
-          reply_to_wamid: reply_to_wamid || null,
+        const r = await sendMessage(wa_id, msg, {
+          meta_phone_number_id: inboundPhoneNumberId || null,
+          ...(reply_to_wamid ? { reply_to_wamid } : {}),
         });
+
+        if (!r?.ok) aiLog(`[AI][SEND][${wa_id}] FAIL`, r);
+
+        if (r?.ok) {
+          lead.pushHistory(wa_id, 'assistant', msg, {
+            kind: 'text',
+            wamid: r.wamid || '',
+            phone_number_id: r.phone_number_id || inboundPhoneNumberId || null,
+            ts_ms: Date.now(),
+            reply_to_wamid: reply_to_wamid || null,
+          });
+        }
       }
     }
 
@@ -891,8 +898,6 @@ function createAiEngine({ db, sendMessage, aiLog = () => { } } = {}) {
     const aAfter = (typeof lead.getAudioState === 'function')
       ? lead.getAudioState(wa_id)
       : (stAfterTexts?.audio_policy || null);
-
-    const modelWantsAudio = !!agent?.acoes?.enviar_audio;
 
     if (agent?.acoes && typeof agent.acoes === 'object') {
       agent.acoes.enviar_audio = false;
@@ -933,6 +938,10 @@ function createAiEngine({ db, sendMessage, aiLog = () => { } } = {}) {
             chatStr = '';
           }
           chatStr = String(chatStr || '').trim();
+          if (audioOnlyBecauseModel && outItems.length) {
+            const draft = makeFreeScriptFromOutItems(outItems);
+            if (draft) chatStr = `${chatStr}\n\nASSISTANT_DRAFT_PARA_AUDIO:\n${draft}`;
+          }
           if (vn.histMaxChars && chatStr.length > vn.histMaxChars) {
             chatStr = chatStr.slice(chatStr.length - vn.histMaxChars);
           }
