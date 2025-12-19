@@ -93,6 +93,13 @@ async function initDatabase() {
     await alter(`ALTER TABLE bot_settings ADD COLUMN IF NOT EXISTS lead_late_join_window_ms INTEGER;`);
     await alter(`ALTER TABLE bot_settings ADD COLUMN IF NOT EXISTS lead_preview_text_max_len INTEGER;`);
 
+    await alter(`ALTER TABLE bot_settings ADD COLUMN IF NOT EXISTS ai_provider TEXT;`);
+
+    await alter(`ALTER TABLE bot_settings ADD COLUMN IF NOT EXISTS openai_api_key TEXT;`);
+    await alter(`ALTER TABLE bot_settings ADD COLUMN IF NOT EXISTS openai_model TEXT;`);
+    await alter(`ALTER TABLE bot_settings ADD COLUMN IF NOT EXISTS openai_max_output_tokens INTEGER;`);
+    await alter(`ALTER TABLE bot_settings ADD COLUMN IF NOT EXISTS openai_reasoning_effort TEXT;`);
+
     await alter(`ALTER TABLE bot_settings ADD COLUMN IF NOT EXISTS venice_api_url TEXT;`);
     await alter(`ALTER TABLE bot_settings ADD COLUMN IF NOT EXISTS venice_temperature DOUBLE PRECISION;`);
     await alter(`ALTER TABLE bot_settings ADD COLUMN IF NOT EXISTS venice_max_tokens INTEGER;`);
@@ -135,7 +142,6 @@ async function initDatabase() {
     await alter(`ALTER TABLE bot_settings ADD COLUMN IF NOT EXISTS veltrax_callback_base_url TEXT;`);
     await alter(`ALTER TABLE bot_settings ADD COLUMN IF NOT EXISTS veltrax_webhook_path TEXT;`);
 
-
     const delayCols = [
       'ai_in_delay_base_min_ms', 'ai_in_delay_base_max_ms', 'ai_in_delay_per_char_min_ms', 'ai_in_delay_per_char_max_ms',
       'ai_in_delay_cap_ms', 'ai_in_delay_jitter_min_ms', 'ai_in_delay_jitter_max_ms', 'ai_in_delay_total_min_ms', 'ai_in_delay_total_max_ms',
@@ -167,6 +173,12 @@ async function initDatabase() {
              lead_debug_debounce = COALESCE(lead_debug_debounce, TRUE),
              lead_late_join_window_ms = COALESCE(lead_late_join_window_ms, 350),
              lead_preview_text_max_len = COALESCE(lead_preview_text_max_len, 80),
+
+             ai_provider = COALESCE(ai_provider, 'venice'),
+
+             openai_model = COALESCE(openai_model, 'gpt-5'),
+             openai_max_output_tokens = COALESCE(openai_max_output_tokens, 1200),
+             openai_reasoning_effort = COALESCE(openai_reasoning_effort, 'low'),
 
              venice_api_url = COALESCE(venice_api_url, 'https://api.venice.ai/api/v1/chat/completions'),
              venice_temperature = COALESCE(venice_temperature, 0.7),
@@ -317,6 +329,12 @@ async function getBotSettings({ bypassCache = false } = {}) {
       lead_late_join_window_ms,
       lead_preview_text_max_len,
 
+      ai_provider,
+      openai_api_key,
+      openai_model,
+      openai_max_output_tokens,
+      openai_reasoning_effort,
+
       venice_api_url,
       venice_temperature,
       venice_max_tokens,
@@ -414,6 +432,13 @@ async function updateBotSettings(payload) {
       lead_debug_debounce,
       lead_late_join_window_ms,
       lead_preview_text_max_len,
+
+      ai_provider,
+
+      openai_api_key,
+      openai_model,
+      openai_max_output_tokens,
+      openai_reasoning_effort,
 
       venice_api_url,
       venice_temperature,
@@ -568,6 +593,17 @@ async function updateBotSettings(payload) {
     const vtxCbBase = (veltrax_callback_base_url || '').trim() || null;
     const vtxWebhookPath = (veltrax_webhook_path || '').trim() || null;
 
+    const aiProviderRaw = (ai_provider || '').trim().toLowerCase();
+    const aiProvider = (aiProviderRaw === 'venice' || aiProviderRaw === 'openai') ? aiProviderRaw : null;
+
+    const openaiApiKey = (openai_api_key || '').trim() || null;
+    const openaiModel = (openai_model || '').trim() || null;
+
+    const openaiMaxOut = clampInt(toIntOrNull(openai_max_output_tokens), { min: 16, max: 8192 });
+
+    const effortRaw = (openai_reasoning_effort || '').trim().toLowerCase();
+    const openaiEffort = (effortRaw === 'low' || effortRaw === 'medium' || effortRaw === 'high') ? effortRaw : null;
+
     await client.query(
       `
       UPDATE bot_settings
@@ -651,6 +687,14 @@ veltrax_client_id = COALESCE($65, veltrax_client_id),
 veltrax_client_secret = COALESCE($66, veltrax_client_secret),
 veltrax_callback_base_url = COALESCE($67, veltrax_callback_base_url),
 veltrax_webhook_path = COALESCE($68, veltrax_webhook_path),
+
+ai_provider = COALESCE($69, ai_provider),
+
+openai_api_key = COALESCE($70, openai_api_key),
+openai_model = COALESCE($71, openai_model),
+openai_max_output_tokens = COALESCE($72, openai_max_output_tokens),
+openai_reasoning_effort = COALESCE($73, openai_reasoning_effort),
+
 
             updated_at = NOW()
        WHERE id = 1
@@ -739,6 +783,13 @@ veltrax_webhook_path = COALESCE($68, veltrax_webhook_path),
         vtxClientSecret,
         vtxCbBase,
         vtxWebhookPath,
+
+        aiProvider,
+
+        openaiApiKey,
+        openaiModel,
+        Number.isFinite(openaiMaxOut) ? openaiMaxOut : null,
+        openaiEffort,
       ]
     );
 
