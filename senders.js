@@ -432,15 +432,46 @@ async function sendVideo(contato, urlOrItems, captionOrOpts, opts = {}) {
   }
 }
 
-// ======= SEND AUDIO (LINK) =======
-// Observação: WhatsApp Cloud API não suporta caption para áudio.
-// (Se você quiser “texto antes do áudio”, mande sendMessage separado.)
-async function sendAudio(contato, url, opts = {}) {
+// ======= SEND AUDIO (LINK OU MEDIA_ID) =======
+// - Se vier URL http(s) => envia como { link }
+// - Se NÃO vier URL => assume que é MEDIA_ID => envia como { id }
+// Observação: WhatsApp Cloud API permite ambos (self-hosted link ou Meta-hosted id). 
+// (Se quiser “texto antes do áudio”, mande sendMessage separado.)
+async function sendAudio(contato, urlOrIdOrObj, opts = {}) {
   const to = String(contato || '').trim();
-  const link = String(url || '').trim();
   if (!to) return { ok: false, reason: 'missing-to' };
-  if (!link) return { ok: false, reason: 'missing-url' };
-  if (!/^https?:\/\//i.test(link)) return { ok: false, reason: 'invalid-url', url: link };
+
+  let mode = null;
+  let audioObj = null;
+
+  // Aceita objeto { link } ou { id } também (mais explícito, menos ambiguidade)
+  if (urlOrIdOrObj && typeof urlOrIdOrObj === 'object') {
+    const link = String(urlOrIdOrObj.link || urlOrIdOrObj.url || '').trim();
+    const id = String(urlOrIdOrObj.id || '').trim();
+
+    if (link) {
+      if (!/^https?:\/\//i.test(link)) return { ok: false, reason: 'invalid-url', url: link };
+      mode = 'LINK';
+      audioObj = { link };
+    } else if (id) {
+      mode = 'ID';
+      audioObj = { id };
+    } else {
+      return { ok: false, reason: 'missing-link-or-id' };
+    }
+  } else {
+    const raw = String(urlOrIdOrObj || '').trim();
+    if (!raw) return { ok: false, reason: 'missing-url-or-id' };
+
+    if (/^https?:\/\//i.test(raw)) {
+      mode = 'LINK';
+      audioObj = { link: raw };
+    } else {
+      // ✅ aqui tá o teu caso: "1573016313883424" => MEDIA_ID
+      mode = 'ID';
+      audioObj = { id: raw };
+    }
+  }
 
   try {
     const settings = await getSettings();
@@ -456,7 +487,7 @@ async function sendAudio(contato, url, opts = {}) {
       messaging_product: 'whatsapp',
       to,
       type: 'audio',
-      audio: { link },
+      audio: audioObj,
     };
 
     if (replyTo) payload.context = { message_id: replyTo };
@@ -475,14 +506,24 @@ async function sendAudio(contato, url, opts = {}) {
         wamid: (data?.messages && data.messages[0]?.id) ? String(data.messages[0].id) : '',
         kind: 'audio',
         text: '',
-        media: { type: 'audio', link },
+        media: {
+          type: 'audio',
+          ...(mode === 'LINK' ? { link: audioObj.link } : { id: audioObj.id }),
+        },
         ts: Date.now(),
       });
     } catch { }
 
-    return { ok: true, provider: 'meta', phone_number_id: phoneNumberId, wamid: data?.messages?.[0]?.id || '' };
+    return {
+      ok: true,
+      provider: 'meta',
+      phone_number_id: phoneNumberId,
+      wamid: data?.messages?.[0]?.id || '',
+      mode,
+      ...(mode === 'LINK' ? { link: audioObj.link } : { media_id: audioObj.id }),
+    };
   } catch (e) {
-    return { ok: false, error: e?.message || String(e) };
+    return { ok: false, error: e?.message || String(e), mode };
   }
 }
 
