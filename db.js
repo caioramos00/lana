@@ -148,6 +148,12 @@ async function initDatabase() {
     await alter(`ALTER TABLE bot_settings ADD COLUMN IF NOT EXISTS veltrax_callback_base_url TEXT;`);
     await alter(`ALTER TABLE bot_settings ADD COLUMN IF NOT EXISTS veltrax_webhook_path TEXT;`);
 
+    await alter(`ALTER TABLE bot_settings ADD COLUMN IF NOT EXISTS openai_transcribe_enabled BOOLEAN;`);
+    await alter(`ALTER TABLE bot_settings ADD COLUMN IF NOT EXISTS openai_transcribe_model TEXT;`);
+    await alter(`ALTER TABLE bot_settings ADD COLUMN IF NOT EXISTS openai_transcribe_language TEXT;`);
+    await alter(`ALTER TABLE bot_settings ADD COLUMN IF NOT EXISTS openai_transcribe_prompt TEXT;`);
+    await alter(`ALTER TABLE bot_settings ADD COLUMN IF NOT EXISTS openai_transcribe_timeout_ms INTEGER;`);
+
     const delayCols = [
       'ai_in_delay_base_min_ms', 'ai_in_delay_base_max_ms', 'ai_in_delay_per_char_min_ms', 'ai_in_delay_per_char_max_ms',
       'ai_in_delay_cap_ms', 'ai_in_delay_jitter_min_ms', 'ai_in_delay_jitter_max_ms', 'ai_in_delay_total_min_ms', 'ai_in_delay_total_max_ms',
@@ -246,6 +252,12 @@ async function initDatabase() {
              veltrax_api_base_url = COALESCE(veltrax_api_base_url, 'https://api.veltraxpay.com'),
              veltrax_callback_base_url = COALESCE(veltrax_callback_base_url, ''),
              veltrax_webhook_path = COALESCE(veltrax_webhook_path, '/webhook/veltrax'),
+
+             openai_transcribe_enabled = COALESCE(openai_transcribe_enabled, TRUE),
+             openai_transcribe_model = COALESCE(openai_transcribe_model, 'whisper-1'),
+             openai_transcribe_language = COALESCE(openai_transcribe_language, 'pt'),
+             openai_transcribe_prompt = COALESCE(openai_transcribe_prompt, ''),
+             openai_transcribe_timeout_ms = COALESCE(openai_transcribe_timeout_ms, 60000),
 
              updated_at = NOW()
        WHERE id = 1;
@@ -398,21 +410,26 @@ async function getBotSettings({ bypassCache = false } = {}) {
       eleven_use_speaker_boost,
 
       voice_note_system_prompt,
-voice_note_user_prompt,
-voice_note_temperature,
-voice_note_max_tokens,
-voice_note_timeout_ms,
-voice_note_history_max_items,
-voice_note_history_max_chars,
-voice_note_script_max_chars,
-voice_note_fallback_text,
+      voice_note_user_prompt,
+      voice_note_temperature,
+      voice_note_max_tokens,
+      voice_note_timeout_ms,
+      voice_note_history_max_items,
+      voice_note_history_max_chars,
+      voice_note_script_max_chars,
+      voice_note_fallback_text,
 
-veltrax_api_base_url,
-veltrax_client_id,
-veltrax_client_secret,
-veltrax_callback_base_url,
-veltrax_webhook_path,
+      veltrax_api_base_url,
+      veltrax_client_id,
+      veltrax_client_secret,
+      veltrax_callback_base_url,
+      veltrax_webhook_path,
 
+      openai_transcribe_enabled,
+      openai_transcribe_model,
+      openai_transcribe_language,
+      openai_transcribe_prompt,
+      openai_transcribe_timeout_ms,
 
       updated_at
     FROM bot_settings
@@ -523,6 +540,12 @@ async function updateBotSettings(payload) {
       veltrax_client_secret,
       veltrax_callback_base_url,
       veltrax_webhook_path,
+
+      openai_transcribe_enabled,
+      openai_transcribe_model,
+      openai_transcribe_language,
+      openai_transcribe_prompt,
+      openai_transcribe_timeout_ms,
 
     } = payload;
 
@@ -635,6 +658,25 @@ async function updateBotSettings(payload) {
     const voiceNoteOpenAiModel = (voice_note_openai_model || '').trim() || null;
     const voiceNoteVeniceModel = (voice_note_venice_model || '').trim() || null;
 
+    const sttEnabled = toBoolOrNull(openai_transcribe_enabled);
+
+    const sttModel =
+      (openai_transcribe_model !== undefined && openai_transcribe_model !== null)
+        ? String(openai_transcribe_model).trim()
+        : null;
+
+    const sttLang =
+      (openai_transcribe_language !== undefined && openai_transcribe_language !== null)
+        ? String(openai_transcribe_language).trim()
+        : null;
+
+    const sttPrompt =
+      (openai_transcribe_prompt !== undefined && openai_transcribe_prompt !== null)
+        ? String(openai_transcribe_prompt).trim()
+        : null;
+
+    const sttTimeout = clampInt(toIntOrNull(openai_transcribe_timeout_ms), { min: 1000, max: 300000 });
+
     await client.query(
       `
       UPDATE bot_settings
@@ -714,23 +756,29 @@ async function updateBotSettings(payload) {
             voice_note_fallback_text = COALESCE($63, voice_note_fallback_text),
 
             veltrax_api_base_url = COALESCE($64, veltrax_api_base_url),
-veltrax_client_id = COALESCE($65, veltrax_client_id),
-veltrax_client_secret = COALESCE($66, veltrax_client_secret),
-veltrax_callback_base_url = COALESCE($67, veltrax_callback_base_url),
-veltrax_webhook_path = COALESCE($68, veltrax_webhook_path),
+            veltrax_client_id = COALESCE($65, veltrax_client_id),
+            veltrax_client_secret = COALESCE($66, veltrax_client_secret),
+            veltrax_callback_base_url = COALESCE($67, veltrax_callback_base_url),
+            veltrax_webhook_path = COALESCE($68, veltrax_webhook_path),
 
-ai_provider = COALESCE($69, ai_provider),
+            ai_provider = COALESCE($69, ai_provider),
 
-openai_api_key = COALESCE($70, openai_api_key),
-openai_model = COALESCE($71, openai_model),
-openai_max_output_tokens = COALESCE($72, openai_max_output_tokens),
-openai_reasoning_effort = COALESCE($73, openai_reasoning_effort),
+            openai_api_key = COALESCE($70, openai_api_key),
+            openai_model = COALESCE($71, openai_model),
+            openai_max_output_tokens = COALESCE($72, openai_max_output_tokens),
+            openai_reasoning_effort = COALESCE($73, openai_reasoning_effort),
 
-openai_api_url = COALESCE($74, openai_api_url),
+            openai_api_url = COALESCE($74, openai_api_url),
 
-voice_note_ai_provider = COALESCE($75, voice_note_ai_provider),
-voice_note_openai_model = COALESCE($76, voice_note_openai_model),
-voice_note_venice_model = COALESCE($77, voice_note_venice_model),
+            voice_note_ai_provider = COALESCE($75, voice_note_ai_provider),
+            voice_note_openai_model = COALESCE($76, voice_note_openai_model),
+            voice_note_venice_model = COALESCE($77, voice_note_venice_model),
+
+            openai_transcribe_enabled = COALESCE($78, openai_transcribe_enabled),
+            openai_transcribe_model = COALESCE($79, openai_transcribe_model),
+            openai_transcribe_language = COALESCE($80, openai_transcribe_language),
+            openai_transcribe_prompt = COALESCE($81, openai_transcribe_prompt),
+            openai_transcribe_timeout_ms = COALESCE($82, openai_transcribe_timeout_ms),
 
             updated_at = NOW()
        WHERE id = 1
@@ -830,6 +878,12 @@ voice_note_venice_model = COALESCE($77, voice_note_venice_model),
         voiceNoteProvider,
         voiceNoteOpenAiModel,
         voiceNoteVeniceModel,
+
+        sttEnabled,
+        sttModel,
+        sttLang,
+        sttPrompt,
+        Number.isFinite(sttTimeout) ? sttTimeout : null,
       ]
     );
 

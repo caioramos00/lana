@@ -65,6 +65,16 @@ function registerRoutes(app, {
         system_prompt: global.botSettings.system_prompt,
       };
 
+      global.transcribeConfig = {
+        enabled: (global.botSettings.openai_transcribe_enabled === undefined || global.botSettings.openai_transcribe_enabled === null)
+          ? true
+          : !!global.botSettings.openai_transcribe_enabled,
+        model: String(global.botSettings.openai_transcribe_model || '').trim() || 'whisper-1',
+        language: String(global.botSettings.openai_transcribe_language || '').trim(), // '' => autodetect
+        prompt: String(global.botSettings.openai_transcribe_prompt || '').trim(),
+        timeout_ms: Number(global.botSettings.openai_transcribe_timeout_ms) || 60000,
+      };
+
       if (lead && typeof lead.updateConfig === 'function') {
         lead.updateConfig({
           inboundDebounceMinMs: global.botSettings.inbound_debounce_min_ms,
@@ -180,13 +190,28 @@ function registerRoutes(app, {
     if (!apiKey) return { ok: false, reason: 'missing-openai-api-key' };
     if (!FormData) return { ok: false, reason: 'missing-form-data' };
 
-    const model = (process.env.OPENAI_TRANSCRIBE_MODEL || '').trim() || 'whisper-1';
+    const enabled =
+      (settings?.openai_transcribe_enabled === undefined || settings?.openai_transcribe_enabled === null)
+        ? true
+        : !!settings.openai_transcribe_enabled;
+
+    if (!enabled) return { ok: false, reason: 'transcribe-disabled' };
+
+    const model = String(settings?.openai_transcribe_model || '').trim() || 'whisper-1';
+    const language = String(settings?.openai_transcribe_language || '').trim(); // '' => autodetect (não envia)
+    const prompt = String(settings?.openai_transcribe_prompt || '').trim();     // '' => não envia
+    const timeoutMsRaw = Number(settings?.openai_transcribe_timeout_ms);
+    const timeoutMs = Number.isFinite(timeoutMsRaw) ? timeoutMsRaw : 60000;
+
     const url = 'https://api.openai.com/v1/audio/transcriptions';
 
     const form = new FormData();
     form.append('model', model);
     form.append('file', fs.createReadStream(filePath));
-    form.append('language', 'pt');
+
+    if (language) form.append('language', language);
+    if (prompt) form.append('prompt', prompt);
+
     form.append('response_format', 'json');
 
     const r = await axios.post(url, form, {
@@ -194,7 +219,7 @@ function registerRoutes(app, {
         Authorization: `Bearer ${apiKey}`,
         ...form.getHeaders(),
       },
-      timeout: 60000,
+      timeout: timeoutMs,
       validateStatus: () => true,
     });
 
@@ -310,6 +335,17 @@ function registerRoutes(app, {
                   let tmp = null;
                   try {
                     const settingsNow = await db.getBotSettings();
+
+                    const sttEnabled =
+                      (settingsNow?.openai_transcribe_enabled === undefined || settingsNow?.openai_transcribe_enabled === null)
+                        ? true
+                        : !!settingsNow.openai_transcribe_enabled;
+
+                    if (!sttEnabled) {
+                      console.log('[AUDIO][TRANSCRIBE][SKIP]', { wa_id, reason: 'disabled' });
+                      publishState?.({ wa_id, etapa: 'AUDIO_TRANSCRIBE_DISABLED', vars: {}, ts: Date.now() });
+                      return;
+                    }
 
                     // baixa áudio pra temp
                     const dl = await downloadMetaMediaToTempFile(wa_id, mediaId, {

@@ -562,6 +562,60 @@
             <hr class="my-3" />
 
             <div class="col-12">
+              <h3 class="mt-3">Transcrição (STT) • Áudio recebido</h3>
+              <div class="form-text">
+                Essas configs controlam a transcrição de áudios recebidos (voice notes) antes de entrarem no seu fluxo
+                de IA.
+                Tudo salvo no DB e aplicado sem restart.
+              </div>
+            </div>
+
+            <div class="col-12">
+              <div class="form-check">
+                <input type="hidden" name="openai_transcribe_enabled" value="0" />
+                <input class="form-check-input" type="checkbox" name="openai_transcribe_enabled" value="1"
+                  id="openai_transcribe_enabled" <%=((s.openai_transcribe_enabled===undefined ||
+                  s.openai_transcribe_enabled===null) ? true : !!s.openai_transcribe_enabled) ? 'checked' : '' %> />
+                <label class="form-check-label" for="openai_transcribe_enabled">
+                  Ativar transcrição de áudio
+                </label>
+              </div>
+            </div>
+
+            <div class="col-md-4">
+              <label class="form-label">STT Model</label>
+              <input type="text" class="form-control" name="openai_transcribe_model"
+                value="<%= (s.openai_transcribe_model !== undefined && s.openai_transcribe_model !== null) ? s.openai_transcribe_model : 'whisper-1' %>"
+                placeholder="whisper-1">
+              <div class="form-text">Se vazio, cai no default (whisper-1).</div>
+            </div>
+
+            <div class="col-md-4">
+              <label class="form-label">Language</label>
+              <input type="text" class="form-control" name="openai_transcribe_language"
+                value="<%= (s.openai_transcribe_language !== undefined && s.openai_transcribe_language !== null) ? s.openai_transcribe_language : 'pt' %>"
+                placeholder="pt">
+              <div class="form-text">Use <code>pt</code> ou deixe vazio para autodetect.</div>
+            </div>
+
+            <div class="col-md-4">
+              <label class="form-label">STT Timeout (ms)</label>
+              <input type="number" class="form-control" name="openai_transcribe_timeout_ms"
+                value="<%= (s.openai_transcribe_timeout_ms !== undefined && s.openai_transcribe_timeout_ms !== null) ? s.openai_transcribe_timeout_ms : 60000 %>"
+                min="1000" max="300000" step="500">
+            </div>
+
+            <div class="col-12">
+              <label class="form-label">STT Prompt (opcional)</label>
+              <input type="text" class="form-control" name="openai_transcribe_prompt"
+                value="<%= (s.openai_transcribe_prompt !== undefined && s.openai_transcribe_prompt !== null) ? s.openai_transcribe_prompt : '' %>"
+                placeholder="(opcional) contexto pra melhorar a transcrição...">
+              <div class="form-text">Se vazio, não envia prompt no endpoint de transcrição.</div>
+            </div>
+
+            <hr class="my-3" />
+
+            <div class="col-12">
               <h3 class="mt-3">Mensagens fixas (AI)</h3>
             </div>
 
