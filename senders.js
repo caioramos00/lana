@@ -702,7 +702,7 @@ async function sendTtsVoiceNote(contato, text, opts = {}) {
     }
 
     const uploadVoiceFile = async (filePath, filename) => {
-      const mimesToTry = ['audio/ogg; codecs=opus', 'audio/ogg', 'audio/opus'];
+      const mimesToTry = ['audio/ogg'];
       let lastErr = null;
       for (const mt of mimesToTry) {
         try {
