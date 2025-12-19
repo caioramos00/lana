@@ -1,5 +1,11 @@
 const path = require('path');
-const { sendMessage } = require('./senders');
+const axios = require('axios');
+const fs = require('fs');
+
+let FormData = null;
+try { FormData = require('form-data'); } catch { /* ok */ }
+
+const { downloadMetaMediaToTempFile } = require('./senders');
 
 function registerRoutes(app, {
   db,
@@ -169,6 +175,39 @@ function registerRoutes(app, {
     }
   });
 
+  async function transcribeAudioOpenAI({ filePath, settings }) {
+    const apiKey = String(settings?.openai_api_key || '').trim();
+    if (!apiKey) return { ok: false, reason: 'missing-openai-api-key' };
+    if (!FormData) return { ok: false, reason: 'missing-form-data' };
+
+    const model = (process.env.OPENAI_TRANSCRIBE_MODEL || '').trim() || 'whisper-1';
+    const url = 'https://api.openai.com/v1/audio/transcriptions';
+
+    const form = new FormData();
+    form.append('model', model);
+    form.append('file', fs.createReadStream(filePath));
+    form.append('language', 'pt');
+    form.append('response_format', 'json');
+
+    const r = await axios.post(url, form, {
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        ...form.getHeaders(),
+      },
+      timeout: 60000,
+      validateStatus: () => true,
+    });
+
+    if (r.status < 200 || r.status >= 300) {
+      const body = r.data ? JSON.stringify(r.data).slice(0, 800) : '';
+      return { ok: false, reason: `openai-http-${r.status}`, body };
+    }
+
+    const text = String(r.data?.text || '').trim();
+    if (!text) return { ok: false, reason: 'empty-transcript' };
+    return { ok: true, text, model };
+  }
+
   app.get('/webhook', async (req, res) => {
     const mode = req.query['hub.mode'];
     const token = req.query['hub.verify_token'];
@@ -260,6 +299,82 @@ function registerRoutes(app, {
                 text,
                 wamid,
               });
+            }
+
+            if (type === 'audio') {
+              const mediaId = String(m.audio?.id || '').trim();
+
+              // se não tiver mediaId, não tem o que transcrever
+              if (mediaId) {
+                (async () => {
+                  let tmp = null;
+                  try {
+                    const settingsNow = await db.getBotSettings();
+
+                    // baixa áudio pra temp
+                    const dl = await downloadMetaMediaToTempFile(wa_id, mediaId, {
+                      meta_phone_number_id: inboundPhoneNumberId || null,
+                    });
+
+                    tmp = dl?.filePath || null;
+
+                    // transcreve
+                    const tr = await transcribeAudioOpenAI({ filePath: tmp, settings: settingsNow });
+
+                    if (!tr?.ok) {
+                      console.log('[AUDIO][TRANSCRIBE][FAIL]', { wa_id, reason: tr?.reason });
+                      publishState?.({ wa_id, etapa: 'AUDIO_TRANSCRIBE_FAIL', vars: { reason: tr?.reason || '' }, ts: Date.now() });
+                      return;
+                    }
+
+                    // cria um wamid "derivado" pra não ser excluído pelo excludeWamids do batch do áudio
+                    const transcriptWamid = `${wamid}:transcript`;
+
+                    // registra no histórico como texto (transcrição)
+                    const transcriptText = tr.text;
+
+                    lead.pushHistory(wa_id, 'user', transcriptText, {
+                      wamid: transcriptWamid,
+                      kind: 'text',
+                      is_transcript: true,
+                      source_kind: 'audio',
+                      source_wamid: wamid,
+                      source_media_id: mediaId,
+                    });
+
+                    publishMessage?.({
+                      dir: 'in',
+                      wa_id,
+                      wamid: transcriptWamid,
+                      kind: 'text',
+                      text: transcriptText,
+                      ts: Date.now(),
+                      meta: { is_transcript: true, source_kind: 'audio', source_wamid: wamid },
+                    });
+
+                    publishState?.({
+                      wa_id,
+                      etapa: 'AUDIO_TRANSCRIBE_OK',
+                      vars: { model: tr.model || '', source_wamid: wamid },
+                      ts: Date.now(),
+                    });
+
+                    lead.enqueueInboundText({
+                      wa_id,
+                      inboundPhoneNumberId,
+                      text: transcriptText,
+                      wamid: transcriptWamid,
+                    });
+                  } catch (e) {
+                    console.log('[AUDIO][TRANSCRIBE][ERR]', { wa_id, message: e?.message });
+                    publishState?.({ wa_id, etapa: 'AUDIO_TRANSCRIBE_ERR', vars: { message: e?.message || '' }, ts: Date.now() });
+                  } finally {
+                    if (tmp) {
+                      try { fs.unlinkSync(tmp); } catch { }
+                    }
+                  }
+                })();
+              }
             }
           }
         }

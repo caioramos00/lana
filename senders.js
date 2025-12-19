@@ -11,6 +11,7 @@ const fs = require('fs');
 const path = require('path');
 const os = require('os');
 const crypto = require('crypto');
+const { URL } = require('url');
 
 const db = require('./db');
 const { publishMessage } = require('./stream/events-bus');
@@ -157,6 +158,88 @@ async function metaPostMessage({ phoneNumberId, token, version, payload }) {
   }
 
   return r.data || {};
+}
+
+// +++ add: pega URL e mime do media_id
+async function metaGetMediaInfo({ mediaId, token, version }) {
+  const apiVersion = version || 'v24.0';
+  const url = `https://graph.facebook.com/${apiVersion}/${mediaId}`;
+
+  const r = await axios.get(url, {
+    headers: { Authorization: `Bearer ${token}` },
+    timeout: 20000,
+    validateStatus: () => true,
+  });
+
+  if (r.status < 200 || r.status >= 300) {
+    const body = r.data ? JSON.stringify(r.data).slice(0, 800) : '';
+    throw new Error(`Meta GET media info HTTP ${r.status} ${body}`);
+  }
+
+  const info = r.data || {};
+  return {
+    url: info.url ? String(info.url) : '',
+    mime_type: info.mime_type ? String(info.mime_type) : '',
+    file_size: info.file_size != null ? Number(info.file_size) : null,
+    sha256: info.sha256 ? String(info.sha256) : null,
+  };
+}
+
+function guessExtFromMime(mime) {
+  const m = String(mime || '').toLowerCase();
+  if (m.includes('ogg')) return '.ogg';
+  if (m.includes('opus')) return '.opus';
+  if (m.includes('mpeg')) return '.mp3';
+  if (m.includes('mp4') || m.includes('m4a')) return '.m4a';
+  if (m.includes('aac')) return '.aac';
+  if (m.includes('wav')) return '.wav';
+  if (m.includes('amr')) return '.amr';
+  return '.bin';
+}
+
+// +++ add: baixa o media_id pra um arquivo temp e retorna path+mimetype
+async function downloadMetaMediaToTempFile(contato, mediaId, opts = {}) {
+  const to = String(contato || '').trim();
+  const mid = String(mediaId || '').trim();
+  if (!to) throw new Error('downloadMetaMediaToTempFile: missing contato');
+  if (!mid) throw new Error('downloadMetaMediaToTempFile: missing mediaId');
+
+  const settings = await getSettings();
+  const { phoneNumberId, token } = await resolveMetaCredentialsForContato(to, settings, opts);
+
+  if (!phoneNumberId || !token) {
+    throw new Error('downloadMetaMediaToTempFile: missing meta credentials');
+  }
+
+  const info = await metaGetMediaInfo({
+    mediaId: mid,
+    token,
+    version: settings?.meta_api_version || 'v24.0',
+  });
+
+  if (!info.url) throw new Error('downloadMetaMediaToTempFile: media url missing');
+
+  // baixa binário (a URL retornada exige Authorization também)
+  const r = await axios.get(info.url, {
+    headers: { Authorization: `Bearer ${token}` },
+    responseType: 'arraybuffer',
+    timeout: 30000,
+    validateStatus: () => true,
+  });
+
+  if (r.status < 200 || r.status >= 300) {
+    const body = (() => {
+      try { return Buffer.from(r.data || []).toString('utf8').slice(0, 600); } catch { return ''; }
+    })();
+    throw new Error(`Meta GET media file HTTP ${r.status} ${body}`);
+  }
+
+  const ext = guessExtFromMime(info.mime_type) || '.bin';
+  const name = `in_media_${Date.now()}_${crypto.randomUUID()}${ext}`;
+  const outPath = path.join(os.tmpdir(), name);
+
+  fs.writeFileSync(outPath, Buffer.from(r.data));
+  return { filePath: outPath, mimeType: info.mime_type || 'application/octet-stream' };
 }
 
 // ======= MEDIA UPLOAD (local file -> media id) =======
@@ -747,9 +830,9 @@ module.exports = {
   resolveMetaCredentialsForContato,
   sendMessage,
   sendImage,
-
   sendVideo,
   sendAudio,
   sendDocument,
   sendTtsVoiceNote,
+  downloadMetaMediaToTempFile
 };
