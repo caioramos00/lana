@@ -22,6 +22,49 @@ function registerRoutes(app, {
     return res.redirect('/login');
   }
 
+  function collapseOneLine(s) {
+    return String(s || '').replace(/\s+/g, ' ').trim();
+  }
+
+  function mergeTranscriptIntoAudioHistory({ wa_id, wamid, mediaId, transcriptText }) {
+    try {
+      const stLead = lead?.getLead?.(wa_id);
+      const hist = Array.isArray(stLead?.history) ? stLead.history : null;
+      if (!hist) return { ok: false, reason: 'no-history' };
+
+      const targetWamid = String(wamid || '').trim();
+      if (!targetWamid) return { ok: false, reason: 'missing-wamid' };
+
+      // procura de trás pra frente (mais provável ser o último áudio desse wamid)
+      for (let i = hist.length - 1; i >= 0; i--) {
+        const h = hist[i];
+        if (!h) continue;
+
+        const hWamid = String(h.wamid || '').trim();
+        if (hWamid !== targetWamid) continue;
+
+        // achou a entrada do áudio: transforma em uma linha só
+        const cleanTr = collapseOneLine(transcriptText);
+        const combined = cleanTr ? `[audio] ${cleanTr}` : `[audio]`;
+
+        h.text = combined;
+
+        // marcações úteis (opcional)
+        h.is_transcript = true;
+        h.transcript_text = cleanTr;
+        h.source_kind = 'audio';
+        h.source_wamid = targetWamid;
+        h.source_media_id = String(mediaId || '').trim() || null;
+
+        return { ok: true, combinedText: combined };
+      }
+
+      return { ok: false, reason: 'audio-entry-not-found' };
+    } catch (e) {
+      return { ok: false, reason: 'exception', message: e?.message };
+    }
+  }
+
   app.get(['/', '/login'], (req, res) => res.sendFile(path.join(__dirname, 'public', 'login.html')));
 
   app.post('/login', (req, res) => {
@@ -119,7 +162,6 @@ function registerRoutes(app, {
         console.log('[VELTRAX][WEBHOOK]', { status: st, transaction_id: tid, external_id: ext });
 
         if (row?.wa_id && String(st).toUpperCase() === 'COMPLETED') {
-          // avisa o sistema (você decide o que faz depois)
           publishState?.({
             wa_id: row.wa_id,
             etapa: 'VELTRAX_COMPLETED',
@@ -132,7 +174,6 @@ function registerRoutes(app, {
             ts: Date.now(),
           });
 
-          // se existir método no lead, marca como pago
           try {
             if (lead && typeof lead.markPaymentCompleted === 'function') {
               lead.markPaymentCompleted(row.wa_id, {
@@ -146,7 +187,6 @@ function registerRoutes(app, {
           } catch { }
         }
       } catch (e) {
-        // sem spam de log
         console.log('[VELTRAX][WEBHOOK][ERR]', { message: e?.message });
       }
     });
@@ -239,8 +279,6 @@ function registerRoutes(app, {
             if (lead && typeof lead.markInboundWamidSeen === 'function') {
               const r = lead.markInboundWamidSeen(wa_id, wamid);
               if (r?.duplicate) {
-                // Se quiser logar:
-                // console.log(`[${wa_id}] DUP inbound wamid=${wamid} type=${type}`);
                 continue;
               }
             }
@@ -257,6 +295,7 @@ function registerRoutes(app, {
 
             console.log(`[${wa_id}] ${text}`);
 
+            // histórico “cru” do evento recebido
             lead.pushHistory(wa_id, 'user', text, { wamid, kind: type });
 
             publishMessage({
@@ -316,20 +355,29 @@ function registerRoutes(app, {
                       return;
                     }
 
-                    // cria um wamid "derivado" pra não ser excluído pelo excludeWamids do batch do áudio
-                    const transcriptWamid = `${wamid}:transcript`;
+                    const transcriptText = collapseOneLine(tr.text);
+                    if (!transcriptText) {
+                      console.log('[AUDIO][TRANSCRIBE][FAIL]', { wa_id, reason: 'empty-transcript' });
+                      publishState?.({ wa_id, etapa: 'AUDIO_TRANSCRIBE_FAIL', vars: { reason: 'empty-transcript' }, ts: Date.now() });
+                      return;
+                    }
 
-                    // registra no histórico como texto (transcrição)
-                    const transcriptText = tr.text;
-
-                    lead.pushHistory(wa_id, 'user', transcriptText, {
-                      wamid: transcriptWamid,
-                      kind: 'text',
-                      is_transcript: true,
-                      source_kind: 'audio',
-                      source_wamid: wamid,
-                      source_media_id: mediaId,
+                    // ✅ NOVO: transforma "USER: [audio]" em "USER: [audio] <transcrição>" (uma linha só)
+                    const merged = mergeTranscriptIntoAudioHistory({
+                      wa_id,
+                      wamid,
+                      mediaId,
+                      transcriptText,
                     });
+
+                    if (!merged?.ok) {
+                      console.log('[AUDIO][TRANSCRIBE][MERGE_FAIL]', { wa_id, reason: merged?.reason });
+                      // fallback: se não achou a entrada pra editar, ao menos não cria 2 linhas no histórico.
+                      // (mantém só o [audio] já existente, e segue com inbound do transcript)
+                    }
+
+                    // (mantém um wamid derivado só pro SSE/debug, sem mexer no reply threading)
+                    const transcriptWamid = `${wamid}:transcript`;
 
                     publishMessage?.({
                       dir: 'in',
@@ -348,11 +396,14 @@ function registerRoutes(app, {
                       ts: Date.now(),
                     });
 
+                    // ✅ NOVO: inbound para IA também vai com tag + transcrição numa linha (e usa wamid real)
+                    const combinedInbound = `[audio] ${transcriptText}`.trim();
+
                     lead.enqueueInboundText({
                       wa_id,
                       inboundPhoneNumberId,
-                      text: transcriptText,
-                      wamid: transcriptWamid,
+                      text: combinedInbound,
+                      wamid, // usa o wamid REAL do áudio (evita reply_to_wamid inválido)
                     });
                   } catch (e) {
                     console.log('[AUDIO][TRANSCRIBE][ERR]', { wa_id, message: e?.message });
