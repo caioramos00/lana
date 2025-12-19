@@ -432,45 +432,19 @@ async function sendVideo(contato, urlOrItems, captionOrOpts, opts = {}) {
   }
 }
 
-// ======= SEND AUDIO (LINK OU MEDIA_ID) =======
-// - Se vier URL http(s) => envia como { link }
-// - Se NÃO vier URL => assume que é MEDIA_ID => envia como { id }
-// Observação: WhatsApp Cloud API permite ambos (self-hosted link ou Meta-hosted id). 
-// (Se quiser “texto antes do áudio”, mande sendMessage separado.)
-async function sendAudio(contato, urlOrIdOrObj, opts = {}) {
+async function sendAudio(contato, urlOrMediaId, opts = {}) {
   const to = String(contato || '').trim();
+  const ref = String(urlOrMediaId || '').trim();
+
   if (!to) return { ok: false, reason: 'missing-to' };
+  if (!ref) return { ok: false, reason: 'missing-audio-ref' };
 
-  let mode = null;
-  let audioObj = null;
+  const isUrl = /^https?:\/\//i.test(ref);
+  const looksLikeMediaId = /^\d{8,}$/.test(ref); // media id da Meta costuma ser numérico e longo
 
-  // Aceita objeto { link } ou { id } também (mais explícito, menos ambiguidade)
-  if (urlOrIdOrObj && typeof urlOrIdOrObj === 'object') {
-    const link = String(urlOrIdOrObj.link || urlOrIdOrObj.url || '').trim();
-    const id = String(urlOrIdOrObj.id || '').trim();
-
-    if (link) {
-      if (!/^https?:\/\//i.test(link)) return { ok: false, reason: 'invalid-url', url: link };
-      mode = 'LINK';
-      audioObj = { link };
-    } else if (id) {
-      mode = 'ID';
-      audioObj = { id };
-    } else {
-      return { ok: false, reason: 'missing-link-or-id' };
-    }
-  } else {
-    const raw = String(urlOrIdOrObj || '').trim();
-    if (!raw) return { ok: false, reason: 'missing-url-or-id' };
-
-    if (/^https?:\/\//i.test(raw)) {
-      mode = 'LINK';
-      audioObj = { link: raw };
-    } else {
-      // ✅ aqui tá o teu caso: "1573016313883424" => MEDIA_ID
-      mode = 'ID';
-      audioObj = { id: raw };
-    }
+  // Se não é URL, tratamos como media id (se parecer um)
+  if (!isUrl && !looksLikeMediaId) {
+    return { ok: false, reason: 'invalid-audio-ref', value: ref };
   }
 
   try {
@@ -482,6 +456,13 @@ async function sendAudio(contato, urlOrIdOrObj, opts = {}) {
     }
 
     const replyTo = String(opts.reply_to_wamid || opts.replyToWamid || '').trim() || null;
+
+    const audioObj = isUrl ? { link: ref } : { id: ref };
+
+    // “forçar” voice note/PTT (se a API ignorar, não quebra)
+    if (opts.voice_note === true || opts.voice === true || opts.ptt === true) {
+      audioObj.voice = true;
+    }
 
     const payload = {
       messaging_product: 'whatsapp',
@@ -506,26 +487,17 @@ async function sendAudio(contato, urlOrIdOrObj, opts = {}) {
         wamid: (data?.messages && data.messages[0]?.id) ? String(data.messages[0].id) : '',
         kind: 'audio',
         text: '',
-        media: {
-          type: 'audio',
-          ...(mode === 'LINK' ? { link: audioObj.link } : { id: audioObj.id }),
-        },
+        media: isUrl ? { type: 'audio', link: ref, voice: !!audioObj.voice } : { type: 'audio', id: ref, voice: !!audioObj.voice },
         ts: Date.now(),
       });
     } catch { }
 
-    return {
-      ok: true,
-      provider: 'meta',
-      phone_number_id: phoneNumberId,
-      wamid: data?.messages?.[0]?.id || '',
-      mode,
-      ...(mode === 'LINK' ? { link: audioObj.link } : { media_id: audioObj.id }),
-    };
+    return { ok: true, provider: 'meta', phone_number_id: phoneNumberId, wamid: data?.messages?.[0]?.id || '' };
   } catch (e) {
-    return { ok: false, error: e?.message || String(e), mode };
+    return { ok: false, error: e?.message || String(e) };
   }
 }
+
 
 // ======= SEND DOCUMENT =======
 // útil pra VIP/assinatura/etc (PDF, ZIP, etc) se você for usar depois.
@@ -752,6 +724,7 @@ async function sendTtsVoiceNote(contato, text, opts = {}) {
     tmpFile = await elevenTtsToTempFile(finalText, settings, opts);
 
     const up = await uploadVoiceFile(tmpFile, 'voice.ogg');
+
     const rSend = await sendAudio(to, up.id, { ...opts, voice_note: true });
 
     const cfg = resolveElevenConfig(settings, opts);
