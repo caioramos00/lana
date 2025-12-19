@@ -21,123 +21,71 @@ function pick(obj, paths) {
 
 function toCents(amountBRL) {
   const n = Number(amountBRL);
-  if (!Number.isFinite(n)) return 0;
+  if (!Number.isFinite(n)) return null;
   return Math.round(n * 100);
 }
 
-function inferDocType(docDigits) {
-  const d = String(docDigits || '').replace(/\D/g, '');
-  if (d.length === 14) return 'CNPJ';
-  return 'CPF'; // padrão Brasil
-}
-
-function normalizePhone(phone) {
-  // doc aceita string; manda só dígitos pra evitar rejeição
-  const p = String(phone || '').replace(/\D/g, '');
-  return p || '';
+function docTypeAndValue(rawDoc) {
+  const digits = String(rawDoc || '').replace(/\D/g, '');
+  if (!digits) return { type: 'CPF', value: '' };
+  return { type: digits.length > 11 ? 'CNPJ' : 'CPF', value: digits };
 }
 
 module.exports = {
   id: 'rapdyn',
 
   async createPix({ amount, external_id, callbackUrl, payer, meta }) {
-    // Doc: amount em centavos + method pix + customer + products (+ delivery se physical)
-    const amount_cents = toCents(amount);
+    // DOC: POST https://app.rapdyn.io/api/payments
+    // body:
+    // { amount: <centavos>, method:'pix', external_id, customer:{...}, delivery?, products:[...] }
+    const amountCents = toCents(amount);
 
-    const docValue = String(payer?.document || '').replace(/\D/g, '');
-    const docType = inferDocType(docValue);
-
-    const productName =
-      String(meta?.product_name || meta?.productName || meta?.offer_title || '').trim() ||
-      'Produto';
-
-    const productType = upper(meta?.product_type || meta?.productType || 'digital').toLowerCase();
-    const isPhysical = productType === 'physical';
-
-    const customer = {
-      name: String(payer?.name || '').trim() || 'Cliente',
-      email: String(payer?.email || '').trim(),
-      phone: normalizePhone(payer?.phone),
-      document: {
-        type: docType,
-        value: docValue,
-      },
-    };
-
-    const products = [
-      {
-        name: productName,
-        price: amount_cents,
-        quantity: 1,
-        type: isPhysical ? 'physical' : 'digital',
-      },
-    ];
-
-    // delivery: na doc é obrigatório se tiver physical
-    // A doc que você colou tem inconsistência (district/postal_code vs neighborhood/zipcode),
-    // então mandamos o padrão do EXEMPLO e duplicamos chaves equivalentes pra compatibilidade.
-    let delivery = undefined;
-    if (isPhysical) {
-      const d = meta?.delivery || {};
-      const street = String(d.street || '').trim();
-      const number = String(d.number || '').trim();
-      const neighborhood = String(d.neighborhood || d.district || '').trim();
-      const city = String(d.city || '').trim();
-      const state = String(d.state || '').trim();
-      const zipcode = String(d.zipcode || d.postal_code || '').replace(/\D/g, '');
-
-      if (!street || !number || !neighborhood || !city || !state || !zipcode) {
-        const e = new Error('Rapdyn: delivery obrigatório para produto physical.');
-        e.code = 'RAPDYN_VALIDATION';
-        e.meta = { missing_delivery: true };
-        throw e;
-      }
-
-      delivery = {
-        street,
-        number,
-        complement: d.complement ? String(d.complement).trim() : undefined,
-
-        // exemplo
-        neighborhood,
-        city,
-        state,
-        zipcode,
-
-        // compat com a tabela (caso o backend espere esses nomes)
-        district: neighborhood,
-        postal_code: zipcode,
-        country: d.country ? String(d.country).trim() : undefined,
-      };
-    }
+    const doc = docTypeAndValue(payer?.document);
+    const phone = String(payer?.phone || '').trim();
 
     const payload = {
-      amount: amount_cents,
+      amount: amountCents,
       method: 'pix',
       external_id: external_id || undefined,
-      customer,
-      ...(delivery ? { delivery } : {}),
-      products,
+      customer: {
+        name: payer?.name || 'Cliente',
+        email: payer?.email || 'cliente@teste.com',
+        phone: phone || undefined,
+        document: {
+          type: doc.type,
+          value: doc.value,
+        },
+      },
+      // se não tiver physical, delivery pode ficar fora
+      // delivery: { ... } // (se necessário no futuro)
+      products: [
+        {
+          name: meta?.offer_title || meta?.product_name || 'Pagamento',
+          price: amountCents,
+          quantity: '1',
+          type: 'digital',
+        }
+      ],
     };
 
-    // chama Rapdyn
-    const data = await rapdyn.createPayment(payload);
+    const data = await rapdyn.createPixCharge(payload);
 
-    // Response não está na doc que você colou, então continua flexível:
-    const transaction_id = pick(data, [
-      'transaction_id', 'transactionId', 'id', 'data.id', 'payment.id',
-    ]) || null;
+    // A resposta da Rapdyn pode variar, então tentamos extrair os campos mais comuns:
+    const transaction_id = pick(data, ['id', 'transaction_id', 'transactionId', 'data.id']) || null;
 
-    const status = pick(data, [
-      'status', 'data.status', 'payment.status',
-    ]) || 'PENDING';
+    const status = pick(data, ['status', 'data.status']) || 'pending';
 
-    // “copia e cola” costuma vir como emv / qrcode / pix.emv etc
     const qrcode = pick(data, [
-      'qrcode', 'qr_code', 'qrCode',
-      'emv', 'pix.emv', 'data.pix.emv',
-      'data.qrcode', 'data.emv',
-      'payment.qrcode', 'payment.emv',
+      'pix.emv',
+      'pix.qrCode',
+      'pix.qrcode',
+      'pix.copy_and_paste',
+      'pix.code',
+      'qrcode',
+      'emv',
+      'data.pix.emv',
+      'data.emv',
+      'data.qrcode',
     ]) || null;
 
     return {
@@ -151,30 +99,37 @@ module.exports = {
   },
 
   normalizeWebhook(payload) {
-    // Webhook não está na doc que você colou (precisa do formato real depois).
-    const transaction_id = pick(payload, ['transaction_id', 'transactionId', 'id', 'data.id', 'payment.id']) || null;
-    const external_id = pick(payload, ['external_id', 'externalId', 'reference', 'ref', 'data.external_id']) || null;
-    const status = pick(payload, ['status', 'data.status', 'payment.status']) || null;
+    // DOC webhook:
+    // { notification_type:'transaction', id:'...', total:10000, method:'pix', status:'paid', external_id:'...', pix:{end2EndId}, ... }
+    const transaction_id = pick(payload, ['id']) || null;
+    const external_id = pick(payload, ['external_id']) || null;
+    const status = pick(payload, ['status']) || null;
 
-    const feeRaw = pick(payload, ['fee', 'data.fee']);
-    const netRaw = pick(payload, ['net_amount', 'netAmount', 'data.net_amount']);
-    const e2e = pick(payload, ['end_to_end', 'endToEnd', 'e2e', 'data.end_to_end']);
+    const total = pick(payload, ['total']);
+    const end2end = pick(payload, ['pix.end2EndId', 'pix.end2EndID', 'pix.end_to_end', 'pix.e2e']);
 
-    const fee = feeRaw != null ? Number(feeRaw) : null;
-    const net_amount = netRaw != null ? Number(netRaw) : null;
+    const platform_tax = pick(payload, ['platform_tax']);
+    const transaction_tax = pick(payload, ['transaction_tax']);
+    const security_reserve_tax = pick(payload, ['security_reserve_tax']);
+    const comission = pick(payload, ['comission']);
 
     return {
-      transaction_id,
-      external_id,
+      transaction_id: transaction_id ? String(transaction_id) : null,
+      external_id: external_id ? String(external_id) : null,
       status: status ? String(status) : null,
-      fee: Number.isFinite(fee) ? fee : null,
-      net_amount: Number.isFinite(net_amount) ? net_amount : null,
-      end_to_end: e2e ? String(e2e) : null,
+      total: total != null ? Number(total) : null,
+      end_to_end: end2end ? String(end2end) : null,
+      platform_tax: platform_tax != null ? Number(platform_tax) : null,
+      transaction_tax: transaction_tax != null ? Number(transaction_tax) : null,
+      security_reserve_tax: security_reserve_tax != null ? Number(security_reserve_tax) : null,
+      comission: comission != null ? Number(comission) : null,
+      raw: payload || null,
     };
   },
 
   isPaidStatus(status) {
     const st = upper(status);
+    // doc: processing, pending, paid, failed, returned, cancelled, blocked, med
     return st === 'PAID' || st === 'COMPLETED' || st === 'CONFIRMED' || st === 'SUCCESS' || st === 'APPROVED';
   },
 };

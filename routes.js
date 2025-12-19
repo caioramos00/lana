@@ -9,6 +9,15 @@ try { FormData = require('form-data'); } catch { /* ok */ }
 
 const { downloadMetaMediaToTempFile } = require('./senders');
 const { transcribeAudioOpenAI } = require('./transcribe');
+const pix = require('./payments/pix');
+
+function parseWaIdFromExternalId(external_id) {
+  // seu external_id é: ord_<wa>_<key>_<ts>_<rand>
+  // ex.: ord_5511999999999_fase_xxx_yyy
+  const s = String(external_id || '').trim();
+  const m = s.match(/^ord_(\d{6,18})_/);
+  return m ? m[1] : null;
+}
 
 function registerRoutes(app, {
   db,
@@ -425,6 +434,98 @@ function registerRoutes(app, {
       // sem logs
     }
   });
+
+  function getRapdynWebhookPaths() {
+    const p = String(global.rapdynConfig?.webhook_path || global.botSettings?.rapdyn_webhook_path || '/webhook/rapdyn').trim() || '/webhook/rapdyn';
+    const list = new Set(['/webhook/rapdyn', p]);
+    return [...list];
+  }
+
+  for (const webhookPath of getRapdynWebhookPaths()) {
+    app.post(webhookPath, async (req, res) => {
+      // responde rápido (Rapdyn não fica esperando)
+      res.sendStatus(200);
+
+      try {
+        const payload = req.body || {};
+
+        // só processa eventos de transação (doc)
+        if (String(payload.notification_type || '').toLowerCase() !== 'transaction') {
+          console.log('[RAPDYN][WEBHOOK][SKIP]', { notification_type: payload.notification_type || null });
+          return;
+        }
+
+        const norm = pix.normalizeWebhook('rapdyn', payload);
+        const st = String(norm?.status || '').trim();
+
+        console.log('[RAPDYN][WEBHOOK]', {
+          status: st,
+          id: norm?.transaction_id || payload?.id || null,
+          external_id: norm?.external_id || payload?.external_id || null,
+          total: norm?.total ?? payload?.total ?? null,
+        });
+
+        // atualiza DB (tente usar um método dedicado; se não existir, não quebra)
+        let row = null;
+        try {
+          if (db?.updateRapdynDepositFromWebhook) {
+            row = await db.updateRapdynDepositFromWebhook(payload);
+          } else if (db?.updatePixDepositFromWebhook) {
+            // sugestão de API genérica (se você já tiver)
+            row = await db.updatePixDepositFromWebhook({
+              provider: 'rapdyn',
+              transaction_id: norm?.transaction_id || null,
+              external_id: norm?.external_id || null,
+              status: norm?.status || null,
+              total: norm?.total || null,
+              end_to_end: norm?.end_to_end || null,
+              raw_webhook_payload: payload,
+            });
+          }
+        } catch (e) {
+          console.log('[RAPDYN][WEBHOOK][DB_WARN]', { message: e?.message });
+        }
+
+        // descobre wa_id
+        let wa_id = row?.wa_id || null;
+        if (!wa_id) wa_id = parseWaIdFromExternalId(norm?.external_id || payload?.external_id);
+
+        // se for pago: publica estado e marca no lead store
+        const paid = pix.isPaidStatus('rapdyn', st);
+
+        if (wa_id && paid) {
+          publishState?.({
+            wa_id,
+            etapa: 'RAPDYN_PAID',
+            vars: {
+              provider: 'rapdyn',
+              total_cents: norm?.total ?? null,
+              external_id: norm?.external_id ?? null,
+              transaction_id: norm?.transaction_id ?? null,
+              end_to_end: norm?.end_to_end ?? null,
+              status: st,
+            },
+            ts: Date.now(),
+          });
+
+          try {
+            if (lead && typeof lead.markPaymentCompleted === 'function') {
+              lead.markPaymentCompleted(wa_id, {
+                provider: 'rapdyn',
+                amount_cents: norm?.total ?? null,
+                external_id: norm?.external_id ?? null,
+                transaction_id: norm?.transaction_id ?? null,
+                end_to_end: norm?.end_to_end ?? null,
+                status: st,
+              });
+            }
+          } catch { }
+        }
+      } catch (e) {
+        console.log('[RAPDYN][WEBHOOK][ERR]', { message: e?.message });
+      }
+    });
+  }
 
   const originalOnFlush = app.locals.__onFlushProxy;
 }

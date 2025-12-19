@@ -2,7 +2,6 @@
 const axios = require('axios');
 
 function baseUrl() {
-  // Doc: https://app.rapdyn.io/api
   const b = String(
     global.rapdynConfig?.api_base_url ||
     global.botSettings?.rapdyn_api_base_url ||
@@ -12,7 +11,6 @@ function baseUrl() {
 }
 
 function createPath() {
-  // Doc: POST /payments
   const p = String(
     global.rapdynConfig?.create_path ||
     global.botSettings?.rapdyn_create_path ||
@@ -21,30 +19,36 @@ function createPath() {
   return p.startsWith('/') ? p : `/${p}`;
 }
 
-function token() {
-  // Doc fala “token gerado na plataforma” via Bearer
-  // Mantendo compat com nomes antigos (rapdyn_api_key etc.)
-  return String(
-    global.rapdynConfig?.token ||
-    global.rapdynConfig?.api_token ||
-    global.rapdynConfig?.api_key ||
-    global.botSettings?.rapdyn_token ||
-    global.botSettings?.rapdyn_api_token ||
-    global.botSettings?.rapdyn_api_key ||
-    ''
-  ).trim();
+function creds() {
+  // Doc: Authorization: Bearer [SEU_TOKEN]
+  const api_key = String(global.rapdynConfig?.api_key || global.botSettings?.rapdyn_api_key || '').trim();
+  const api_secret = String(global.rapdynConfig?.api_secret || global.botSettings?.rapdyn_api_secret || '').trim();
+  return { api_key, api_secret };
 }
 
 function authHeaders() {
-  const t = token();
-  if (!t) return {};
-  return { Authorization: `Bearer ${t}` };
+  const { api_key, api_secret } = creds();
+  if (!api_key && !api_secret) return {};
+
+  // Prioriza Bearer (doc)
+  if (api_key) {
+    return { Authorization: `Bearer ${api_key}` };
+  }
+
+  // fallback legado (se alguém usar header próprio)
+  if (api_key && api_secret) {
+    return {
+      'X-API-KEY': api_key,
+      'X-API-SECRET': api_secret,
+    };
+  }
+
+  return {};
 }
 
 function pickRequestId(headers) {
   if (!headers) return null;
-  const h = headers || {};
-  return h['x-request-id'] || h['x-correlation-id'] || h['cf-ray'] || null;
+  return headers['x-request-id'] || headers['x-correlation-id'] || headers['cf-ray'] || null;
 }
 
 function toRapdynError(err, meta = {}) {
@@ -53,10 +57,8 @@ function toRapdynError(err, meta = {}) {
     const statusText = err.response.statusText || '';
     const data = err.response.data;
     const reqId = pickRequestId(err.response.headers);
-
     const providerMsg =
-      (data && (data.message || data.error || data.details))
-        ? (data.message || data.error || data.details)
+      (data && (data.message || data.error || data.details)) ? (data.message || data.error || data.details)
         : (typeof data === 'string' ? data : null);
 
     const e = new Error(
@@ -84,16 +86,10 @@ function toRapdynError(err, meta = {}) {
   return e;
 }
 
-async function createPayment(payload) {
+async function createPixCharge(payload) {
   const b = baseUrl();
-  const t = token();
   if (!b) {
     const e = new Error('Rapdyn config missing (api_base_url).');
-    e.code = 'RAPDYN_CONFIG';
-    throw e;
-  }
-  if (!t) {
-    const e = new Error('Rapdyn config missing (token).');
     e.code = 'RAPDYN_CONFIG';
     throw e;
   }
@@ -105,7 +101,6 @@ async function createPayment(payload) {
       {
         headers: {
           'Content-Type': 'application/json',
-          Accept: 'application/json',
           ...authHeaders(),
         },
         timeout: 60000,
@@ -113,8 +108,8 @@ async function createPayment(payload) {
     );
     return data;
   } catch (err) {
-    throw toRapdynError(err, { step: 'createPayment' });
+    throw toRapdynError(err, { step: 'createPixCharge' });
   }
 }
 
-module.exports = { createPayment };
+module.exports = { createPixCharge };
