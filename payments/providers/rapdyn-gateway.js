@@ -31,76 +31,9 @@ function docTypeAndValue(rawDoc) {
   return { type: digits.length > 11 ? 'CNPJ' : 'CPF', value: digits };
 }
 
-// ===== DEBUG HELPERS =====
 function isDataImage(v) {
   const s = String(v || '').trim().toLowerCase();
   return s.startsWith('data:image/');
-}
-
-function looksLikePixCopyPaste(v) {
-  const s = String(v || '').trim();
-  if (!s) return false;
-  const up = s.toUpperCase();
-  return (
-    (up.startsWith('000201') || up.includes('BR.GOV.BCB.PIX')) &&
-    s.length >= 25
-  );
-}
-
-function maskValue(v) {
-  const s = String(v || '');
-  const len = s.length;
-
-  // mostra um preview curto pra não vazar completo
-  if (len <= 80) return s;
-  return `${s.slice(0, 30)}...(len=${len})...${s.slice(-18)}`;
-}
-
-function listStringFields(obj, opts = {}) {
-  const {
-    maxNodes = 2000,
-    maxDepth = 12,
-  } = opts;
-
-  const out = [];
-  const seen = new Set();
-  let nodes = 0;
-
-  function walk(cur, path, depth) {
-    if (nodes++ > maxNodes) return;
-    if (depth > maxDepth) return;
-
-    if (cur && typeof cur === 'object') {
-      if (seen.has(cur)) return;
-      seen.add(cur);
-
-      if (Array.isArray(cur)) {
-        for (let i = 0; i < cur.length; i++) {
-          walk(cur[i], `${path}[${i}]`, depth + 1);
-        }
-        return;
-      }
-
-      for (const k of Object.keys(cur)) {
-        const nextPath = path ? `${path}.${k}` : k;
-        walk(cur[k], nextPath, depth + 1);
-      }
-      return;
-    }
-
-    if (typeof cur === 'string') {
-      out.push({ path, value: cur });
-    }
-  }
-
-  walk(obj, '', 0);
-  return out;
-}
-
-function isDebugEnabled() {
-  return !!(
-    global.botSettings.rapdyn_debug = true
-  );
 }
 
 module.exports = {
@@ -138,69 +71,37 @@ module.exports = {
 
     const data = await rapdyn.createPixCharge(payload);
 
-    // ✅ DEBUG: loga como chega (sem vazar tudo)
-    if (isDebugEnabled()) {
-      try {
-        const topKeys = (data && typeof data === 'object' && !Array.isArray(data))
-          ? Object.keys(data)
-          : [];
-
-        const strings = listStringFields(data);
-        const copyCandidates = strings
-          .filter(x => looksLikePixCopyPaste(x.value))
-          .map(x => ({ path: x.path, preview: maskValue(x.value) }));
-
-        const imageCandidates = strings
-          .filter(x => isDataImage(x.value))
-          .map(x => ({ path: x.path, preview: maskValue(x.value) }));
-
-        console.log('[RAPDYN][CREATE][RESP][SUMMARY]', {
-          external_id,
-          topKeys,
-          stringFields: strings.length,
-          copyPasteCandidates: copyCandidates.length,
-          dataImageCandidates: imageCandidates.length,
-        });
-
-        if (copyCandidates.length) {
-          console.log('[RAPDYN][CREATE][RESP][COPY_PASTE_CANDIDATES]', copyCandidates);
-        } else {
-          console.log('[RAPDYN][CREATE][RESP][COPY_PASTE_CANDIDATES]', 'NONE');
-        }
-
-        if (imageCandidates.length) {
-          console.log('[RAPDYN][CREATE][RESP][DATA_IMAGE_CANDIDATES]', imageCandidates);
-        }
-      } catch (e) {
-        console.log('[RAPDYN][CREATE][RESP][DEBUG_ERR]', { message: e?.message });
-      }
-    }
-
-    // A resposta da Rapdyn pode variar, então tentamos extrair os campos mais comuns:
+    // campos principais
     const transaction_id = pick(data, ['id', 'transaction_id', 'transactionId', 'data.id']) || null;
     const status = pick(data, ['status', 'data.status']) || 'pending';
 
-    // OBS: aqui mantém tua lista.
-    // Depois do log, você vai saber o path certo do "copia e cola"
-    const qrcode = pick(data, [
-      'pix.emv',
-      'pix.qrCode',
-      'pix.qrcode',
+    // ✅ COPIA E COLA CORRETO (conforme seu log): pix.copypaste
+    // fallback: tenta nomes comuns, mas evita data:image
+    let qrcode = pick(data, [
+      'pix.copypaste',      // ✅ confirmado
+      'pix.copyPaste',
       'pix.copy_and_paste',
+      'pix.emv',
       'pix.code',
-      'qrcode',
       'emv',
+      'qrcode',
+      'data.pix.copypaste',
       'data.pix.emv',
       'data.emv',
       'data.qrcode',
     ]) || null;
+
+    if (qrcode && isDataImage(qrcode)) {
+      // se por algum motivo caiu no campo imagem, descarta
+      qrcode = null;
+    }
 
     return {
       provider: 'rapdyn',
       external_id,
       transaction_id,
       status: String(status),
-      qrcode: qrcode ? String(qrcode) : null,
+      qrcode: qrcode ? String(qrcode) : null, // aqui vai o copia e cola
       raw: data,
     };
   },
