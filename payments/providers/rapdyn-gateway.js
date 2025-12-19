@@ -31,18 +31,99 @@ function docTypeAndValue(rawDoc) {
   return { type: digits.length > 11 ? 'CNPJ' : 'CPF', value: digits };
 }
 
+function isDataImage(v) {
+  const s = String(v || '').trim().toLowerCase();
+  return s.startsWith('data:image/');
+}
+
+function looksLikePixCopyPaste(v) {
+  const s = String(v || '').trim();
+  if (!s) return false;
+
+  const up = s.toUpperCase();
+  // BR Code (EMV) do PIX geralmente começa com 000201
+  // ou contém o domínio BR.GOV.BCB.PIX
+  const ok =
+    up.startsWith('000201') ||
+    up.includes('BR.GOV.BCB.PIX');
+
+  // geralmente é bem grande; evita pegar lixo curto
+  return ok && s.length >= 25;
+}
+
+function extractPixCopyPaste(data) {
+  // Campos mais prováveis para "copia e cola" (prioridade alta)
+  const preferredPaths = [
+    'pix.copy_and_paste',
+    'pix.copyAndPaste',
+    'pix.copy_paste',
+    'pix.copiaecola',
+    'pix.copia_e_cola',
+    'pix.emv',
+    'pix.brCode',
+    'pix.br_code',
+    'pix.payload',
+    'pix.code',
+    'pix.brcode',
+    'pix.pixCopiaECola',
+    'data.pix.copy_and_paste',
+    'data.pix.emv',
+    'data.pix.brCode',
+    'data.pix.payload',
+    'data.emv',
+    'data.brCode',
+  ];
+
+  for (const path of preferredPaths) {
+    const val = pick(data, [path]);
+    if (!val) continue;
+
+    const s = String(val).trim();
+    if (!s) continue;
+
+    // se veio imagem base64/data:image, ignora
+    if (isDataImage(s)) continue;
+
+    // se parece BR Code, já retorna
+    if (looksLikePixCopyPaste(s)) return s;
+  }
+
+  // Fallback: tenta achar algum campo textual que seja BR Code,
+  // mas evita explicitamente os que são imagem.
+  const fallbackPaths = [
+    'qrcode',
+    'qr_code',
+    'qrCode',
+    'pix.qrcode',
+    'pix.qr_code',
+    'pix.qrCode',
+    'data.qrcode',
+  ];
+
+  for (const path of fallbackPaths) {
+    const val = pick(data, [path]);
+    if (!val) continue;
+
+    const s = String(val).trim();
+    if (!s) continue;
+
+    if (isDataImage(s)) continue;
+    if (looksLikePixCopyPaste(s)) return s;
+  }
+
+  return null;
+}
+
 module.exports = {
   id: 'rapdyn',
 
   async createPix({ amount, external_id, callbackUrl, payer, meta }) {
-    // DOC: POST https://app.rapdyn.io/api/payments
-    // body:
-    // { amount: <centavos>, method:'pix', external_id, customer:{...}, delivery?, products:[...] }
     const amountCents = toCents(amount);
 
     const doc = docTypeAndValue(payer?.document);
     const phone = String(payer?.phone || '').trim();
 
+    // DOC: POST /payments
     const payload = {
       amount: amountCents,
       method: 'pix',
@@ -56,8 +137,6 @@ module.exports = {
           value: doc.value,
         },
       },
-      // se não tiver physical, delivery pode ficar fora
-      // delivery: { ... } // (se necessário no futuro)
       products: [
         {
           name: meta?.offer_title || meta?.product_name || 'Pagamento',
@@ -70,37 +149,26 @@ module.exports = {
 
     const data = await rapdyn.createPixCharge(payload);
 
-    // A resposta da Rapdyn pode variar, então tentamos extrair os campos mais comuns:
-    const transaction_id = pick(data, ['id', 'transaction_id', 'transactionId', 'data.id']) || null;
+    const transaction_id =
+      pick(data, ['id', 'transaction_id', 'transactionId', 'data.id']) || null;
 
-    const status = pick(data, ['status', 'data.status']) || 'pending';
+    const status =
+      pick(data, ['status', 'data.status']) || 'pending';
 
-    const qrcode = pick(data, [
-      'pix.emv',
-      'pix.qrCode',
-      'pix.qrcode',
-      'pix.copy_and_paste',
-      'pix.code',
-      'qrcode',
-      'emv',
-      'data.pix.emv',
-      'data.emv',
-      'data.qrcode',
-    ]) || null;
+    // ✅ aqui é a correção: "qrcode" vira SEMPRE copia e cola (EMV/BR Code)
+    const copyPaste = extractPixCopyPaste(data);
 
     return {
       provider: 'rapdyn',
       external_id,
       transaction_id,
       status: String(status),
-      qrcode: qrcode ? String(qrcode) : null,
+      qrcode: copyPaste ? String(copyPaste) : null, // <- handler envia isso no WhatsApp
       raw: data,
     };
   },
 
   normalizeWebhook(payload) {
-    // DOC webhook:
-    // { notification_type:'transaction', id:'...', total:10000, method:'pix', status:'paid', external_id:'...', pix:{end2EndId}, ... }
     const transaction_id = pick(payload, ['id']) || null;
     const external_id = pick(payload, ['external_id']) || null;
     const status = pick(payload, ['status']) || null;
@@ -129,7 +197,6 @@ module.exports = {
 
   isPaidStatus(status) {
     const st = upper(status);
-    // doc: processing, pending, paid, failed, returned, cancelled, blocked, med
     return st === 'PAID' || st === 'COMPLETED' || st === 'CONFIRMED' || st === 'SUCCESS' || st === 'APPROVED';
   },
 };
