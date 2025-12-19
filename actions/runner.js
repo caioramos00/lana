@@ -30,7 +30,8 @@ function hashActionPayload(payload) {
 function createActionRunner({ db, senders, publishState, aiLog = () => { } } = {}) {
   // ✅ whitelist: só executa o que existir aqui
   const handlers = {
-    mostrar_ofertas: require('./handlers/mostrar_ofertas'),
+    // ❌ mostrar_ofertas removido (agora é 100% via prompt / messages)
+
     enviar_pix: require('./handlers/enviar_pix'),
     enviar_link_acesso: require('./handlers/enviar_link_acesso'),
 
@@ -94,6 +95,12 @@ function createActionRunner({ db, senders, publishState, aiLog = () => { } } = {
     for (const name of keys) {
       const { enabled, payload } = truthyActionValue(acoes[name]);
       if (!enabled) continue;
+
+      // ✅ bloqueio explícito (garantia total)
+      if (name === 'mostrar_ofertas') {
+        aiLog(`[ACTIONS] bloqueada: mostrar_ofertas (agora via prompt/messages)`);
+        continue;
+      }
 
       const handler = handlers[name];
       if (!handler) {

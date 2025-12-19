@@ -3,6 +3,7 @@ const crypto = require('crypto');
 
 const { createActionRunner } = require('./actions');
 const senders = require('./senders');
+const { CONFIG } = require('./actions/config');
 
 function createAiEngine({ db, sendMessage, aiLog = () => { } } = {}) {
   function sha256Of(text) {
@@ -318,6 +319,11 @@ function createAiEngine({ db, sendMessage, aiLog = () => { } } = {}) {
     const cooldown_ativo = cdUntil ? (now < cdUntil) : false;
     const cooldown_restante_ms = cooldown_ativo ? Math.max(0, cdUntil - now) : 0;
 
+    const offersForPrompt = {
+      offerSets: CONFIG.offerSets || {},
+      intentToOfferSet: CONFIG.intentToOfferSet || {},
+    };
+
     return {
       status_lead,
       horas_desde_ultima_mensagem_usuario: Math.round(hoursSince * 100) / 100,
@@ -330,6 +336,7 @@ function createAiEngine({ db, sendMessage, aiLog = () => { } } = {}) {
       cooldown_restante_ms,
       cooldown_msgs_desde_inicio: cd ? (cd.msgs_since_start || 0) : 0,
       cooldown_motivo: cd ? (cd.last_reason || null) : null,
+      catalogo_ofertas: offersForPrompt,
     };
   }
 
@@ -843,6 +850,9 @@ function createAiEngine({ db, sendMessage, aiLog = () => { } } = {}) {
     }
 
     const agent = parsed.data;
+
+    if (!agent.acoes || typeof agent.acoes !== 'object') agent.acoes = {};
+    agent.acoes.mostrar_ofertas = false;
 
     if (!agent || typeof agent !== 'object') {
       await sendMessage(wa_id, cfg.msg_parse_error, {
