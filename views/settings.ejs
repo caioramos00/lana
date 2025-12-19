@@ -99,6 +99,63 @@
             </div>
 
             <hr class="my-3" />
+            <div class="col-12">
+              <h3 class="mt-3">Pagamentos • PIX (Multi-Gateway)</h3>
+              <div class="form-text">Escolha o gateway padrão. Você também pode forçar via ctx.vars.pix_gateway.</div>
+            </div>
+
+            <div class="col-md-4">
+              <label class="form-label">Gateway padrão</label>
+              <select class="form-select" name="pix_gateway_default">
+                <% const pg=String(s.pix_gateway_default || 'veltrax' ).trim().toLowerCase(); %>
+                  <option value="veltrax" <%=(pg==='veltrax' ? 'selected' : '' ) %>>Veltrax</option>
+                  <option value="rapdyn" <%=(pg==='rapdyn' ? 'selected' : '' ) %>>Rapdyn</option>
+              </select>
+            </div>
+
+            <hr class="my-3" />
+            <div class="col-12">
+              <h3 class="mt-3">Pagamentos • Rapdyn</h3>
+              <div class="form-text">Config do gateway Rapdyn (base URL, credenciais, path do create e webhook).</div>
+            </div>
+
+            <div class="col-12">
+              <label class="form-label">Rapdyn API Base URL</label>
+              <input type="text" class="form-control" name="rapdyn_api_base_url"
+                value="<%= (s.rapdyn_api_base_url || '') %>" placeholder="https://api.sua-rapdyn.com">
+            </div>
+
+            <div class="col-md-6">
+              <label class="form-label">Rapdyn API Key</label>
+              <input type="text" class="form-control" name="rapdyn_api_key" value="<%= (s.rapdyn_api_key || '') %>">
+            </div>
+
+            <div class="col-md-6">
+              <label class="form-label">Rapdyn API Secret (se existir)</label>
+              <input type="text" class="form-control" name="rapdyn_api_secret"
+                value="<%= (s.rapdyn_api_secret || '') %>">
+            </div>
+
+            <div class="col-md-6">
+              <label class="form-label">Rapdyn Create Path</label>
+              <input type="text" class="form-control" name="rapdyn_create_path"
+                value="<%= (s.rapdyn_create_path || '/v1/pix') %>" placeholder="/v1/pix/charge">
+              <div class="form-text">Ajuste conforme a doc da Rapdyn.</div>
+            </div>
+
+            <div class="col-md-6">
+              <label class="form-label">Callback Base URL (domínio público do seu server)</label>
+              <input type="text" class="form-control" name="rapdyn_callback_base_url"
+                value="<%= (s.rapdyn_callback_base_url || '') %>" placeholder="https://seu-dominio.com">
+            </div>
+
+            <div class="col-md-6">
+              <label class="form-label">Webhook Path</label>
+              <input type="text" class="form-control" name="rapdyn_webhook_path"
+                value="<%= (s.rapdyn_webhook_path || '/webhook/rapdyn') %>">
+            </div>
+
+            <hr class="my-3" />
 
             <div class="col-12">
               <h3 class="mt-3">Logs</h3>

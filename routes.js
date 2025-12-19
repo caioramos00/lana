@@ -1,3 +1,5 @@
+'use strict';
+
 const path = require('path');
 const axios = require('axios');
 const fs = require('fs');
@@ -261,7 +263,7 @@ function registerRoutes(app, {
 
           const statuses = Array.isArray(value.statuses) ? value.statuses : [];
           for (const st of statuses) {
-            publishAck({
+            publishAck?.({
               wa_id: st.recipient_id || '',
               wamid: st.id || '',
               status: st.status || '',
@@ -284,9 +286,9 @@ function registerRoutes(app, {
             }
 
             try {
-              const stLead = lead.getLead(wa_id);
+              const stLead = lead?.getLead?.(wa_id);
               if (stLead && inboundPhoneNumberId) stLead.meta_phone_number_id = inboundPhoneNumberId;
-              if (inboundPhoneNumberId) rememberInboundMetaPhoneNumberId(wa_id, inboundPhoneNumberId);
+              if (inboundPhoneNumberId) rememberInboundMetaPhoneNumberId?.(wa_id, inboundPhoneNumberId);
             } catch { }
 
             let text = '';
@@ -296,9 +298,9 @@ function registerRoutes(app, {
             console.log(`[${wa_id}] ${text}`);
 
             // histórico “cru” do evento recebido
-            lead.pushHistory(wa_id, 'user', text, { wamid, kind: type });
+            lead?.pushHistory?.(wa_id, 'user', text, { wamid, kind: type });
 
-            publishMessage({
+            publishMessage?.({
               dir: 'in',
               wa_id,
               wamid,
@@ -307,10 +309,10 @@ function registerRoutes(app, {
               ts: Number(m.timestamp) * 1000 || Date.now(),
             });
 
-            publishState({ wa_id, etapa: 'RECEBIDO', vars: { kind: type }, ts: Date.now() });
+            publishState?.({ wa_id, etapa: 'RECEBIDO', vars: { kind: type }, ts: Date.now() });
 
             if (type === 'text') {
-              lead.enqueueInboundText({
+              lead?.enqueueInboundText?.({
                 wa_id,
                 inboundPhoneNumberId,
                 text,
@@ -399,7 +401,7 @@ function registerRoutes(app, {
                     // ✅ NOVO: inbound para IA também vai com tag + transcrição numa linha (e usa wamid real)
                     const combinedInbound = `[audio] ${transcriptText}`.trim();
 
-                    lead.enqueueInboundText({
+                    lead?.enqueueInboundText?.({
                       wa_id,
                       inboundPhoneNumberId,
                       text: combinedInbound,

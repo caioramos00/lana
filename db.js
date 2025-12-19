@@ -142,6 +142,15 @@ async function initDatabase() {
     await alter(`ALTER TABLE bot_settings ADD COLUMN IF NOT EXISTS voice_note_script_max_chars INTEGER;`);
     await alter(`ALTER TABLE bot_settings ADD COLUMN IF NOT EXISTS voice_note_fallback_text TEXT;`);
 
+    await alter(`ALTER TABLE bot_settings ADD COLUMN IF NOT EXISTS pix_gateway_default TEXT;`);
+
+    await alter(`ALTER TABLE bot_settings ADD COLUMN IF NOT EXISTS rapdyn_api_base_url TEXT;`);
+    await alter(`ALTER TABLE bot_settings ADD COLUMN IF NOT EXISTS rapdyn_api_key TEXT;`);
+    await alter(`ALTER TABLE bot_settings ADD COLUMN IF NOT EXISTS rapdyn_api_secret TEXT;`);
+    await alter(`ALTER TABLE bot_settings ADD COLUMN IF NOT EXISTS rapdyn_create_path TEXT;`);
+    await alter(`ALTER TABLE bot_settings ADD COLUMN IF NOT EXISTS rapdyn_callback_base_url TEXT;`);
+    await alter(`ALTER TABLE bot_settings ADD COLUMN IF NOT EXISTS rapdyn_webhook_path TEXT;`);
+
     await alter(`ALTER TABLE bot_settings ADD COLUMN IF NOT EXISTS veltrax_api_base_url TEXT;`);
     await alter(`ALTER TABLE bot_settings ADD COLUMN IF NOT EXISTS veltrax_client_id TEXT;`);
     await alter(`ALTER TABLE bot_settings ADD COLUMN IF NOT EXISTS veltrax_client_secret TEXT;`);
@@ -249,6 +258,12 @@ async function initDatabase() {
              voice_note_system_prompt = COALESCE(voice_note_system_prompt, ''),
              voice_note_user_prompt = COALESCE(voice_note_user_prompt, ''),
 
+             pix_gateway_default = COALESCE(pix_gateway_default, 'veltrax'),
+             rapdyn_api_base_url = COALESCE(rapdyn_api_base_url, ''),
+             rapdyn_create_path = COALESCE(rapdyn_create_path, '/v1/pix'),
+             rapdyn_callback_base_url = COALESCE(rapdyn_callback_base_url, ''),
+             rapdyn_webhook_path = COALESCE(rapdyn_webhook_path, '/webhook/rapdyn'),
+
              veltrax_api_base_url = COALESCE(veltrax_api_base_url, 'https://api.veltraxpay.com'),
              veltrax_callback_base_url = COALESCE(veltrax_callback_base_url, ''),
              veltrax_webhook_path = COALESCE(veltrax_webhook_path, '/webhook/veltrax'),
@@ -303,6 +318,35 @@ async function initDatabase() {
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
   );
 `);
+
+    await client.query(`
+  CREATE TABLE IF NOT EXISTS pix_deposits (
+    id SERIAL PRIMARY KEY,
+    provider TEXT NOT NULL,
+    wa_id VARCHAR(32) NOT NULL,
+    offer_id TEXT,
+    amount NUMERIC(12,2) NOT NULL,
+    external_id TEXT NOT NULL UNIQUE,
+    transaction_id TEXT,
+    status TEXT DEFAULT 'PENDING',
+    payer_name TEXT,
+    payer_email TEXT,
+    payer_document TEXT,
+    payer_phone TEXT,
+    fee NUMERIC(12,2),
+    net_amount NUMERIC(12,2),
+    end_to_end TEXT,
+    qrcode TEXT,
+    raw_create_response JSONB,
+    raw_webhook JSONB,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+  );
+`);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_pix_deposits_wa_offer ON pix_deposits (wa_id, offer_id);`);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_pix_deposits_status ON pix_deposits (status);`);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_pix_deposits_provider ON pix_deposits (provider);`);
+
 
     await client.query(`CREATE INDEX IF NOT EXISTS idx_veltrax_deposits_wa_offer ON veltrax_deposits (wa_id, offer_id);`);
     await client.query(`CREATE INDEX IF NOT EXISTS idx_veltrax_deposits_status ON veltrax_deposits (status);`);
@@ -418,6 +462,14 @@ async function getBotSettings({ bypassCache = false } = {}) {
       voice_note_history_max_chars,
       voice_note_script_max_chars,
       voice_note_fallback_text,
+
+      pix_gateway_default,
+      rapdyn_api_base_url,
+      rapdyn_api_key,
+      rapdyn_api_secret,
+      rapdyn_create_path,
+      rapdyn_callback_base_url,
+      rapdyn_webhook_path,
 
       veltrax_api_base_url,
       veltrax_client_id,
@@ -535,6 +587,14 @@ async function updateBotSettings(payload) {
       voice_note_script_max_chars,
       voice_note_fallback_text,
 
+      pix_gateway_default,
+      rapdyn_api_base_url,
+      rapdyn_api_key,
+      rapdyn_api_secret,
+      rapdyn_create_path,
+      rapdyn_callback_base_url,
+      rapdyn_webhook_path,
+
       veltrax_api_base_url,
       veltrax_client_id,
       veltrax_client_secret,
@@ -631,6 +691,18 @@ async function updateBotSettings(payload) {
     const vnHistItems = clampInt(toIntOrNull(voice_note_history_max_items), { min: 1, max: 50 });
     const vnHistChars = clampInt(toIntOrNull(voice_note_history_max_chars), { min: 200, max: 8000 });
     const vnScriptMaxChars = clampInt(toIntOrNull(voice_note_script_max_chars), { min: 200, max: 4000 });
+
+    const pixGatewayDefaultRaw = String(pix_gateway_default || '').trim().toLowerCase();
+    const pixGatewayDefault = (pixGatewayDefaultRaw === 'veltrax' || pixGatewayDefaultRaw === 'rapdyn')
+      ? pixGatewayDefaultRaw
+      : null;
+
+    const rApiBase = (rapdyn_api_base_url || '').trim() || null;
+    const rKey = (rapdyn_api_key || '').trim() || null;
+    const rSecret = (rapdyn_api_secret || '').trim() || null;
+    const rCreatePath = (rapdyn_create_path || '').trim() || null;
+    const rCbBase = (rapdyn_callback_base_url || '').trim() || null;
+    const rWebhookPath = (rapdyn_webhook_path || '').trim() || null;
 
     const vtxApiBase = (veltrax_api_base_url || '').trim() || null;
     const vtxClientId = (veltrax_client_id || '').trim() || null;
@@ -780,6 +852,14 @@ async function updateBotSettings(payload) {
             openai_transcribe_prompt = COALESCE($81, openai_transcribe_prompt),
             openai_transcribe_timeout_ms = COALESCE($82, openai_transcribe_timeout_ms),
 
+            pix_gateway_default = COALESCE($83, pix_gateway_default),
+            rapdyn_api_base_url = COALESCE($84, rapdyn_api_base_url),
+            rapdyn_api_key = COALESCE($85, rapdyn_api_key),
+            rapdyn_api_secret = COALESCE($86, rapdyn_api_secret),
+            rapdyn_create_path = COALESCE($87, rapdyn_create_path),
+            rapdyn_callback_base_url = COALESCE($88, rapdyn_callback_base_url),
+            rapdyn_webhook_path = COALESCE($89, rapdyn_webhook_path),
+
             updated_at = NOW()
        WHERE id = 1
       `,
@@ -884,6 +964,14 @@ async function updateBotSettings(payload) {
         sttLang,
         sttPrompt,
         Number.isFinite(sttTimeout) ? sttTimeout : null,
+
+        pixGatewayDefault,
+        rApiBase,
+        rKey,
+        rSecret,
+        rCreatePath,
+        rCbBase,
+        rWebhookPath,
       ]
     );
 
@@ -1047,6 +1135,115 @@ async function getLatestPendingVeltraxDeposit(wa_id, offer_id, maxAgeMs) {
   return row;
 }
 
+async function createPixDepositRow({
+  provider, wa_id, offer_id, amount, external_id, transaction_id, status,
+  payer_name, payer_email, payer_document, payer_phone,
+  qrcode, raw_create_response,
+}) {
+  const { rows } = await pool.query(
+    `
+    INSERT INTO pix_deposits
+      (provider, wa_id, offer_id, amount, external_id, transaction_id, status,
+       payer_name, payer_email, payer_document, payer_phone, qrcode, raw_create_response, updated_at)
+    VALUES
+      ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13::jsonb, NOW())
+    RETURNING *
+    `,
+    [
+      String(provider || '').trim(),
+      wa_id,
+      offer_id || null,
+      amount,
+      external_id,
+      transaction_id || null,
+      status || 'PENDING',
+      payer_name || null,
+      payer_email || null,
+      payer_document || null,
+      payer_phone || null,
+      qrcode || null,
+      raw_create_response ? JSON.stringify(raw_create_response) : null,
+    ]
+  );
+  return rows[0] || null;
+}
+
+async function updatePixDepositFromWebhookNormalized({
+  provider, transaction_id, external_id, status,
+  fee, net_amount, end_to_end, raw_webhook,
+}) {
+  if (!transaction_id && !external_id) return null;
+
+  const { rows } = await pool.query(
+    `
+    UPDATE pix_deposits
+       SET status = COALESCE($3, status),
+           transaction_id = COALESCE($1, transaction_id),
+           fee = COALESCE($4, fee),
+           net_amount = COALESCE($5, net_amount),
+           end_to_end = COALESCE($6, end_to_end),
+           raw_webhook = COALESCE($7::jsonb, raw_webhook),
+           updated_at = NOW()
+     WHERE provider = $8
+       AND (
+         (transaction_id = $1 AND $1 IS NOT NULL)
+         OR (external_id = $2 AND $2 IS NOT NULL)
+       )
+     RETURNING *
+    `,
+    [
+      transaction_id || null,
+      external_id || null,
+      status || null,
+      Number.isFinite(Number(fee)) ? Number(fee) : null,
+      Number.isFinite(Number(net_amount)) ? Number(net_amount) : null,
+      end_to_end || null,
+      raw_webhook ? JSON.stringify(raw_webhook) : null,
+      String(provider || '').trim(),
+    ]
+  );
+
+  return rows[0] || null;
+}
+
+async function countPixAttempts(wa_id, offer_id, provider) {
+  const { rows } = await pool.query(
+    `
+    SELECT COUNT(*)::int AS c
+      FROM pix_deposits
+     WHERE wa_id = $1
+       AND offer_id = $2
+       AND provider = $3
+    `,
+    [wa_id, offer_id || null, String(provider || '').trim()]
+  );
+  return rows[0]?.c || 0;
+}
+
+async function getLatestPendingPixDeposit(wa_id, offer_id, provider, maxAgeMs) {
+  const { rows } = await pool.query(
+    `
+    SELECT *
+      FROM pix_deposits
+     WHERE wa_id = $1
+       AND offer_id = $2
+       AND provider = $3
+       AND status IN ('PENDING', 'CREATED')
+     ORDER BY id DESC
+     LIMIT 1
+    `,
+    [wa_id, offer_id || null, String(provider || '').trim()]
+  );
+
+  const row = rows[0] || null;
+  if (!row) return null;
+
+  const createdAt = row.created_at ? new Date(row.created_at).getTime() : 0;
+  if (maxAgeMs && createdAt && (Date.now() - createdAt) > maxAgeMs) return null;
+
+  return row;
+}
+
 module.exports = {
   pool,
   initDatabase,
@@ -1062,4 +1259,8 @@ module.exports = {
   updateVeltraxDepositFromWebhook,
   countVeltraxAttempts,
   getLatestPendingVeltraxDeposit,
+  createPixDepositRow,
+  updatePixDepositFromWebhookNormalized,
+  countPixAttempts,
+  getLatestPendingPixDeposit,
 };

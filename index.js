@@ -53,6 +53,19 @@ async function bootstrapDb() {
         webhook_path: String(settings.veltrax_webhook_path || '/webhook/veltrax').trim(),
       };
 
+      global.pixConfig = {
+        pix_gateway_default: String(settings.pix_gateway_default || 'veltrax').trim().toLowerCase(),
+      };
+
+      global.rapdynConfig = {
+        api_base_url: String(settings.rapdyn_api_base_url || '').trim(),
+        api_key: String(settings.rapdyn_api_key || '').trim(),
+        api_secret: String(settings.rapdyn_api_secret || '').trim(),
+        create_path: String(settings.rapdyn_create_path || '/v1/pix').trim(),
+        callback_base_url: String(settings.rapdyn_callback_base_url || '').trim(),
+        webhook_path: String(settings.rapdyn_webhook_path || '/webhook/rapdyn').trim(),
+      };
+
       return;
     } catch (e) {
       attempt++;

@@ -1,7 +1,7 @@
 // actions/handlers/enviar_pix.js
 const crypto = require('crypto');
 const { CONFIG, getPixForCtx } = require('../config');
-const veltrax = require('../../veltrax');
+const pix = require('../../payments/pix');
 
 function moneyBRL(n) {
   const v = Number(n || 0);
@@ -11,7 +11,6 @@ function moneyBRL(n) {
 function findOfferById(offerId) {
   const id = String(offerId || '').trim();
   if (!id) return null;
-
   const sets = CONFIG.offerSets || {};
   for (const [setName, arr] of Object.entries(sets)) {
     const list = Array.isArray(arr) ? arr : [];
@@ -37,25 +36,6 @@ function normalizePhone(v) {
   return s || null;
 }
 
-function buildClientCallbackUrl() {
-  const base =
-    String(
-      global.veltraxConfig?.callback_base_url ||
-      global.botSettings?.veltrax_callback_base_url ||
-      ''
-    ).trim().replace(/\/+$/, '');
-
-  const path =
-    String(
-      global.veltraxConfig?.webhook_path ||
-      global.botSettings?.veltrax_webhook_path ||
-      '/webhook/veltrax'
-    ).trim() || '/webhook/veltrax';
-
-  if (!base) return null;
-  return `${base}${path.startsWith('/') ? '' : '/'}${path}`;
-}
-
 function maskEmail(email) {
   const s = String(email || '').trim();
   if (!s || !s.includes('@')) return null;
@@ -64,22 +44,19 @@ function maskEmail(email) {
 }
 
 function sanitizeKey(v, maxLen = 28) {
-  // só deixa a-zA-Z0-9_
   const s = String(v || '')
     .trim()
     .replace(/\s+/g, '_')
     .replace(/[^\w]/g, '_')
     .replace(/_+/g, '_')
     .replace(/^_+|_+$/g, '');
-
   if (!s) return 'fase';
   return s.length > maxLen ? s.slice(0, maxLen) : s;
 }
 
 function makeExternalId({ wa_id, extKey }) {
-  // ts base36 encurta bastante, randHex garante unicidade prática
   const ts = Date.now().toString(36);
-  const rand = crypto.randomBytes(10).toString('hex'); // 80 bits
+  const rand = crypto.randomBytes(10).toString('hex');
   const key = sanitizeKey(extKey, 28);
   const wa = String(wa_id || '').replace(/\D/g, '').slice(-18) || 'wa';
   return `ord_${wa}_${key}_${ts}_${rand}`;
@@ -90,40 +67,41 @@ module.exports = async function enviar_pix(ctx) {
   const fase = String(ctx?.agent?.proxima_fase || '').trim();
   const offer_id = pickOfferId(ctx);
 
-  // 1) resolve valor: offer_id > fallback fase
   const offer = offer_id ? findOfferById(offer_id) : null;
+
   const amount = offer && Number.isFinite(Number(offer.preco))
     ? Number(offer.preco)
     : Number(getPixForCtx(ctx).valor);
 
   const amountFmt = moneyBRL(amount);
 
-  // 2) payer: FIXO (modo teste)
+  // payer (você já está em modo teste; em produção, colete certo)
   const payer_name = String('Cliente').trim();
   const payer_email = String('cliente@teste.com').trim() || null;
   const payer_document = String('50728383829').replace(/\D/g, '') || null;
   const payer_phone = normalizePhone(ctx?.lead?.phone || ctx?.agent?.phone || wa_id);
 
-  // 3) callback url
-  const clientCallbackUrl = buildClientCallbackUrl();
-  if (!clientCallbackUrl) {
-    console.error('[VELTRAX][CFG][MISSING_CALLBACK]', {
-      wa_id,
-      base_from_settings: global.botSettings?.veltrax_callback_base_url || null,
-      path_from_settings: global.botSettings?.veltrax_webhook_path || null,
-      base_from_global: global.veltraxConfig?.callback_base_url || null,
-      path_from_global: global.veltraxConfig?.webhook_path || null,
-    });
+  // provider
+  const provider = pix.pickProviderFromCtx(ctx, { offer });
 
+  // callback url por provider
+  const clientCallbackUrl = pix.buildCallbackUrl(provider);
+  if (!clientCallbackUrl) {
+    console.error('[PIX][CFG][MISSING_CALLBACK]', {
+      wa_id,
+      provider,
+      veltrax_callback_base_url: global.botSettings?.veltrax_callback_base_url || null,
+      veltrax_webhook_path: global.botSettings?.veltrax_webhook_path || null,
+      rapdyn_callback_base_url: global.botSettings?.rapdyn_callback_base_url || null,
+      rapdyn_webhook_path: global.botSettings?.rapdyn_webhook_path || null,
+    });
     await ctx.sendText(`Config de pagamento incompleta (callback URL).`, { reply_to_wamid: ctx.replyToWamid });
-    return { ok: false, reason: 'missing-callback-base-url' };
+    return { ok: false, reason: 'missing-callback-base-url', provider };
   }
 
-  // 4) external_id: “impossível” repetir na prática (timestamp + crypto random)
   const extKey = offer_id || (fase || 'fase');
 
-  // 5) cria depósito (logs + retry 409 com external_id NOVO)
-  let data = null;
+  let created = null;
   let lastErr = null;
   let external_id = null;
 
@@ -134,87 +112,69 @@ module.exports = async function enviar_pix(ctx) {
     phone_last4: payer_phone ? String(payer_phone).slice(-4) : null,
   };
 
-  const mkPayload = (extId) => ({
-    amount,
-    external_id: extId,
-    clientCallbackUrl,
-    payer: {
-      name: payer_name,
-      email: payer_email,
-      document: payer_document,
-      phone: payer_phone || undefined,
-    },
-  });
-
   for (let i = 0; i < 2; i++) {
     const extId = makeExternalId({ wa_id, extKey });
-    const payload = mkPayload(extId);
-
     try {
-      data = await veltrax.createDeposit(payload);
+      created = await pix.createPix(provider, {
+        amount,
+        external_id: extId,
+        callbackUrl: clientCallbackUrl,
+        payer: {
+          name: payer_name,
+          email: payer_email,
+          document: payer_document,
+          phone: payer_phone,
+        },
+        meta: { wa_id, offer_id, fase },
+      });
       external_id = extId;
+      lastErr = null;
 
-      console.log('[VELTRAX][DEPOSIT][OK]', {
+      console.log('[PIX][CREATE][OK]', {
         wa_id,
+        provider,
         offer_id,
         fase,
         amount,
         external_id,
+        transaction_id: created?.transaction_id || null,
         callback: clientCallbackUrl,
       });
 
-      lastErr = null;
       break;
     } catch (e) {
       lastErr = e;
-
-      const httpStatus = e?.http_status || null;
-      const reqId = e?.request_id || null;
-
-      console.error('[VELTRAX][DEPOSIT][ERROR]', {
+      console.error('[PIX][CREATE][ERROR]', {
         wa_id,
+        provider,
         offer_id,
         fase,
         amount,
         external_id: extId,
         callback: clientCallbackUrl,
         payer: safePayerForLog,
-
         code: e?.code || null,
-        http_status: httpStatus,
-        request_id: reqId,
-
+        http_status: e?.http_status || null,
+        request_id: e?.request_id || null,
         message: e?.message || String(e),
         response_data: e?.response_data || null,
         meta: e?.meta || null,
       });
 
-      // retry só pra 409 (conflito) — com external_id novo
-      if (httpStatus === 409 && i === 0) {
-        console.warn('[VELTRAX][DEPOSIT][RETRY_409_NEW_EXTERNAL_ID]', { prev_external_id: extId });
-        continue;
-      }
-
+      // retry 409 (se existir)
+      if (e?.http_status === 409 && i === 0) continue;
       break;
     }
   }
 
-  if (!data) {
-    const httpStatus = lastErr?.http_status || null;
-
-    if (httpStatus === 409) {
-      await ctx.sendText(`Deu conflito ao gerar o Pix (pedido duplicado). Tenta de novo.`, { reply_to_wamid: ctx.replyToWamid });
-    } else if (lastErr?.code === 'VELTRAX_CONFIG') {
-      await ctx.sendText(`Config da Veltrax incompleta (client_id/client_secret).`, { reply_to_wamid: ctx.replyToWamid });
-    } else {
-      await ctx.sendText(`Deu erro ao gerar o Pix. Tenta de novo.`, { reply_to_wamid: ctx.replyToWamid });
-    }
-
+  if (!created) {
+    await ctx.sendText(`Deu erro ao gerar o Pix. Tenta de novo.`, { reply_to_wamid: ctx.replyToWamid });
     return {
       ok: false,
-      reason: 'veltrax-error',
+      reason: 'pix-create-error',
+      provider,
       code: lastErr?.code || null,
-      http_status: httpStatus,
+      http_status: lastErr?.http_status || null,
       request_id: lastErr?.request_id || null,
       message: lastErr?.message || null,
       response_data: lastErr?.response_data || null,
@@ -222,20 +182,43 @@ module.exports = async function enviar_pix(ctx) {
     };
   }
 
-  const transaction_id = data?.qrCodeResponse?.transactionId || null;
-  const status = String(data?.qrCodeResponse?.status || 'PENDING');
-  const qrcode = data?.qrCodeResponse?.qrcode || null;
+  const transaction_id = created?.transaction_id || null;
+  const status = String(created?.status || 'PENDING');
+  const qrcode = created?.qrcode || null;
 
   // salva no lead
   if (ctx?.agent) {
-    ctx.agent.veltrax_external_id = external_id;
-    ctx.agent.veltrax_transaction_id = transaction_id;
-    ctx.agent.veltrax_status = status;
+    ctx.agent.pix_provider = provider;
+    ctx.agent.pix_external_id = external_id;
+    ctx.agent.pix_transaction_id = transaction_id;
+    ctx.agent.pix_status = status;
     ctx.agent.offer_id = offer_id || ctx.agent.offer_id || null;
   }
 
+  // salva no DB (tabela genérica)
+  try {
+    if (ctx?.db?.createPixDepositRow) {
+      await ctx.db.createPixDepositRow({
+        provider,
+        wa_id,
+        offer_id,
+        amount,
+        external_id,
+        transaction_id,
+        status,
+        payer_name,
+        payer_email,
+        payer_document,
+        payer_phone,
+        qrcode,
+        raw_create_response: created?.raw || null,
+      });
+    }
+  } catch (e) {
+    console.log('[PIX][DB][WARN]', { message: e?.message });
+  }
+
   // mensagens
-  // ✅ juntar: "Segue o Pix...", "Valor: ...", "Copia e cola:" numa única mensagem com quebras de linha
   await ctx.sendText(
     `Segue o Pix pra confirmar:\nValor: ${amountFmt}\nCopia e cola:`,
     { reply_to_wamid: ctx.replyToWamid }
@@ -248,10 +231,10 @@ module.exports = async function enviar_pix(ctx) {
   }
 
   if (qrcode) {
-    await ctx.sendText(qrcode, { reply_to_wamid: ctx.replyToWamid });
+    await ctx.sendText(String(qrcode), { reply_to_wamid: ctx.replyToWamid });
   } else {
     await ctx.sendText(`Não veio o código Pix. Vou precisar gerar de novo.`, { reply_to_wamid: ctx.replyToWamid });
-    return { ok: false, reason: 'missing-qrcode', external_id, transaction_id, status };
+    return { ok: false, reason: 'missing-qrcode', provider, external_id, transaction_id, status };
   }
 
   if (CONFIG?.pix?.mensagemExtra) {
@@ -261,7 +244,7 @@ module.exports = async function enviar_pix(ctx) {
 
   return {
     ok: true,
-    provider: 'veltrax',
+    provider,
     external_id,
     transaction_id,
     status,
