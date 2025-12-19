@@ -112,6 +112,12 @@ async function initDatabase() {
     await alter(`ALTER TABLE bot_settings ADD COLUMN IF NOT EXISTS venice_enable_web_citations BOOLEAN;`);
     await alter(`ALTER TABLE bot_settings ADD COLUMN IF NOT EXISTS venice_enable_web_scraping BOOLEAN;`);
 
+    await alter(`ALTER TABLE bot_settings ADD COLUMN IF NOT EXISTS openai_api_url TEXT;`);
+
+    await alter(`ALTER TABLE bot_settings ADD COLUMN IF NOT EXISTS voice_note_ai_provider TEXT;`);
+    await alter(`ALTER TABLE bot_settings ADD COLUMN IF NOT EXISTS voice_note_openai_model TEXT;`);
+    await alter(`ALTER TABLE bot_settings ADD COLUMN IF NOT EXISTS voice_note_venice_model TEXT;`);
+
     await alter(`ALTER TABLE bot_settings ADD COLUMN IF NOT EXISTS ai_max_out_messages INTEGER;`);
     await alter(`ALTER TABLE bot_settings ADD COLUMN IF NOT EXISTS ai_error_msg_config TEXT;`);
     await alter(`ALTER TABLE bot_settings ADD COLUMN IF NOT EXISTS ai_error_msg_generic TEXT;`);
@@ -191,6 +197,9 @@ async function initDatabase() {
              venice_include_venice_system_prompt = COALESCE(venice_include_venice_system_prompt, FALSE),
              venice_enable_web_citations = COALESCE(venice_enable_web_citations, FALSE),
              venice_enable_web_scraping = COALESCE(venice_enable_web_scraping, FALSE),
+
+             openai_api_url = COALESCE(openai_api_url, 'https://api.openai.com/v1/responses'),
+             voice_note_ai_provider = COALESCE(voice_note_ai_provider, 'inherit'),
 
              ai_max_out_messages = COALESCE(ai_max_out_messages, 3),
              ai_error_msg_config = COALESCE(ai_error_msg_config, 'Config incompleta no painel (venice key/model/prompt).'),
@@ -335,6 +344,13 @@ async function getBotSettings({ bypassCache = false } = {}) {
       openai_max_output_tokens,
       openai_reasoning_effort,
 
+      voice_note_system_prompt,
+      voice_note_user_prompt,
+      voice_note_ai_provider,
+      voice_note_openai_model,
+      voice_note_venice_model,
+      voice_note_temperature,
+
       venice_api_url,
       venice_temperature,
       venice_max_tokens,
@@ -451,6 +467,12 @@ async function updateBotSettings(payload) {
       venice_include_venice_system_prompt,
       venice_enable_web_citations,
       venice_enable_web_scraping,
+
+      openai_api_url,
+
+      voice_note_ai_provider,
+      voice_note_openai_model,
+      voice_note_venice_model,
 
       ai_max_out_messages,
       ai_error_msg_config,
@@ -604,6 +626,15 @@ async function updateBotSettings(payload) {
     const effortRaw = (openai_reasoning_effort || '').trim().toLowerCase();
     const openaiEffort = (effortRaw === 'low' || effortRaw === 'medium' || effortRaw === 'high') ? effortRaw : null;
 
+    const openaiApiUrl = (openai_api_url || '').trim() || null;
+
+    const vnProvRaw = (voice_note_ai_provider || '').trim().toLowerCase();
+    const voiceNoteProvider =
+      (vnProvRaw === 'inherit' || vnProvRaw === 'venice' || vnProvRaw === 'openai') ? vnProvRaw : null;
+
+    const voiceNoteOpenAiModel = (voice_note_openai_model || '').trim() || null;
+    const voiceNoteVeniceModel = (voice_note_venice_model || '').trim() || null;
+
     await client.query(
       `
       UPDATE bot_settings
@@ -695,6 +726,11 @@ openai_model = COALESCE($71, openai_model),
 openai_max_output_tokens = COALESCE($72, openai_max_output_tokens),
 openai_reasoning_effort = COALESCE($73, openai_reasoning_effort),
 
+openai_api_url = COALESCE($74, openai_api_url),
+
+voice_note_ai_provider = COALESCE($75, voice_note_ai_provider),
+voice_note_openai_model = COALESCE($76, voice_note_openai_model),
+voice_note_venice_model = COALESCE($77, voice_note_venice_model),
 
             updated_at = NOW()
        WHERE id = 1
@@ -790,6 +826,10 @@ openai_reasoning_effort = COALESCE($73, openai_reasoning_effort),
         openaiModel,
         Number.isFinite(openaiMaxOut) ? openaiMaxOut : null,
         openaiEffort,
+        openaiApiUrl,
+        voiceNoteProvider,
+        voiceNoteOpenAiModel,
+        voiceNoteVeniceModel,
       ]
     );
 

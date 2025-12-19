@@ -546,6 +546,124 @@ function createAiEngine({ db, sendMessage, aiLog = () => { } } = {}) {
     return { status: r.status, content, data: r.data };
   }
 
+  function normalizeVoiceNoteProvider(x) {
+    const p = String(x || '').trim().toLowerCase();
+    if (p === 'inherit' || p === 'venice' || p === 'openai') return p;
+    return 'inherit';
+  }
+
+  function readVoiceNoteRuntimeConfig(settings, mainCfg) {
+    const s = settings || {};
+    const vnProv = normalizeVoiceNoteProvider(s.voice_note_ai_provider);
+    const provider = (vnProv === 'inherit') ? mainCfg.ai_provider : vnProv;
+
+    const model =
+      (provider === 'venice')
+        ? (String(s.voice_note_venice_model || '').trim() || String(s.venice_model || '').trim())
+        : (String(s.voice_note_openai_model || '').trim() || String(s.openai_model || '').trim());
+
+    const temperature = clampNum(toNumberOrNull(s.voice_note_temperature), { min: 0, max: 2 }) ?? 0.85;
+
+    // voz: Venice usa max_tokens; OpenAI Responses usa max_output_tokens
+    const maxTokens = clampInt(toNumberOrNull(s.voice_note_max_tokens), { min: 16, max: 4096 }) ?? 220;
+
+    const timeoutMs = clampInt(toNumberOrNull(s.voice_note_timeout_ms), { min: 1000, max: 180000 }) ?? 45000;
+
+    const histMaxChars = clampInt(toNumberOrNull(s.voice_note_history_max_chars), { min: 200, max: 8000 }) ?? 1600;
+    const scriptMaxChars = clampInt(toNumberOrNull(s.voice_note_script_max_chars), { min: 200, max: 4000 }) ?? 650;
+
+    const systemPrompt = String(s.voice_note_system_prompt || '').trim();
+    const userTpl = String(s.voice_note_user_prompt || '').trim();
+
+    return {
+      provider,
+      model,
+      temperature,
+      maxTokens,
+      timeoutMs,
+      histMaxChars,
+      scriptMaxChars,
+      systemPrompt,
+      userTpl,
+    };
+  }
+
+  function renderVoiceNotePrompt({ systemPrompt, userTpl, chatStr }) {
+    const tpl = userTpl || `HISTÓRICO:\n{{CHAT}}\n\nEscreva um roteiro curto e natural de áudio, no mesmo tom da conversa. Sem markdown.`;
+
+    const chat = String(chatStr || '').trim();
+    const u = tpl.replace(/\{\{CHAT\}\}/g, chat);
+    const s = (systemPrompt || '').replace(/\{\{CHAT\}\}/g, chat);
+
+    return { system: s, user: u };
+  }
+
+  async function callVeniceText({ apiKey, model, systemPrompt, userPrompt, userId, cfg }) {
+    const url = cfg.venice_api_url;
+
+    const body = {
+      model,
+      messages: [
+        { role: 'system', content: systemPrompt || '' },
+        { role: 'user', content: userPrompt || '' },
+      ],
+      temperature: cfg.temperature,
+      max_tokens: cfg.max_tokens,
+      user: userId || undefined,
+      venice_parameters: cfg.venice_parameters,
+      stream: false,
+    };
+
+    const r = await axios.post(url, body, {
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        'Content-Type': 'application/json',
+      },
+      timeout: cfg.timeoutMs,
+      validateStatus: () => true,
+    });
+
+    aiLog(`[AI][VOICE_NOTE][VENICE] http=${r.status}`);
+
+    const content = r.data?.choices?.[0]?.message?.content ?? '';
+    return { status: r.status, content, data: r.data };
+  }
+
+  async function callOpenAiText({ apiKey, model, systemPrompt, userPrompt, userId, cfg }) {
+    const url = cfg.openai_api_url || 'https://api.openai.com/v1/responses';
+
+    const body = {
+      model,
+      input: [
+        { role: 'system', content: systemPrompt || '' },
+        { role: 'user', content: userPrompt || '' },
+      ],
+      ...(Number.isFinite(cfg.temperature) ? { temperature: cfg.temperature } : {}),
+      ...(Number.isFinite(cfg.max_output_tokens) ? { max_output_tokens: cfg.max_output_tokens } : {}),
+      ...(userId ? { user: userId } : {}),
+    };
+
+    const r = await axios.post(url, body, {
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        'Content-Type': 'application/json',
+      },
+      timeout: cfg.timeoutMs,
+      validateStatus: () => true,
+    });
+
+    aiLog(`[AI][VOICE_NOTE][OPENAI] http=${r.status}`);
+
+    const content = extractOpenAiOutputText(r.data);
+    return { status: r.status, content, data: r.data };
+  }
+
+  function hardCut(s, maxChars) {
+    const t = String(s || '').trim();
+    if (!maxChars || t.length <= maxChars) return t;
+    return t.slice(0, maxChars).trim();
+  }
+
   // ===== Audio helpers (mantém) =====
   function leadAskedForAudio(userText) {
     const t = String(userText || '').toLowerCase();
@@ -796,11 +914,96 @@ function createAiEngine({ db, sendMessage, aiLog = () => { } } = {}) {
       else if (modelWantsAudio) mode = 'MODEL';
 
       let script = '';
+
       if (mode === 'AUTO_CURTO') {
         const lastText = outItems.length ? outItems[outItems.length - 1].text : '';
         script = makeAutoShortScriptFromText(lastText);
       } else {
-        script = makeFreeScriptFromOutItems(outItems);
+        // ✅ tenta gerar roteiro com VoiceNote provider/model próprio
+        try {
+          const settingsNow = settings || global.botSettings || await db.getBotSettings();
+          const vn = readVoiceNoteRuntimeConfig(settingsNow, cfg);
+
+          // pega histórico atual (já com as msgs que você acabou de enviar)
+          const stForVoice = lead.getLead(wa_id);
+          let chatStr = '';
+          try {
+            chatStr = lead.buildHistoryString(stForVoice, { excludeWamids });
+          } catch {
+            chatStr = '';
+          }
+          chatStr = String(chatStr || '').trim();
+          if (vn.histMaxChars && chatStr.length > vn.histMaxChars) {
+            chatStr = chatStr.slice(chatStr.length - vn.histMaxChars);
+          }
+
+          const { system, user } = renderVoiceNotePrompt({
+            systemPrompt: vn.systemPrompt,
+            userTpl: vn.userTpl,
+            chatStr,
+          });
+
+          const provider = vn.provider;
+          const model = vn.model;
+
+          const veniceApiKey = (settingsNow?.venice_api_key || '').trim();
+          const openaiApiKey = (settingsNow?.openai_api_key || '').trim();
+
+          const missing =
+            !model ||
+            (provider === 'venice' ? !veniceApiKey : !openaiApiKey);
+
+          if (!missing) {
+            aiLog(`[AI][VOICE_NOTE] provider=${provider} model=${model} wa_id=${wa_id}`);
+
+            const vnCfg = {
+              // endpoints herdados do main cfg (mas timeout/tokens/temperature são do VoiceNote)
+              venice_api_url: cfg.venice_api_url,
+              openai_api_url: cfg.openai_api_url,
+              venice_parameters: cfg.venice_parameters,
+
+              temperature: vn.temperature,
+              max_tokens: vn.maxTokens,
+              max_output_tokens: vn.maxTokens,
+              timeoutMs: vn.timeoutMs,
+            };
+
+            const respVn = (provider === 'venice')
+              ? await callVeniceText({
+                apiKey: veniceApiKey,
+                model,
+                systemPrompt: system,
+                userPrompt: user,
+                userId: wa_id,
+                cfg: vnCfg,
+              })
+              : await callOpenAiText({
+                apiKey: openaiApiKey,
+                model,
+                systemPrompt: system,
+                userPrompt: user,
+                userId: wa_id,
+                cfg: vnCfg,
+              });
+
+            if (respVn && respVn.status >= 200 && respVn.status < 300) {
+              script = String(respVn.content || '').trim();
+            }
+          }
+
+          // fallback (se não gerou nada)
+          if (!script) {
+            const fb = String(settingsNow?.voice_note_fallback_text || '').trim();
+            script = fb || makeFreeScriptFromOutItems(outItems);
+          }
+
+          // hard cut final
+          script = hardCut(script, vn.scriptMaxChars || 650);
+        } catch (e) {
+          // fallback seguro
+          const fb = String(settings?.voice_note_fallback_text || '').trim();
+          script = fb || makeFreeScriptFromOutItems(outItems);
+        }
       }
 
       try { await humanDelayForOutboundText(script, cfg.outboundDelay); } catch { }

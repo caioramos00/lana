@@ -14,6 +14,14 @@
     .ai-provider-box.active {
       display: block;
     }
+
+    .vn-provider-box {
+      display: none;
+    }
+
+    .vn-provider-box.active {
+      display: block;
+    }
   </style>
 </head>
 
@@ -454,8 +462,40 @@
 
             <div class="col-12">
               <h3 class="mt-3">Voice Note (enviar_audio.js) • Geração do script</h3>
-              <div class="form-text">Essas configs controlam o prompt e parâmetros usados só para gerar o texto do
-                áudio.</div>
+              <% const vnProvRaw=String(s.voice_note_ai_provider || 'inherit' ).trim().toLowerCase(); const
+                vnProv=(vnProvRaw==='openai' || vnProvRaw==='venice' ) ? vnProvRaw : 'inherit' ; %>
+
+                <div class="col-md-4">
+                  <label class="form-label">VoiceNote Provider (script)</label>
+                  <select class="form-select" name="voice_note_ai_provider" id="voice_note_ai_provider">
+                    <option value="inherit" <%=(vnProv==='inherit' ) ? 'selected' : '' %>>
+                      Herdar do Provider global
+                    </option>
+                    <option value="venice" <%=(vnProv==='venice' ) ? 'selected' : '' %>>Venice</option>
+                    <option value="openai" <%=(vnProv==='openai' ) ? 'selected' : '' %>>OpenAI</option>
+                  </select>
+                  <div class="form-text">
+                    Controla apenas a geração do roteiro do áudio (antes do ElevenLabs). Se “Herdar”, usa o provider
+                    global.
+                  </div>
+                </div>
+
+                <div class="col-md-8 vn-provider-box" id="vn_provider_venice">
+                  <label class="form-label">VoiceNote • Venice Model (opcional)</label>
+                  <input type="text" class="form-control" name="voice_note_venice_model"
+                    value="<%= (s.voice_note_venice_model || '') %>" placeholder="ex.: llama-3.1-...">
+                  <div class="form-text">Se vazio, usa o <b>Venice Model</b> global.</div>
+                </div>
+
+                <div class="col-md-8 vn-provider-box" id="vn_provider_openai">
+                  <label class="form-label">VoiceNote • OpenAI Model (opcional)</label>
+                  <input type="text" class="form-control" name="voice_note_openai_model"
+                    value="<%= (s.voice_note_openai_model || '') %>" placeholder="ex.: gpt-4.1-mini / gpt-4.1 / etc">
+                  <div class="form-text">Se vazio, usa o <b>OpenAI Model</b> global.</div>
+                </div>
+
+                <div class="form-text">Essas configs controlam o prompt e parâmetros usados só para gerar o texto do
+                  áudio.</div>
             </div>
 
             <div class="col-md-3">
@@ -752,6 +792,33 @@
               if (sel) sel.addEventListener('change', updateProviderUI);
 
               updateProviderUI();
+              function updateVoiceNoteUI() {
+                const vnSel = document.getElementById('voice_note_ai_provider');
+                const mainSel = document.getElementById('ai_provider');
+
+                let provider = 'venice';
+                const vn = (vnSel && vnSel.value) ? String(vnSel.value).toLowerCase() : 'inherit';
+
+                if (vn === 'inherit') {
+                  provider = (mainSel && mainSel.value) ? String(mainSel.value).toLowerCase() : 'venice';
+                } else {
+                  provider = vn;
+                }
+
+                const boxV = document.getElementById('vn_provider_venice');
+                const boxO = document.getElementById('vn_provider_openai');
+
+                if (boxV) boxV.classList.toggle('active', provider === 'venice');
+                if (boxO) boxO.classList.toggle('active', provider === 'openai');
+              }
+
+              const vnSel = document.getElementById('voice_note_ai_provider');
+              if (vnSel) vnSel.addEventListener('change', updateVoiceNoteUI);
+
+              const mainSel = document.getElementById('ai_provider');
+              if (mainSel) mainSel.addEventListener('change', updateVoiceNoteUI);
+
+              updateVoiceNoteUI();
             })();
 
             // ==== Máscara número Meta ====
