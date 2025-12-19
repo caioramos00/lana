@@ -866,10 +866,26 @@ function createAiEngine({ db, sendMessage, aiLog = () => { } } = {}) {
     });
 
     const modelWantsAudio = !!agent?.acoes?.enviar_audio;
-    const audioOnlyBecauseModel = modelWantsAudio === true;
 
-    if (audioOnlyBecauseModel) {
-      aiLog(`[AI][AUDIO_ONLY][${wa_id}] enviar_audio=true -> suprimindo ${outItems.length} msg(s) de texto`);
+    // ✅ AUTO_CURTO: agora calculamos ANTES de enviar texto,
+    // simulando como se o streak fosse avançar pelos outItems
+    const autoDue =
+      !askedAudio &&
+      !modelWantsAudio &&
+      audioState &&
+      Number.isFinite(audioState.text_streak_count) &&
+      Number.isFinite(audioState.next_audio_at) &&
+      ((audioState.text_streak_count + outItems.length) >= audioState.next_audio_at);
+
+    // ✅ regra final: se for mandar áudio (qualquer um dos 3 tipos), suprime texto
+    const shouldSendAudio = askedAudio || modelWantsAudio || autoDue;
+    const suppressTexts = shouldSendAudio;
+
+    if (suppressTexts) {
+      let reason = 'AUTO_CURTO';
+      if (askedAudio) reason = 'PEDIDO_LEAD';
+      else if (modelWantsAudio) reason = 'MODEL';
+      aiLog(`[AI][AUDIO_ONLY][${wa_id}] reason=${reason} -> suprimindo ${outItems.length} msg(s) de texto`);
     } else {
       for (let i = 0; i < outItems.length; i++) {
         const { text: msg, reply_to_wamid } = outItems[i];
@@ -894,24 +910,9 @@ function createAiEngine({ db, sendMessage, aiLog = () => { } } = {}) {
       }
     }
 
-    const stAfterTexts = lead.getLead(wa_id);
-    const aAfter = (typeof lead.getAudioState === 'function')
-      ? lead.getAudioState(wa_id)
-      : (stAfterTexts?.audio_policy || null);
-
     if (agent?.acoes && typeof agent.acoes === 'object') {
       agent.acoes.enviar_audio = false;
     }
-
-    const autoDue =
-      !askedAudio &&
-      !modelWantsAudio &&
-      aAfter &&
-      Number.isFinite(aAfter.text_streak_count) &&
-      Number.isFinite(aAfter.next_audio_at) &&
-      aAfter.text_streak_count >= aAfter.next_audio_at;
-
-    const shouldSendAudio = askedAudio || modelWantsAudio || autoDue;
 
     if (shouldSendAudio) {
       let mode = 'AUTO_CURTO';
@@ -924,12 +925,10 @@ function createAiEngine({ db, sendMessage, aiLog = () => { } } = {}) {
         const lastText = outItems.length ? outItems[outItems.length - 1].text : '';
         script = makeAutoShortScriptFromText(lastText);
       } else {
-        // ✅ tenta gerar roteiro com VoiceNote provider/model próprio
         try {
           const settingsNow = settings || global.botSettings || await db.getBotSettings();
           const vn = readVoiceNoteRuntimeConfig(settingsNow, cfg);
 
-          // pega histórico atual (já com as msgs que você acabou de enviar)
           const stForVoice = lead.getLead(wa_id);
           let chatStr = '';
           try {
@@ -938,10 +937,12 @@ function createAiEngine({ db, sendMessage, aiLog = () => { } } = {}) {
             chatStr = '';
           }
           chatStr = String(chatStr || '').trim();
-          if (audioOnlyBecauseModel && outItems.length) {
+
+          if (suppressTexts && outItems.length) {
             const draft = makeFreeScriptFromOutItems(outItems);
             if (draft) chatStr = `${chatStr}\n\nASSISTANT_DRAFT_PARA_AUDIO:\n${draft}`;
           }
+
           if (vn.histMaxChars && chatStr.length > vn.histMaxChars) {
             chatStr = chatStr.slice(chatStr.length - vn.histMaxChars);
           }
@@ -966,7 +967,6 @@ function createAiEngine({ db, sendMessage, aiLog = () => { } } = {}) {
             aiLog(`[AI][VOICE_NOTE] provider=${provider} model=${model} wa_id=${wa_id}`);
 
             const vnCfg = {
-              // endpoints herdados do main cfg (mas timeout/tokens/temperature são do VoiceNote)
               venice_api_url: cfg.venice_api_url,
               openai_api_url: cfg.openai_api_url,
               venice_parameters: cfg.venice_parameters,
@@ -1006,10 +1006,8 @@ function createAiEngine({ db, sendMessage, aiLog = () => { } } = {}) {
             script = fb || makeFreeScriptFromOutItems(outItems);
           }
 
-          // hard cut final
           script = hardCut(script, vn.scriptMaxChars || 650);
         } catch (e) {
-          // fallback seguro
           const fb = String(settings?.voice_note_fallback_text || '').trim();
           script = fb || makeFreeScriptFromOutItems(outItems);
         }
