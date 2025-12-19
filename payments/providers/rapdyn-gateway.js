@@ -31,6 +31,7 @@ function docTypeAndValue(rawDoc) {
   return { type: digits.length > 11 ? 'CNPJ' : 'CPF', value: digits };
 }
 
+// ===== DEBUG HELPERS =====
 function isDataImage(v) {
   const s = String(v || '').trim().toLowerCase();
   return s.startsWith('data:image/');
@@ -39,91 +40,79 @@ function isDataImage(v) {
 function looksLikePixCopyPaste(v) {
   const s = String(v || '').trim();
   if (!s) return false;
-
   const up = s.toUpperCase();
-  // BR Code (EMV) do PIX geralmente começa com 000201
-  // ou contém o domínio BR.GOV.BCB.PIX
-  const ok =
-    up.startsWith('000201') ||
-    up.includes('BR.GOV.BCB.PIX');
-
-  // geralmente é bem grande; evita pegar lixo curto
-  return ok && s.length >= 25;
+  return (
+    (up.startsWith('000201') || up.includes('BR.GOV.BCB.PIX')) &&
+    s.length >= 25
+  );
 }
 
-function extractPixCopyPaste(data) {
-  // Campos mais prováveis para "copia e cola" (prioridade alta)
-  const preferredPaths = [
-    'pix.copy_and_paste',
-    'pix.copyAndPaste',
-    'pix.copy_paste',
-    'pix.copiaecola',
-    'pix.copia_e_cola',
-    'pix.emv',
-    'pix.brCode',
-    'pix.br_code',
-    'pix.payload',
-    'pix.code',
-    'pix.brcode',
-    'pix.pixCopiaECola',
-    'data.pix.copy_and_paste',
-    'data.pix.emv',
-    'data.pix.brCode',
-    'data.pix.payload',
-    'data.emv',
-    'data.brCode',
-  ];
+function maskValue(v) {
+  const s = String(v || '');
+  const len = s.length;
 
-  for (const path of preferredPaths) {
-    const val = pick(data, [path]);
-    if (!val) continue;
+  // mostra um preview curto pra não vazar completo
+  if (len <= 80) return s;
+  return `${s.slice(0, 30)}...(len=${len})...${s.slice(-18)}`;
+}
 
-    const s = String(val).trim();
-    if (!s) continue;
+function listStringFields(obj, opts = {}) {
+  const {
+    maxNodes = 2000,
+    maxDepth = 12,
+  } = opts;
 
-    // se veio imagem base64/data:image, ignora
-    if (isDataImage(s)) continue;
+  const out = [];
+  const seen = new Set();
+  let nodes = 0;
 
-    // se parece BR Code, já retorna
-    if (looksLikePixCopyPaste(s)) return s;
+  function walk(cur, path, depth) {
+    if (nodes++ > maxNodes) return;
+    if (depth > maxDepth) return;
+
+    if (cur && typeof cur === 'object') {
+      if (seen.has(cur)) return;
+      seen.add(cur);
+
+      if (Array.isArray(cur)) {
+        for (let i = 0; i < cur.length; i++) {
+          walk(cur[i], `${path}[${i}]`, depth + 1);
+        }
+        return;
+      }
+
+      for (const k of Object.keys(cur)) {
+        const nextPath = path ? `${path}.${k}` : k;
+        walk(cur[k], nextPath, depth + 1);
+      }
+      return;
+    }
+
+    if (typeof cur === 'string') {
+      out.push({ path, value: cur });
+    }
   }
 
-  // Fallback: tenta achar algum campo textual que seja BR Code,
-  // mas evita explicitamente os que são imagem.
-  const fallbackPaths = [
-    'qrcode',
-    'qr_code',
-    'qrCode',
-    'pix.qrcode',
-    'pix.qr_code',
-    'pix.qrCode',
-    'data.qrcode',
-  ];
+  walk(obj, '', 0);
+  return out;
+}
 
-  for (const path of fallbackPaths) {
-    const val = pick(data, [path]);
-    if (!val) continue;
-
-    const s = String(val).trim();
-    if (!s) continue;
-
-    if (isDataImage(s)) continue;
-    if (looksLikePixCopyPaste(s)) return s;
-  }
-
-  return null;
+function isDebugEnabled() {
+  return !!(
+    global.botSettings.rapdyn_debug = true
+  );
 }
 
 module.exports = {
   id: 'rapdyn',
 
   async createPix({ amount, external_id, callbackUrl, payer, meta }) {
+    // DOC: POST https://app.rapdyn.io/api/payments
     const amountCents = toCents(amount);
 
     const doc = docTypeAndValue(payer?.document);
     const phone = String(payer?.phone || '').trim();
 
-    // DOC: POST /payments
     const payload = {
       amount: amountCents,
       method: 'pix',
@@ -149,26 +138,76 @@ module.exports = {
 
     const data = await rapdyn.createPixCharge(payload);
 
-    const transaction_id =
-      pick(data, ['id', 'transaction_id', 'transactionId', 'data.id']) || null;
+    // ✅ DEBUG: loga como chega (sem vazar tudo)
+    if (isDebugEnabled()) {
+      try {
+        const topKeys = (data && typeof data === 'object' && !Array.isArray(data))
+          ? Object.keys(data)
+          : [];
 
-    const status =
-      pick(data, ['status', 'data.status']) || 'pending';
+        const strings = listStringFields(data);
+        const copyCandidates = strings
+          .filter(x => looksLikePixCopyPaste(x.value))
+          .map(x => ({ path: x.path, preview: maskValue(x.value) }));
 
-    // ✅ aqui é a correção: "qrcode" vira SEMPRE copia e cola (EMV/BR Code)
-    const copyPaste = extractPixCopyPaste(data);
+        const imageCandidates = strings
+          .filter(x => isDataImage(x.value))
+          .map(x => ({ path: x.path, preview: maskValue(x.value) }));
+
+        console.log('[RAPDYN][CREATE][RESP][SUMMARY]', {
+          external_id,
+          topKeys,
+          stringFields: strings.length,
+          copyPasteCandidates: copyCandidates.length,
+          dataImageCandidates: imageCandidates.length,
+        });
+
+        if (copyCandidates.length) {
+          console.log('[RAPDYN][CREATE][RESP][COPY_PASTE_CANDIDATES]', copyCandidates);
+        } else {
+          console.log('[RAPDYN][CREATE][RESP][COPY_PASTE_CANDIDATES]', 'NONE');
+        }
+
+        if (imageCandidates.length) {
+          console.log('[RAPDYN][CREATE][RESP][DATA_IMAGE_CANDIDATES]', imageCandidates);
+        }
+      } catch (e) {
+        console.log('[RAPDYN][CREATE][RESP][DEBUG_ERR]', { message: e?.message });
+      }
+    }
+
+    // A resposta da Rapdyn pode variar, então tentamos extrair os campos mais comuns:
+    const transaction_id = pick(data, ['id', 'transaction_id', 'transactionId', 'data.id']) || null;
+    const status = pick(data, ['status', 'data.status']) || 'pending';
+
+    // OBS: aqui mantém tua lista.
+    // Depois do log, você vai saber o path certo do "copia e cola"
+    const qrcode = pick(data, [
+      'pix.emv',
+      'pix.qrCode',
+      'pix.qrcode',
+      'pix.copy_and_paste',
+      'pix.code',
+      'qrcode',
+      'emv',
+      'data.pix.emv',
+      'data.emv',
+      'data.qrcode',
+    ]) || null;
 
     return {
       provider: 'rapdyn',
       external_id,
       transaction_id,
       status: String(status),
-      qrcode: copyPaste ? String(copyPaste) : null, // <- handler envia isso no WhatsApp
+      qrcode: qrcode ? String(qrcode) : null,
       raw: data,
     };
   },
 
   normalizeWebhook(payload) {
+    // DOC webhook:
+    // { notification_type:'transaction', id:'...', total:10000, method:'pix', status:'paid', external_id:'...', pix:{end2EndId}, ... }
     const transaction_id = pick(payload, ['id']) || null;
     const external_id = pick(payload, ['external_id']) || null;
     const status = pick(payload, ['status']) || null;
@@ -197,6 +236,7 @@ module.exports = {
 
   isPaidStatus(status) {
     const st = upper(status);
+    // doc: processing, pending, paid, failed, returned, cancelled, blocked, med
     return st === 'PAID' || st === 'COMPLETED' || st === 'CONFIRMED' || st === 'SUCCESS' || st === 'APPROVED';
   },
 };
