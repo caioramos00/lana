@@ -1023,9 +1023,12 @@ function createAiEngine({ db, sendMessage, aiLog = () => { } } = {}) {
       if (!rAudio?.ok) {
         aiLog(`[AI][AUDIO][${wa_id}] FAIL mode=${mode}`, rAudio);
       } else {
+        const audioText = String(rAudio?.tts_text || script || '').trim();
+
         lead.pushHistory(wa_id, 'assistant', `[AUDIO:${mode}]`, {
           kind: 'audio',
           audio_kind: mode,
+          audio_text: audioText,
           wamid: rAudio.wamid || '',
           phone_number_id: rAudio.phone_number_id || inboundPhoneNumberId || null,
           ts_ms: Date.now(),

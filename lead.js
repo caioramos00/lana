@@ -360,7 +360,13 @@ function createLeadStore({
       })
       .map((m) => {
         const who = m.role === 'assistant' ? 'ASSISTANT' : (m.role === 'user' ? 'USER' : 'SYSTEM');
-        const t = String(m.text || '').replace(/\s+/g, ' ').trim();
+        let t = String(m.text || '').replace(/\s+/g, ' ').trim();
+
+        const audioTxt = String(m.audio_text || '').replace(/\s+/g, ' ').trim();
+        if (audioTxt) {
+          t = t ? `${t} ${audioTxt}` : audioTxt;
+        }
+
         return `${who}: ${t}`;
       })
       .join('\n');

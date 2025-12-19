@@ -12,7 +12,9 @@ function buildRecentChatContext(ctx, { maxItems = 10, maxChars = 1400 } = {}) {
 
     const lines = tail.map(m => {
       const who = m.role === 'user' ? 'USER' : (m.role === 'assistant' ? 'ASSISTANT' : 'SYSTEM');
-      return `${who}: ${safeStr(m.text)}`;
+      const base = safeStr(m.text);
+      const audioTxt = safeStr(m.audio_text);
+      return `${who}: ${audioTxt ? (base + ' ' + audioTxt) : base}`;
     }).filter(Boolean);
 
     let out = lines.join('\n');
@@ -139,8 +141,12 @@ module.exports = async function enviar_audio(ctx, payload) {
   });
 
   if (r?.ok) {
+    const audioText = String(r?.tts_text || finalText || '').trim();
+
     ctx.lead.pushHistory(ctx.wa_id, 'assistant', '[audio]', {
       kind: 'audio',
+      audio_kind: 'ACTION',
+      audio_text: audioText,
       wamid: r.wamid || '',
       phone_number_id: r.phone_number_id || ctx.inboundPhoneNumberId || null,
       ts_ms: Date.now(),

@@ -813,6 +813,7 @@ async function sendTtsVoiceNote(contato, text, opts = {}) {
     const cfg = resolveElevenConfig(settings, opts);
     return {
       ...rSend,
+      tts_text: finalText,
       tts: { provider: 'elevenlabs', voice_id: cfg.voiceId, model_id: cfg.modelId, output_format: cfg.outputFormat },
       uploaded_media_id: up.id,
     };
