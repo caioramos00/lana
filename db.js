@@ -743,9 +743,7 @@ async function updateBotSettings(payload) {
     const vnScriptMaxChars = clampInt(toIntOrNull(voice_note_script_max_chars), { min: 200, max: 4000 });
 
     const pixGatewayDefaultRaw = String(pix_gateway_default || '').trim().toLowerCase();
-    const pixGatewayDefault = (pixGatewayDefaultRaw === 'veltrax' || pixGatewayDefaultRaw === 'rapdyn')
-      ? pixGatewayDefaultRaw
-      : null;
+    const pixGatewayDefault = (pixGatewayDefaultRaw === 'veltrax' || pixGatewayDefaultRaw === 'rapdyn' || pixGatewayDefaultRaw === 'zoompag') ? pixGatewayDefaultRaw : null;
 
     const rApiBase = (rapdyn_api_base_url || '').trim() || null;
     const rKey = (rapdyn_api_key || '').trim() || null;
