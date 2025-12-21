@@ -107,7 +107,7 @@ function createAiEngine({ db, sendMessage, aiLog = () => { } } = {}) {
 
   function normalizeProvider(x) {
     const p = String(x || '').trim().toLowerCase();
-    return (p === 'openai' || p === 'venice') ? p : 'venice';
+    return (p === 'openai' || p === 'venice' || p === 'grok') ? p : 'venice';
   }
 
   function normalizeReasoningEffort(x) {
@@ -162,6 +162,16 @@ function createAiEngine({ db, sendMessage, aiLog = () => { } } = {}) {
       clampInt(toNumberOrNull(s.openai_max_output_tokens), { min: 16, max: 32768 });
 
     const openai_reasoning_effort = normalizeReasoningEffort(s.openai_reasoning_effort);
+
+    // ---- Grok (novo) ----
+    const grok_api_url =
+      (String(s.grok_api_url || '').trim() || 'https://api.x.ai/v1/chat/completions');
+
+    const grok_temperature = clampNum(toNumberOrNull(s.grok_temperature), { min: 0, max: 2 });
+    const grok_max_tokens = clampInt(toNumberOrNull(s.grok_max_tokens), { min: 16, max: 4096 });
+
+    const grokTemp = (grok_temperature === null) ? 0.7 : grok_temperature;
+    const grokMaxTokens = (grok_max_tokens === null) ? 700 : grok_max_tokens;
 
     const maxOut = clampInt(toNumberOrNull(s.ai_max_out_messages), { min: 1, max: 10 });
     const max_out_messages = (maxOut === null) ? 3 : maxOut;
@@ -247,6 +257,10 @@ function createAiEngine({ db, sendMessage, aiLog = () => { } } = {}) {
       openai_api_url,
       openai_max_output_tokens,
       openai_reasoning_effort,
+
+      grok_api_url,
+      grok_temperature: grokTemp,
+      grok_max_tokens: grokMaxTokens,
 
       // common
       max_out_messages,
@@ -553,9 +567,74 @@ function createAiEngine({ db, sendMessage, aiLog = () => { } } = {}) {
     return { status: r.status, content, data: r.data };
   }
 
+  async function callGrokChat({ apiKey, model, systemPromptRendered, userId, cfg }) {
+    const url = cfg.grok_api_url;
+
+    // tentativa 1: com response_format (se suportar)
+    const body1 = {
+      model,
+      messages: [
+        { role: 'system', content: systemPromptRendered },
+        { role: 'user', content: cfg.userMessage },
+      ],
+      temperature: cfg.grok_temperature,
+      max_tokens: cfg.grok_max_tokens,
+
+      // alguns providers suportam isso (OpenAI-like). Se não suportar, fazemos fallback.
+      response_format: { type: 'json_object' },
+
+      user: userId || undefined,
+      stream: false,
+    };
+
+    const headers = {
+      Authorization: `Bearer ${apiKey}`,
+      'Content-Type': 'application/json',
+      // compat extra (alguns aceitam x-api-key)
+      'X-API-Key': apiKey,
+    };
+
+    const post = async (body) => axios.post(url, body, {
+      headers,
+      timeout: cfg.timeoutMs,
+      validateStatus: () => true,
+    });
+
+    let r = await post(body1);
+
+    // fallback: se reclamar do response_format, tenta de novo sem ele
+    if (r.status >= 400) {
+      const errStr = JSON.stringify(r.data || {});
+      const looksLikeBadParam =
+        /response_format|json_object|invalid.*parameter|unknown.*field/i.test(errStr);
+
+      if (looksLikeBadParam) {
+        const body2 = { ...body1 };
+        delete body2.response_format;
+        r = await post(body2);
+      }
+    }
+
+    aiLog(`[AI][RESPONSE][GROK] http=${r.status}`);
+
+    const content = r.data?.choices?.[0]?.message?.content ?? '';
+    aiLog(`[AI][RESPONSE][GROK][CONTENT]\n${content}`);
+
+    aiLog(JSON.stringify({
+      id: r.data?.id,
+      model: r.data?.model,
+      created: r.data?.created,
+      usage: r.data?.usage,
+      finish_reason: r.data?.choices?.[0]?.finish_reason,
+      error: r.data?.error,
+    }, null, 2));
+
+    return { status: r.status, content, data: r.data };
+  }
+
   function normalizeVoiceNoteProvider(x) {
     const p = String(x || '').trim().toLowerCase();
-    if (p === 'inherit' || p === 'venice' || p === 'openai') return p;
+    if (p === 'inherit' || p === 'venice' || p === 'openai' || p === 'grok') return p;
     return 'inherit';
   }
 
@@ -567,7 +646,9 @@ function createAiEngine({ db, sendMessage, aiLog = () => { } } = {}) {
     const model =
       (provider === 'venice')
         ? (String(s.voice_note_venice_model || '').trim() || String(s.venice_model || '').trim())
-        : (String(s.voice_note_openai_model || '').trim() || String(s.openai_model || '').trim());
+        : (provider === 'openai')
+          ? (String(s.voice_note_openai_model || '').trim() || String(s.openai_model || '').trim())
+          : (String(s.voice_note_grok_model || '').trim() || String(s.grok_model || '').trim());
 
     const temperature = clampNum(toNumberOrNull(s.voice_note_temperature), { min: 0, max: 2 }) ?? 0.85;
 
@@ -665,6 +746,37 @@ function createAiEngine({ db, sendMessage, aiLog = () => { } } = {}) {
     return { status: r.status, content, data: r.data };
   }
 
+  async function callGrokText({ apiKey, model, systemPrompt, userPrompt, userId, cfg }) {
+    const url = cfg.grok_api_url;
+
+    const body = {
+      model,
+      messages: [
+        { role: 'system', content: systemPrompt || '' },
+        { role: 'user', content: userPrompt || '' },
+      ],
+      temperature: cfg.temperature,
+      max_tokens: cfg.max_tokens,
+      user: userId || undefined,
+      stream: false,
+    };
+
+    const r = await axios.post(url, body, {
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        'Content-Type': 'application/json',
+        'X-API-Key': apiKey,
+      },
+      timeout: cfg.timeoutMs,
+      validateStatus: () => true,
+    });
+
+    aiLog(`[AI][VOICE_NOTE][GROK] http=${r.status}`);
+
+    const content = r.data?.choices?.[0]?.message?.content ?? '';
+    return { status: r.status, content, data: r.data };
+  }
+
   function hardCut(s, maxChars) {
     const t = String(s || '').trim();
     if (!maxChars || t.length <= maxChars) return t;
@@ -739,9 +851,14 @@ function createAiEngine({ db, sendMessage, aiLog = () => { } } = {}) {
     const openaiApiKey = (settings?.openai_api_key || '').trim();
     const openaiModel = (settings?.openai_model || '').trim();
 
+    const grokApiKey = (settings?.grok_api_key || '').trim();
+    const grokModel = (settings?.grok_model || '').trim();
+
     const missingCore =
       !systemPromptTpl ||
-      (provider === 'venice' ? (!veniceApiKey || !veniceModel) : (!openaiApiKey || !openaiModel));
+      (provider === 'venice' ? (!veniceApiKey || !veniceModel)
+        : provider === 'openai' ? (!openaiApiKey || !openaiModel)
+          : (!grokApiKey || !grokModel));
 
     if (missingCore) {
       await sendMessage(wa_id, cfg.msg_config_incomplete, {
@@ -798,8 +915,15 @@ function createAiEngine({ db, sendMessage, aiLog = () => { } } = {}) {
 
     aiLog(`[AI][SYSTEM_PROMPT_RENDERED] (omitted) chars=${(rendered || '').length} sha256=${sha256Of(rendered || '')}`);
 
-    const modelUsed = (provider === 'venice') ? veniceModel : openaiModel;
-    const endpointUsed = (provider === 'venice') ? cfg.venice_api_url : cfg.openai_api_url;
+    const modelUsed =
+      (provider === 'venice') ? veniceModel
+        : (provider === 'openai') ? openaiModel
+          : grokModel;
+
+    const endpointUsed =
+      (provider === 'venice') ? cfg.venice_api_url
+        : (provider === 'openai') ? cfg.openai_api_url
+          : cfg.grok_api_url;
 
     logAiRequest({
       provider,
@@ -824,13 +948,21 @@ function createAiEngine({ db, sendMessage, aiLog = () => { } } = {}) {
         userId: wa_id,
         cfg,
       })
-      : await callOpenAiResponses({
-        apiKey: openaiApiKey,
-        model: openaiModel,
-        systemPromptRendered: rendered,
-        userId: wa_id,
-        cfg,
-      });
+      : (provider === 'openai')
+        ? await callOpenAiResponses({
+          apiKey: openaiApiKey,
+          model: openaiModel,
+          systemPromptRendered: rendered,
+          userId: wa_id,
+          cfg,
+        })
+        : await callGrokChat({
+          apiKey: grokApiKey,
+          model: grokModel,
+          systemPromptRendered: rendered,
+          userId: wa_id,
+          cfg,
+        });
 
     if (!resp || resp.status < 200 || resp.status >= 300) {
       await sendMessage(wa_id, cfg.msg_generic_error, {
@@ -968,10 +1100,13 @@ function createAiEngine({ db, sendMessage, aiLog = () => { } } = {}) {
 
           const veniceApiKey = (settingsNow?.venice_api_key || '').trim();
           const openaiApiKey = (settingsNow?.openai_api_key || '').trim();
+          const grokApiKey = (settingsNow?.grok_api_key || '').trim();
 
           const missing =
             !model ||
-            (provider === 'venice' ? !veniceApiKey : !openaiApiKey);
+            (provider === 'venice' ? !veniceApiKey
+              : provider === 'openai' ? !openaiApiKey
+                : !grokApiKey);
 
           if (!missing) {
             aiLog(`[AI][VOICE_NOTE] provider=${provider} model=${model} wa_id=${wa_id}`);
@@ -979,6 +1114,7 @@ function createAiEngine({ db, sendMessage, aiLog = () => { } } = {}) {
             const vnCfg = {
               venice_api_url: cfg.venice_api_url,
               openai_api_url: cfg.openai_api_url,
+              grok_api_url: cfg.grok_api_url,
               venice_parameters: cfg.venice_parameters,
 
               temperature: vn.temperature,
@@ -996,14 +1132,23 @@ function createAiEngine({ db, sendMessage, aiLog = () => { } } = {}) {
                 userId: wa_id,
                 cfg: vnCfg,
               })
-              : await callOpenAiText({
-                apiKey: openaiApiKey,
-                model,
-                systemPrompt: system,
-                userPrompt: user,
-                userId: wa_id,
-                cfg: vnCfg,
-              });
+              : (provider === 'openai')
+                ? await callOpenAiText({
+                  apiKey: openaiApiKey,
+                  model,
+                  systemPrompt: system,
+                  userPrompt: user,
+                  userId: wa_id,
+                  cfg: vnCfg,
+                })
+                : await callGrokText({
+                  apiKey: grokApiKey,
+                  model,
+                  systemPrompt: system,
+                  userPrompt: user,
+                  userId: wa_id,
+                  cfg: vnCfg,
+                });
 
             if (respVn && respVn.status >= 200 && respVn.status < 300) {
               script = String(respVn.content || '').trim();

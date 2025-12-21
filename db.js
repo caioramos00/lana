@@ -112,6 +112,14 @@ async function initDatabase() {
     await alter(`ALTER TABLE bot_settings ADD COLUMN IF NOT EXISTS venice_enable_web_citations BOOLEAN;`);
     await alter(`ALTER TABLE bot_settings ADD COLUMN IF NOT EXISTS venice_enable_web_scraping BOOLEAN;`);
 
+    await alter(`ALTER TABLE bot_settings ADD COLUMN IF NOT EXISTS grok_api_key TEXT;`);
+    await alter(`ALTER TABLE bot_settings ADD COLUMN IF NOT EXISTS grok_model TEXT;`);
+    await alter(`ALTER TABLE bot_settings ADD COLUMN IF NOT EXISTS grok_api_url TEXT;`);
+    await alter(`ALTER TABLE bot_settings ADD COLUMN IF NOT EXISTS grok_temperature DOUBLE PRECISION;`);
+    await alter(`ALTER TABLE bot_settings ADD COLUMN IF NOT EXISTS grok_max_tokens INTEGER;`);
+
+    await alter(`ALTER TABLE bot_settings ADD COLUMN IF NOT EXISTS voice_note_grok_model TEXT;`);
+
     await alter(`ALTER TABLE bot_settings ADD COLUMN IF NOT EXISTS openai_api_url TEXT;`);
 
     await alter(`ALTER TABLE bot_settings ADD COLUMN IF NOT EXISTS voice_note_ai_provider TEXT;`);
@@ -212,6 +220,10 @@ async function initDatabase() {
              venice_include_venice_system_prompt = COALESCE(venice_include_venice_system_prompt, FALSE),
              venice_enable_web_citations = COALESCE(venice_enable_web_citations, FALSE),
              venice_enable_web_scraping = COALESCE(venice_enable_web_scraping, FALSE),
+
+             grok_api_url = COALESCE(grok_api_url, 'https://api.x.ai/v1/chat/completions'),
+             grok_temperature = COALESCE(grok_temperature, 0.7),
+             grok_max_tokens = COALESCE(grok_max_tokens, 700),
 
              openai_api_url = COALESCE(openai_api_url, 'https://api.openai.com/v1/responses'),
              voice_note_ai_provider = COALESCE(voice_note_ai_provider, 'inherit'),
@@ -419,6 +431,14 @@ async function getBotSettings({ bypassCache = false } = {}) {
       venice_enable_web_citations,
       venice_enable_web_scraping,
 
+      grok_api_key,
+      grok_model,
+      grok_api_url,
+      grok_temperature,
+      grok_max_tokens,
+
+      voice_note_grok_model,
+
       ai_max_out_messages,
       ai_error_msg_config,
       ai_error_msg_generic,
@@ -536,6 +556,14 @@ async function updateBotSettings(payload) {
       venice_include_venice_system_prompt,
       venice_enable_web_citations,
       venice_enable_web_scraping,
+
+      grok_api_key,
+      grok_model,
+      grok_api_url,
+      grok_temperature,
+      grok_max_tokens,
+
+      voice_note_grok_model,
 
       openai_api_url,
 
@@ -711,7 +739,7 @@ async function updateBotSettings(payload) {
     const vtxWebhookPath = (veltrax_webhook_path || '').trim() || null;
 
     const aiProviderRaw = (ai_provider || '').trim().toLowerCase();
-    const aiProvider = (aiProviderRaw === 'venice' || aiProviderRaw === 'openai') ? aiProviderRaw : null;
+    const aiProvider = (aiProviderRaw === 'venice' || aiProviderRaw === 'openai' || aiProviderRaw === 'grok') ? aiProviderRaw : null;
 
     const openaiApiKey = (openai_api_key || '').trim() || null;
     const openaiModel = (openai_model || '').trim() || null;
@@ -725,7 +753,7 @@ async function updateBotSettings(payload) {
 
     const vnProvRaw = (voice_note_ai_provider || '').trim().toLowerCase();
     const voiceNoteProvider =
-      (vnProvRaw === 'inherit' || vnProvRaw === 'venice' || vnProvRaw === 'openai') ? vnProvRaw : null;
+      (vnProvRaw === 'inherit' || vnProvRaw === 'venice' || vnProvRaw === 'openai' || vnProvRaw === 'grok') ? vnProvRaw : null;
 
     const voiceNoteOpenAiModel = (voice_note_openai_model || '').trim() || null;
     const voiceNoteVeniceModel = (voice_note_venice_model || '').trim() || null;
@@ -748,6 +776,15 @@ async function updateBotSettings(payload) {
         : null;
 
     const sttTimeout = clampInt(toIntOrNull(openai_transcribe_timeout_ms), { min: 1000, max: 300000 });
+
+    const grokApiKey = (grok_api_key || '').trim() || null;
+    const grokModel = (grok_model || '').trim() || null;
+    const grokApiUrl = (grok_api_url || '').trim() || null;
+
+    const grokTemp = clampFloat(toFloatOrNull(grok_temperature), { min: 0, max: 2 });
+    const grokMaxTokens = clampInt(toIntOrNull(grok_max_tokens), { min: 16, max: 4096 });
+
+    const voiceNoteGrokModel = (voice_note_grok_model || '').trim() || null;
 
     await client.query(
       `
@@ -859,6 +896,13 @@ async function updateBotSettings(payload) {
             rapdyn_create_path = COALESCE($87, rapdyn_create_path),
             rapdyn_callback_base_url = COALESCE($88, rapdyn_callback_base_url),
             rapdyn_webhook_path = COALESCE($89, rapdyn_webhook_path),
+
+            grok_api_key = COALESCE($90, grok_api_key),
+            grok_model = COALESCE($91, grok_model),
+            grok_api_url = COALESCE($92, grok_api_url),
+            grok_temperature = COALESCE($93, grok_temperature),
+            grok_max_tokens = COALESCE($94, grok_max_tokens),
+            voice_note_grok_model = COALESCE($95, voice_note_grok_model),
 
             updated_at = NOW()
        WHERE id = 1
@@ -972,6 +1016,13 @@ async function updateBotSettings(payload) {
         rCreatePath,
         rCbBase,
         rWebhookPath,
+
+        grokApiKey,
+        grokModel,
+        grokApiUrl,
+        Number.isFinite(grokTemp) ? grokTemp : null,
+        Number.isFinite(grokMaxTokens) ? grokMaxTokens : null,
+        voiceNoteGrokModel,
       ]
     );
 
