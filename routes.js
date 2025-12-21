@@ -4,17 +4,6 @@ const path = require('path');
 const fs = require('fs');
 const crypto = require('crypto');
 
-app.use(
-  express.json({
-    verify: (req, _res, buf) => {
-      req.rawBody = buf;
-    },
-  })
-);
-
-let FormData = null;
-try { FormData = require('form-data'); } catch { /* ok */ }
-
 const { downloadMetaMediaToTempFile } = require('./senders');
 const { transcribeAudioOpenAI } = require('./transcribe');
 const { createPaymentsModule } = require('./payments/payment-module');
@@ -47,19 +36,21 @@ function verifyMetaSignature(req, appSecret) {
   if (!sig || !sig.startsWith('sha256=')) return false;
 
   const provided = sig.slice('sha256='.length);
-  const raw = req.rawBody || Buffer.from(JSON.stringify(req.body || {}));
 
+  // ✅ rawBody vem do index.js (express.json verify)
+  const raw = req.rawBody || Buffer.from(JSON.stringify(req.body || {}));
   const expected = crypto.createHmac('sha256', appSecret).update(raw).digest('hex');
+
   return timingSafeEqualHex(provided, expected);
 }
 
 function getInboundContact(value, wa_id) {
   const contacts = Array.isArray(value.contacts) ? value.contacts : [];
-  const found =
+  return (
     contacts.find(c => String(c?.wa_id || '').trim() === String(wa_id || '').trim()) ||
     contacts[0] ||
-    null;
-  return found;
+    null
+  );
 }
 
 // Extrai “texto útil” para IA/histórico em vários tipos (text, interactive, button, etc.)
@@ -85,7 +76,6 @@ function extractInboundText(m) {
     return '[interactive]';
   }
 
-  // WhatsApp Cloud às vezes manda reply de botão assim:
   if (type === 'button') {
     const t = m?.button?.text || m?.button?.payload || '';
     return t ? `[btn] ${t}` : '[button]';
@@ -99,9 +89,15 @@ function extractInboundText(m) {
 
   if (type === 'image') return m?.image?.caption ? collapseOneLine(m.image.caption) : '[image]';
   if (type === 'video') return m?.video?.caption ? collapseOneLine(m.video.caption) : '[video]';
-  if (type === 'document') return m?.document?.caption ? collapseOneLine(m.document.caption) : `[document] ${m?.document?.filename || ''}`.trim();
+  if (type === 'document') {
+    return m?.document?.caption
+      ? collapseOneLine(m.document.caption)
+      : `[document] ${m?.document?.filename || ''}`.trim();
+  }
+
   if (type === 'audio') return '[audio]';
   if (type === 'sticker') return '[sticker]';
+
   if (type === 'location') {
     const lat = m?.location?.latitude;
     const lng = m?.location?.longitude;
@@ -111,57 +107,6 @@ function extractInboundText(m) {
   return `[${type || 'msg'}]`;
 }
 
-function mergeTranscriptIntoAudioHistory({ wa_id, wamid, mediaId, transcriptText }) {
-  try {
-    // se você já tem uma implementação própria, ela ganha:
-    if (typeof globalThis.mergeTranscriptIntoAudioHistory === 'function' && globalThis.mergeTranscriptIntoAudioHistory !== mergeTranscriptIntoAudioHistory) {
-      return globalThis.mergeTranscriptIntoAudioHistory({ wa_id, wamid, mediaId, transcriptText });
-    }
-  } catch { }
-
-  try {
-    const stLead = lead?.getLead?.(wa_id);
-    if (!stLead) return { ok: false, reason: 'no-lead' };
-
-    const hist =
-      (Array.isArray(stLead.history) && stLead.history) ||
-      (Array.isArray(stLead.hist) && stLead.hist) ||
-      (Array.isArray(stLead.chat_history) && stLead.chat_history) ||
-      (Array.isArray(stLead.messages) && stLead.messages) ||
-      null;
-
-    if (!hist) return { ok: false, reason: 'no-history-array' };
-
-    for (let i = hist.length - 1; i >= 0; i--) {
-      const h = hist[i] || {};
-      const meta = h?.meta || {};
-      const hwamid = String(meta?.wamid || h?.wamid || h?.id || '').trim();
-      const hkind = String(meta?.kind || h?.kind || h?.type || '').trim();
-
-      const htext = String(h?.text ?? h?.msg ?? h?.message ?? '').trim();
-      const looksLikeAudio = htext.includes('[audio]') || hkind === 'audio';
-
-      if (hwamid && hwamid === String(wamid || '').trim() && looksLikeAudio) {
-        const merged = collapseOneLine(`${htext || '[audio]'} ${transcriptText}`);
-
-        if (h.text !== undefined) h.text = merged;
-        else if (h.msg !== undefined) h.msg = merged;
-        else if (h.message !== undefined) h.message = merged;
-        else h.text = merged;
-
-        h.meta = { ...meta, kind: 'audio', wamid, mediaId, has_transcript: true };
-        hist[i] = h;
-
-        return { ok: true, idx: i };
-      }
-    }
-
-    return { ok: false, reason: 'not-found' };
-  } catch (e) {
-    return { ok: false, reason: e?.message || 'err' };
-  }
-}
-
 function registerRoutes(app, {
   db,
   lead,
@@ -169,8 +114,8 @@ function registerRoutes(app, {
   publishMessage,
   publishAck,
   publishState,
-  ai,
 } = {}) {
+
   function checkAuth(req, res, next) {
     if (req.session?.loggedIn) return next();
     return res.redirect('/login');
@@ -183,49 +128,7 @@ function registerRoutes(app, {
     logger: console,
   });
 
-  function collapseOneLine(s) {
-    return String(s || '').replace(/\s+/g, ' ').trim();
-  }
-
-  function mergeTranscriptIntoAudioHistory({ wa_id, wamid, mediaId, transcriptText }) {
-    try {
-      const stLead = lead?.getLead?.(wa_id);
-      const hist = Array.isArray(stLead?.history) ? stLead.history : null;
-      if (!hist) return { ok: false, reason: 'no-history' };
-
-      const targetWamid = String(wamid || '').trim();
-      if (!targetWamid) return { ok: false, reason: 'missing-wamid' };
-
-      // procura de trás pra frente (mais provável ser o último áudio desse wamid)
-      for (let i = hist.length - 1; i >= 0; i--) {
-        const h = hist[i];
-        if (!h) continue;
-
-        const hWamid = String(h.wamid || '').trim();
-        if (hWamid !== targetWamid) continue;
-
-        // achou a entrada do áudio: transforma em uma linha só
-        const cleanTr = collapseOneLine(transcriptText);
-        const combined = cleanTr ? `[audio] ${cleanTr}` : `[audio]`;
-
-        h.text = combined;
-
-        // marcações úteis (opcional)
-        h.is_transcript = true;
-        h.transcript_text = cleanTr;
-        h.source_kind = 'audio';
-        h.source_wamid = targetWamid;
-        h.source_media_id = String(mediaId || '').trim() || null;
-
-        return { ok: true, combinedText: combined };
-      }
-
-      return { ok: false, reason: 'audio-entry-not-found' };
-    } catch (e) {
-      return { ok: false, reason: 'exception', message: e?.message };
-    }
-  }
-
+  // ---------- AUTH/UI ----------
   app.get(['/', '/login'], (req, res) => res.sendFile(path.join(__dirname, 'public', 'login.html')));
 
   app.post('/login', (req, res) => {
@@ -256,6 +159,7 @@ function registerRoutes(app, {
     try {
       await db.updateBotSettings(req.body || {});
       global.botSettings = await db.getBotSettings({ bypassCache: true });
+
       global.veltraxConfig = {
         api_base_url: (global.botSettings.veltrax_api_base_url || 'https://api.veltraxpay.com').trim(),
         client_id: (global.botSettings.veltrax_client_id || '').trim(),
@@ -275,7 +179,7 @@ function registerRoutes(app, {
           ? true
           : !!global.botSettings.openai_transcribe_enabled,
         model: String(global.botSettings.openai_transcribe_model || '').trim() || 'whisper-1',
-        language: String(global.botSettings.openai_transcribe_language || '').trim(), // '' => autodetect
+        language: String(global.botSettings.openai_transcribe_language || '').trim(),
         prompt: String(global.botSettings.openai_transcribe_prompt || '').trim(),
         timeout_ms: Number(global.botSettings.openai_transcribe_timeout_ms) || 60000,
       };
@@ -300,14 +204,7 @@ function registerRoutes(app, {
     }
   });
 
-  // -------------------- VELTRAX WEBHOOK --------------------
-  function getVeltraxWebhookPaths() {
-    const p = String(global.veltraxConfig?.webhook_path || '/webhook/veltrax').trim() || '/webhook/veltrax';
-    // segurança: registra também o default
-    const list = new Set(['/webhook/veltrax', p]);
-    return [...list];
-  }
-
+  // ---------- META NUMBERS ----------
   app.post('/admin/settings/meta/save', checkAuth, async (req, res) => {
     try {
       const id = (req.body.id || '').trim();
@@ -342,6 +239,7 @@ function registerRoutes(app, {
     }
   });
 
+  // ---------- WEBHOOK VERIFY (GET) ----------
   app.get('/webhook', (req, res) => {
     try {
       const mode = req.query['hub.mode'];
@@ -353,13 +251,13 @@ function registerRoutes(app, {
       if (mode === 'subscribe' && token && token === VERIFY_TOKEN) {
         return res.status(200).send(String(challenge || ''));
       }
-
       return res.sendStatus(403);
     } catch {
       return res.sendStatus(403);
     }
   });
 
+  // ---------- WEBHOOK (POST) ----------
   app.post('/webhook', async (req, res) => {
     // 1) valida assinatura (antes de responder 200)
     try {
@@ -369,7 +267,6 @@ function registerRoutes(app, {
         if (!ok) return res.sendStatus(401);
       }
     } catch {
-      // se der erro na validação, melhor negar do que aceitar silencioso
       return res.sendStatus(401);
     }
 
@@ -377,6 +274,41 @@ function registerRoutes(app, {
     res.sendStatus(200);
 
     const body = req.body || {};
+
+    function mergeTranscriptIntoAudioHistory({ wa_id, wamid, mediaId, transcriptText }) {
+      try {
+        const stLead = lead?.getLead?.(wa_id);
+        const hist = Array.isArray(stLead?.history) ? stLead.history : null;
+        if (!hist) return { ok: false, reason: 'no-history' };
+
+        const targetWamid = String(wamid || '').trim();
+        if (!targetWamid) return { ok: false, reason: 'missing-wamid' };
+
+        for (let i = hist.length - 1; i >= 0; i--) {
+          const h = hist[i];
+          if (!h) continue;
+
+          const hWamid = String(h.wamid || '').trim();
+          if (hWamid !== targetWamid) continue;
+
+          const cleanTr = collapseOneLine(transcriptText);
+          const combined = cleanTr ? `[audio] ${cleanTr}` : `[audio]`;
+
+          h.text = combined;
+          h.is_transcript = true;
+          h.transcript_text = cleanTr;
+          h.source_kind = 'audio';
+          h.source_wamid = targetWamid;
+          h.source_media_id = String(mediaId || '').trim() || null;
+
+          return { ok: true, combinedText: combined };
+        }
+
+        return { ok: false, reason: 'audio-entry-not-found' };
+      } catch (e) {
+        return { ok: false, reason: 'exception', message: e?.message };
+      }
+    }
 
     try {
       const entry = Array.isArray(body.entry) ? body.entry : [];
@@ -388,6 +320,7 @@ function registerRoutes(app, {
           const value = ch?.value || {};
           const inboundPhoneNumberId = value?.metadata?.phone_number_id || null;
 
+          // statuses
           const statuses = Array.isArray(value.statuses) ? value.statuses : [];
           for (const st of statuses) {
             try {
@@ -400,6 +333,7 @@ function registerRoutes(app, {
             } catch { }
           }
 
+          // messages
           const msgs = Array.isArray(value.messages) ? value.messages : [];
           for (const m of msgs) {
             const wa_id = String(m?.from || '').trim();
@@ -408,7 +342,7 @@ function registerRoutes(app, {
 
             if (!wa_id || !wamid) continue;
 
-            // ✅ DEDUPE AQUI (entrada)
+            // dedupe
             try {
               if (lead && typeof lead.markInboundWamidSeen === 'function') {
                 const r = lead.markInboundWamidSeen(wa_id, wamid);
@@ -416,36 +350,30 @@ function registerRoutes(app, {
               }
             } catch { }
 
-            // tenta carregar state e guardar meta_phone_number_id
+            // state/meta
             let stLead = null;
-
             try {
               stLead = lead?.getLead?.(wa_id);
 
               if (stLead && inboundPhoneNumberId) stLead.meta_phone_number_id = inboundPhoneNumberId;
               if (inboundPhoneNumberId) rememberInboundMetaPhoneNumberId?.(wa_id, inboundPhoneNumberId);
 
-              // ✅ CAPTURA + LOG do PRIMEIRO inbound
+              // ✅ CAPTURA do PRIMEIRO inbound (onde o referral costuma vir)
               if (stLead && !stLead.first_inbound_payload) {
                 const contact = getInboundContact(value, wa_id);
 
                 const snapshot = {
                   captured_at_iso: new Date().toISOString(),
                   captured_ts_ms: Date.now(),
-
                   wa_id,
                   wamid,
                   type,
                   inboundPhoneNumberId: inboundPhoneNumberId || null,
-
                   text_body: type === 'text' ? (m?.text?.body || '') : null,
-
                   referral: m?.referral || null,
                   context: m?.context || null,
-
                   contact: contact || null,
                   metadata: value?.metadata || null,
-
                   message: m || null,
                 };
 
@@ -457,17 +385,12 @@ function registerRoutes(app, {
               }
             } catch { }
 
-            // Texto “canônico” pra histórico/IA
             const extracted = extractInboundText(m);
             const textForLog = extracted || `[${type || 'msg'}]`;
             console.log(`[${wa_id}] ${textForLog}`);
 
-            // histórico “cru”
-            try {
-              lead?.pushHistory?.(wa_id, 'user', textForLog, { wamid, kind: type });
-            } catch { }
+            try { lead?.pushHistory?.(wa_id, 'user', textForLog, { wamid, kind: type }); } catch { }
 
-            // SSE/debug
             try {
               publishMessage?.({
                 dir: 'in',
@@ -479,30 +402,20 @@ function registerRoutes(app, {
               });
             } catch { }
 
-            try {
-              publishState?.({ wa_id, etapa: 'RECEBIDO', vars: { kind: type }, ts: Date.now() });
-            } catch { }
+            try { publishState?.({ wa_id, etapa: 'RECEBIDO', vars: { kind: type }, ts: Date.now() }); } catch { }
 
             const shouldEnqueueAsText = type === 'text' || type === 'interactive' || type === 'button' || type === 'reaction';
-
             if (shouldEnqueueAsText) {
               try {
                 const clean = collapseOneLine(textForLog);
                 if (clean) {
-                  lead?.enqueueInboundText?.({
-                    wa_id,
-                    inboundPhoneNumberId,
-                    text: clean,
-                    wamid,
-                  });
+                  lead?.enqueueInboundText?.({ wa_id, inboundPhoneNumberId, text: clean, wamid });
                 }
               } catch { }
             }
 
             if (type === 'audio') {
               const mediaId = String(m?.audio?.id || '').trim();
-
-              // sem mediaId, não tem transcrição
               if (!mediaId) continue;
 
               (async () => {
@@ -522,14 +435,12 @@ function registerRoutes(app, {
                     return;
                   }
 
-                  // baixa áudio pra temp
                   const dl = await downloadMetaMediaToTempFile(wa_id, mediaId, {
                     meta_phone_number_id: inboundPhoneNumberId || null,
                   });
 
                   tmp = dl?.filePath || null;
 
-                  // transcreve
                   const tr = await transcribeAudioOpenAI({ filePath: tmp, settings: settingsNow });
 
                   if (!tr?.ok) {
@@ -545,19 +456,9 @@ function registerRoutes(app, {
                     return;
                   }
 
-                  // ✅ transforma "USER: [audio]" em "USER: [audio] <transcrição>" (1 linha)
-                  const merged = mergeTranscriptIntoAudioHistory({
-                    wa_id,
-                    wamid,
-                    mediaId,
-                    transcriptText,
-                  });
+                  const merged = mergeTranscriptIntoAudioHistory({ wa_id, wamid, mediaId, transcriptText });
+                  if (!merged?.ok) console.log('[AUDIO][TRANSCRIBE][MERGE_FAIL]', { wa_id, reason: merged?.reason });
 
-                  if (!merged?.ok) {
-                    console.log('[AUDIO][TRANSCRIBE][MERGE_FAIL]', { wa_id, reason: merged?.reason });
-                  }
-
-                  // SSE/debug (wamid derivado só pra UI)
                   const transcriptWamid = `${wamid}:transcript`;
 
                   publishMessage?.({
@@ -577,23 +478,14 @@ function registerRoutes(app, {
                     ts: Date.now(),
                   });
 
-                  // ✅ inbound pra IA: “[audio] <texto>” numa linha e usando o wamid REAL do áudio
                   const combinedInbound = collapseOneLine(`[audio] ${transcriptText}`);
-
-                  lead?.enqueueInboundText?.({
-                    wa_id,
-                    inboundPhoneNumberId,
-                    text: combinedInbound,
-                    wamid, // usa o wamid REAL do áudio (evita reply_to_wamid inválido)
-                  });
+                  lead?.enqueueInboundText?.({ wa_id, inboundPhoneNumberId, text: combinedInbound, wamid });
                 } catch (e) {
                   console.log('[AUDIO][TRANSCRIBE][ERR]', { wa_id, message: e?.message });
                   publishState?.({ wa_id, etapa: 'AUDIO_TRANSCRIBE_ERR', vars: { message: e?.message || '' }, ts: Date.now() });
                 } finally {
                   if (tmp) {
-                    try {
-                      fs.unlinkSync(tmp);
-                    } catch { }
+                    try { fs.unlinkSync(tmp); } catch { }
                   }
                 }
               })();
@@ -602,34 +494,35 @@ function registerRoutes(app, {
         }
       }
     } catch {
+      // silencioso
     }
   });
 
+  // ---------- PAYMENT WEBHOOKS ----------
+  function getVeltraxWebhookPaths() {
+    const p = String(global.veltraxConfig?.webhook_path || '/webhook/veltrax').trim() || '/webhook/veltrax';
+    return [...new Set(['/webhook/veltrax', p])];
+  }
+
   function getRapdynWebhookPaths() {
     const p = String(global.rapdynConfig?.webhook_path || global.botSettings?.rapdyn_webhook_path || '/webhook/rapdyn').trim() || '/webhook/rapdyn';
-    const list = new Set(['/webhook/rapdyn', p]);
-    return [...list];
+    return [...new Set(['/webhook/rapdyn', p])];
   }
 
   function getZoompagWebhookPaths() {
     const p = String(global.zoompagConfig?.webhook_path || global.botSettings?.zoompag_webhook_path || '/webhook/zoompag').trim() || '/webhook/zoompag';
-    const list = new Set(['/webhook/zoompag', p]);
-    return [...list];
+    return [...new Set(['/webhook/zoompag', p])];
   }
 
   for (const webhookPath of getVeltraxWebhookPaths()) {
     app.post(webhookPath, payments.makeExpressWebhookHandler('veltrax'));
   }
-
   for (const webhookPath of getRapdynWebhookPaths()) {
     app.post(webhookPath, payments.makeExpressWebhookHandler('rapdyn'));
   }
-
   for (const webhookPath of getZoompagWebhookPaths()) {
     app.post(webhookPath, payments.makeExpressWebhookHandler('zoompag'));
   }
-
-  const originalOnFlush = app.locals.__onFlushProxy;
 }
 
 module.exports = { registerRoutes };
