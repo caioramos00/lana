@@ -149,10 +149,9 @@ function createPaymentsModule({
 
       // fallback: pequena janela de polling caso não tenha inflight mas possa ser setado “já já”
       const until = Date.now() + (Number.isFinite(waitMs) ? Math.max(0, waitMs) : 0);
-      while (!st.meta_ads && Date.now() < until) {
+      while (!st.meta_ads && !st.last_ads_lookup && Date.now() < until) {
         await sleep(80);
       }
-
       return st.meta_ads || st.last_ads_lookup || null;
     } catch {
       return null;
@@ -282,18 +281,6 @@ function createPaymentsModule({
         ad: meta_ads?.ad_name || meta_ads?.ids?.ad_id || null,
         sck: meta_ads?.referral?.ctwa_clid ? short(meta_ads.referral.ctwa_clid, 12) : null,
       });
-    }
-
-    if (meta_ads) {
-      logger.log('[UTMIFY][META_ADS][ATTACH][PENDING]', {
-        wa_id,
-        external_id,
-        campaign: meta_ads?.campaign_name || meta_ads?.ids?.campaign_id || null,
-        ad: meta_ads?.ad_name || meta_ads?.ids?.ad_id || null,
-        sck: meta_ads?.referral?.ctwa_clid ? short(meta_ads.referral.ctwa_clid, 12) : null,
-      });
-    } else {
-      logger.log('[UTMIFY][META_ADS][MISSING][PENDING]', { wa_id, external_id });
     }
 
     try {
