@@ -10,6 +10,7 @@ try { FormData = require('form-data'); } catch { /* ok */ }
 const { downloadMetaMediaToTempFile } = require('./senders');
 const { transcribeAudioOpenAI } = require('./transcribe');
 const pix = require('./payments/pix');
+const utmify = require('./payments/utmify');
 
 function parseWaIdFromExternalId(external_id) {
   // seu external_id é: ord_<wa>_<key>_<ts>_<rand>
@@ -156,51 +157,6 @@ function registerRoutes(app, {
     // segurança: registra também o default
     const list = new Set(['/webhook/veltrax', p]);
     return [...list];
-  }
-
-  for (const webhookPath of getVeltraxWebhookPaths()) {
-    app.post(webhookPath, async (req, res) => {
-      res.sendStatus(200);
-
-      try {
-        const payload = req.body || {};
-        const row = await db.updateVeltraxDepositFromWebhook(payload);
-
-        // log mínimo
-        const tid = payload?.transaction_id || payload?.transactionId || row?.transaction_id || '';
-        const ext = payload?.external_id || payload?.externalId || row?.external_id || '';
-        const st = payload?.status || row?.status || '';
-        console.log('[VELTRAX][WEBHOOK]', { status: st, transaction_id: tid, external_id: ext });
-
-        if (row?.wa_id && String(st).toUpperCase() === 'COMPLETED') {
-          publishState?.({
-            wa_id: row.wa_id,
-            etapa: 'VELTRAX_COMPLETED',
-            vars: {
-              offer_id: row.offer_id,
-              amount: Number(row.amount),
-              external_id: row.external_id,
-              transaction_id: row.transaction_id,
-            },
-            ts: Date.now(),
-          });
-
-          try {
-            if (lead && typeof lead.markPaymentCompleted === 'function') {
-              lead.markPaymentCompleted(row.wa_id, {
-                provider: 'veltrax',
-                offer_id: row.offer_id,
-                amount: Number(row.amount),
-                external_id: row.external_id,
-                transaction_id: row.transaction_id,
-              });
-            }
-          } catch { }
-        }
-      } catch (e) {
-        console.log('[VELTRAX][WEBHOOK][ERR]', { message: e?.message });
-      }
-    });
   }
 
   app.post('/admin/settings/meta/save', checkAuth, async (req, res) => {
@@ -447,6 +403,63 @@ function registerRoutes(app, {
     return [...list];
   }
 
+  for (const webhookPath of getVeltraxWebhookPaths()) {
+    app.post(webhookPath, async (req, res) => {
+      res.sendStatus(200);
+
+      try {
+        const payload = req.body || {};
+        const row = await db.updateVeltraxDepositFromWebhook(payload);
+
+        // log mínimo
+        const tid = payload?.transaction_id || payload?.transactionId || row?.transaction_id || '';
+        const ext = payload?.external_id || payload?.externalId || row?.external_id || '';
+        const st = payload?.status || row?.status || '';
+        console.log('[VELTRAX][WEBHOOK]', { status: st, transaction_id: tid, external_id: ext });
+
+        if (row?.wa_id && String(st).toUpperCase() === 'COMPLETED') {
+          publishState?.({
+            wa_id: row.wa_id,
+            etapa: 'VELTRAX_COMPLETED',
+            vars: {
+              offer_id: row.offer_id,
+              amount: Number(row.amount),
+              external_id: row.external_id,
+              transaction_id: row.transaction_id,
+            },
+            ts: Date.now(),
+          });
+
+          try {
+            if (lead && typeof lead.markPaymentCompleted === 'function') {
+              lead.markPaymentCompleted(row.wa_id, {
+                provider: 'veltrax',
+                offer_id: row.offer_id,
+                amount: Number(row.amount),
+                external_id: row.external_id,
+                transaction_id: row.transaction_id,
+              });
+            }
+          } catch { }
+
+          utmify.sendToUtmify('paid', {
+            external_id: row.external_id,
+            amount: Number(row.amount),
+            payer_name: row.payer_name,
+            payer_email: row.payer_email,
+            payer_phone: row.payer_phone,
+            payer_document: row.payer_document,
+            offer_id: row.offer_id,
+            offer_title: 'Pagamento', // Adjust based on offer
+            createdAt: row.created_at.getTime(),
+          });
+        }
+      } catch (e) {
+        console.log('[VELTRAX][WEBHOOK][ERR]', { message: e?.message });
+      }
+    });
+  }
+
   for (const webhookPath of getRapdynWebhookPaths()) {
     app.post(webhookPath, async (req, res) => {
       // responde rápido (Rapdyn não fica esperando)
@@ -526,6 +539,18 @@ function registerRoutes(app, {
               });
             }
           } catch { }
+
+          utmify.sendToUtmify('paid', {
+            external_id: norm.external_id,
+            amount: (norm.total || 0) / 100,
+            payer_name: row?.payer_name,
+            payer_email: row?.payer_email,
+            payer_phone: row?.payer_phone,
+            payer_document: row?.payer_document,
+            offer_id: row?.offer_id,
+            offer_title: 'Pagamento', // Adjust based on offer
+            createdAt: row?.created_at.getTime(),
+          });
         }
       } catch (e) {
         console.log('[RAPDYN][WEBHOOK][ERR]', { message: e?.message });
@@ -588,6 +613,18 @@ function registerRoutes(app, {
               status: st,
             });
           }
+
+          utmify.sendToUtmify('paid', {
+            external_id: norm.external_id,
+            amount: (norm.total || 0) / 100,
+            payer_name: row?.payer_name,
+            payer_email: row?.payer_email,
+            payer_phone: row?.payer_phone,
+            payer_document: row?.payer_document,
+            offer_id: row?.offer_id,
+            offer_title: 'Pagamento', // Adjust based on offer
+            createdAt: row?.created_at.getTime(),
+          });
         }
       } catch (e) {
         console.log('[ZOOMPAG][WEBHOOK][ERR]', { message: e?.message });

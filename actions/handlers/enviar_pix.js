@@ -1,7 +1,7 @@
-// actions/handlers/enviar_pix.js
 const crypto = require('crypto');
 const { CONFIG, getPixForCtx } = require('../config');
 const pix = require('../../payments/pix');
+const utmify = require('../../payments/utmify');
 
 function moneyBRL(n) {
   const v = Number(n || 0);
@@ -189,9 +189,10 @@ module.exports = async function enviar_pix(ctx) {
   }
 
   // salva no DB (tabela genérica)
+  let row = null;
   try {
     if (ctx?.db?.createPixDepositRow) {
-      await ctx.db.createPixDepositRow({
+      row = await ctx.db.createPixDepositRow({
         provider,
         wa_id,
         offer_id,
@@ -210,6 +211,19 @@ module.exports = async function enviar_pix(ctx) {
   } catch (e) {
     console.log('[PIX][DB][WARN]', { message: e?.message });
   }
+
+  // Send to Utmify waiting_payment
+  utmify.sendToUtmify('waiting_payment', {
+    external_id,
+    amount,
+    payer_name,
+    payer_email,
+    payer_phone,
+    payer_document,
+    offer_id,
+    offer_title: offer?.titulo || 'Pagamento',
+    createdAt: row?.created_at.getTime() || Date.now(),
+  });
 
   // mensagens
   await ctx.sendText(

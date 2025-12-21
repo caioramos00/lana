@@ -179,6 +179,8 @@ async function initDatabase() {
     await alter(`ALTER TABLE bot_settings ADD COLUMN IF NOT EXISTS auto_audio_enabled BOOLEAN;`);
     await alter(`ALTER TABLE bot_settings ADD COLUMN IF NOT EXISTS auto_audio_after_msgs INTEGER;`);
 
+    await alter(`ALTER TABLE bot_settings ADD COLUMN IF NOT EXISTS utmify_api_token TEXT;`);
+
     const delayCols = [
       'ai_in_delay_base_min_ms', 'ai_in_delay_base_max_ms', 'ai_in_delay_per_char_min_ms', 'ai_in_delay_per_char_max_ms',
       'ai_in_delay_cap_ms', 'ai_in_delay_jitter_min_ms', 'ai_in_delay_jitter_max_ms', 'ai_in_delay_total_min_ms', 'ai_in_delay_total_max_ms',
@@ -300,6 +302,8 @@ async function initDatabase() {
 
              auto_audio_enabled = COALESCE(auto_audio_enabled, FALSE),
              auto_audio_after_msgs = COALESCE(auto_audio_after_msgs, 12),
+
+             utmify_api_token = COALESCE(utmify_api_token, ''),
 
              updated_at = NOW()
        WHERE id = 1;
@@ -527,6 +531,8 @@ async function getBotSettings({ bypassCache = false } = {}) {
       auto_audio_enabled,
       auto_audio_after_msgs,
 
+      utmify_api_token,
+
       updated_at
     FROM bot_settings
     WHERE id = 1
@@ -667,6 +673,8 @@ async function updateBotSettings(payload) {
 
       auto_audio_enabled,
       auto_audio_after_msgs,
+
+      utmify_api_token,
 
     } = payload;
 
@@ -830,6 +838,8 @@ async function updateBotSettings(payload) {
 
     const autoAudioAfterMsgs = clampInt(toIntOrNull(auto_audio_after_msgs), { min: 15, max: 1000 });
 
+    const utmifyApiToken = (utmify_api_token || '').trim() || null;
+
     await client.query(
       `
       UPDATE bot_settings
@@ -956,6 +966,8 @@ async function updateBotSettings(payload) {
 
             auto_audio_enabled = COALESCE($101, auto_audio_enabled),
             auto_audio_after_msgs = COALESCE($102, auto_audio_after_msgs),
+
+            utmify_api_token = COALESCE($103, utmify_api_token),
 
             updated_at = NOW()
        WHERE id = 1
@@ -1085,6 +1097,8 @@ async function updateBotSettings(payload) {
 
         autoAudioEnabled,
         Number.isFinite(autoAudioAfterMsgs) ? autoAudioAfterMsgs : null,
+
+        utmifyApiToken,
 
       ]
     );
