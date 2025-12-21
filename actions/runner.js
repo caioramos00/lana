@@ -1,3 +1,6 @@
+// actions/runner.js
+'use strict';
+
 const crypto = require('crypto');
 
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
@@ -28,11 +31,19 @@ function hashActionPayload(payload) {
 }
 
 function createActionRunner({ db, senders, publishState, payments, aiLog = () => { } } = {}) {
+  // ✅ enviar_pix agora vem do payments/pix.js
+  const pix = require('../payments/pix');
+  const enviar_pix = pix?.enviar_pix;
+
+  if (typeof enviar_pix !== 'function') {
+    throw new Error('[actions/runner] payments/pix.js must export a function enviar_pix(ctx[, payload])');
+  }
+
   // ✅ whitelist: só executa o que existir aqui
   const handlers = {
     // ❌ mostrar_ofertas removido (agora é 100% via prompt / messages)
 
-    enviar_pix: require('./handlers/enviar_pix'),
+    enviar_pix, // ✅ novo local (payments/pix.js)
     enviar_link_acesso: require('./handlers/enviar_link_acesso'),
 
     enviar_audio: require('./handlers/enviar_audio'),

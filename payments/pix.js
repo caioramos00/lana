@@ -1,112 +1,137 @@
-'use strict';
+const crypto = require('crypto');
 
-const axios = require('axios');
-const createProviders = require('./providers');
+function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 
-const PROVIDERS = createProviders({ axios, logger: console });
-
-function normalizeProvider(p) {
-  const id = String(p || '').trim().toLowerCase();
-  return PROVIDERS[id] ? id : null;
+function truthyActionValue(v) {
+  if (v === true) return { enabled: true, payload: null };
+  if (v && typeof v === 'object') {
+    const enabled = (v.enabled === undefined) ? true : !!v.enabled;
+    return { enabled, payload: v };
+  }
+  return { enabled: false, payload: null };
 }
 
-function pickProviderFromCtx(ctx, { offer } = {}) {
-  const fromCtx =
-    ctx?.vars?.pix_gateway ||
-    ctx?.vars?.gateway ||
-    ctx?.agent?.pix_gateway ||
-    ctx?.agent?.gateway ||
-    (offer && offer.gateway) ||
-    global?.botSettings?.pix_gateway_default ||
-    'veltrax';
-
-  return normalizeProvider(fromCtx) || 'veltrax';
+function ensureActionState(lead, wa_id) {
+  const st = lead.getLead(wa_id);
+  if (!st) return null;
+  if (!st.__actions) st.__actions = { ran: {} };
+  return st.__actions;
 }
 
-// Mantém o comportamento anterior: só gera callbackUrl para gateways que precisam
-function buildCallbackUrl(provider) {
-  const p = normalizeProvider(provider) || 'veltrax';
-  const gw = PROVIDERS[p];
+function hashActionPayload(payload) {
+  try {
+    const s = JSON.stringify(payload || {});
+    return crypto.createHash('sha1').update(s).digest('hex');
+  } catch {
+    return 'nohash';
+  }
+}
 
-  // se o provider não exige callback no createPix, retorna null e pronto
-  if (!gw?.requiresCallback) return null;
+function createActionRunner({ db, senders, publishState, payments, aiLog = () => { } } = {}) {
+  const handlers = {
+    enviar_pix: require('../payments/pix').enviar_pix,
 
-  if (p === 'veltrax') {
-    const base = String(
-      global.veltraxConfig?.callback_base_url ||
-      global.botSettings?.veltrax_callback_base_url ||
-      ''
-    )
-      .trim()
-      .replace(/\/+$/, '');
-    const path = String(
-      global.veltraxConfig?.webhook_path ||
-      global.botSettings?.veltrax_webhook_path ||
-      '/webhook/veltrax'
-    ).trim() || '/webhook/veltrax';
-    if (!base) return null;
-    return `${base}${path.startsWith('/') ? '' : '/'}${path}`;
+    enviar_link_acesso: require('./handlers/enviar_link_acesso'),
+
+    enviar_audio: require('./handlers/enviar_audio'),
+
+    enviar_video: require('./handlers/enviar_video'),
+    enviar_videos: require('./handlers/enviar_videos'),
+
+    enviar_fotos: require('./handlers/enviar_fotos'),
+    enviar_audios: require('./handlers/enviar_audios'),
+  };
+
+  // Anti-spam: impede executar a MESMA action repetidamente num curto período
+  const DEFAULT_COOLDOWN_MS = 2 * 60 * 1000; // 2 min
+
+  async function run({ agent, wa_id, inboundPhoneNumberId, lead, replyToWamid, settings }) {
+    const acoes = agent?.acoes && typeof agent.acoes === 'object' ? agent.acoes : {};
+    const keys = Object.keys(acoes);
+    if (!keys.length) return;
+
+    const stActions = ensureActionState(lead, wa_id);
+    if (!stActions) return;
+
+    const ctxBase = {
+      db,
+      payments,
+      senders,
+      publishState,
+      aiLog,
+      lead,
+      settings: settings || null,
+      agent,
+      wa_id,
+      inboundPhoneNumberId: inboundPhoneNumberId || null,
+      replyToWamid: replyToWamid || null,
+
+      // helper: envia texto e já salva no histórico do lead
+      sendText: async (text, opts = {}) => {
+        const r = await senders.sendMessage(wa_id, text, {
+          meta_phone_number_id: inboundPhoneNumberId || null,
+          ...(opts.reply_to_wamid ? { reply_to_wamid: opts.reply_to_wamid } : {}),
+        });
+
+        if (r?.ok) {
+          lead.pushHistory(wa_id, 'assistant', String(text || ''), {
+            kind: 'text',
+            wamid: r.wamid || '',
+            phone_number_id: r.phone_number_id || inboundPhoneNumberId || null,
+            ts_ms: Date.now(),
+            reply_to_wamid: opts.reply_to_wamid || null,
+          });
+        }
+        return r;
+      },
+
+      delay: async (minMs = 250, maxMs = 900) => {
+        const ms = Math.floor(minMs + Math.random() * (maxMs - minMs + 1));
+        await sleep(Math.max(0, ms));
+      },
+    };
+
+    for (const name of keys) {
+      const { enabled, payload } = truthyActionValue(acoes[name]);
+      if (!enabled) continue;
+
+      // ✅ bloqueio explícito (garantia total)
+      if (name === 'mostrar_ofertas') {
+        aiLog(`[ACTIONS] bloqueada: mostrar_ofertas (agora via prompt/messages)`);
+        continue;
+      }
+
+      const handler = handlers[name];
+      if (!handler) {
+        aiLog(`[ACTIONS] ignorada (não-whitelisted): ${name}`);
+        continue;
+      }
+
+      const payloadHash = hashActionPayload(payload);
+      const sig = `${name}:${payloadHash}`;
+
+      const last = stActions.ran[sig] || 0;
+      const now = Date.now();
+      if (now - last < DEFAULT_COOLDOWN_MS) {
+        aiLog(`[ACTIONS] cooldown: ${name} (${Math.round((DEFAULT_COOLDOWN_MS - (now - last)) / 1000)}s)`);
+        continue;
+      }
+
+      stActions.ran[sig] = now;
+
+      try {
+        publishState?.({ wa_id, etapa: `ACTION_${name}`, vars: { enabled: true }, ts: now });
+
+        const out = await handler({ ...ctxBase }, payload);
+
+        aiLog(`[ACTIONS] ok: ${name}`, out || '');
+      } catch (e) {
+        aiLog(`[ACTIONS] FAIL: ${name}`, e?.message || String(e));
+      }
+    }
   }
 
-  if (p === 'rapdyn') {
-    const base = String(
-      global.rapdynConfig?.callback_base_url ||
-      global.botSettings?.rapdyn_callback_base_url ||
-      ''
-    )
-      .trim()
-      .replace(/\/+$/, '');
-    const path = String(
-      global.rapdynConfig?.webhook_path ||
-      global.botSettings?.rapdyn_webhook_path ||
-      '/webhook/rapdyn'
-    ).trim() || '/webhook/rapdyn';
-    if (!base) return null;
-    return `${base}${path.startsWith('/') ? '' : '/'}${path}`;
-  }
-
-  // fallback (se você colocar outros providers que exijam callback no futuro)
-  const base = String(global.botSettings?.[`${p}_callback_base_url`] || '')
-    .trim()
-    .replace(/\/+$/, '');
-  const path = String(global.botSettings?.[`${p}_webhook_path`] || `/webhook/${p}`)
-    .trim() || `/webhook/${p}`;
-  if (!base) return null;
-  return `${base}${path.startsWith('/') ? '' : '/'}${path}`;
+  return { run };
 }
 
-async function createPix(provider, { amount, external_id, callbackUrl, payer, meta }) {
-  const p = normalizeProvider(provider) || 'veltrax';
-  const gw = PROVIDERS[p];
-
-  // settings vai para o provider novo (zoompag), e é ignorado pelos wrappers legacy
-  const settings =
-    global?.botSettings ||
-    global?.settings ||
-    {};
-
-  return gw.createPix({ amount, external_id, callbackUrl, payer, meta, settings });
-}
-
-function normalizeWebhook(provider, payload) {
-  const p = normalizeProvider(provider) || 'veltrax';
-  const gw = PROVIDERS[p];
-  return gw.normalizeWebhook(payload);
-}
-
-function isPaidStatus(provider, status) {
-  const p = normalizeProvider(provider) || 'veltrax';
-  const gw = PROVIDERS[p];
-  return gw.isPaidStatus(status);
-}
-
-module.exports = {
-  // mantém o nome antigo pra não quebrar nada
-  GATEWAYS: PROVIDERS,
-  normalizeProvider,
-  pickProviderFromCtx,
-  buildCallbackUrl,
-  createPix,
-  normalizeWebhook,
-  isPaidStatus,
-};
+module.exports = { createActionRunner };
