@@ -7,7 +7,7 @@ const CONFIG = {
   pix: {
     chave: 'SUA_CHAVE_PIX_AQUI',
     recebedor: 'SEU_NOME/EMPRESA',
-    valorPorFase: { PAGAMENTO: 19.90, POS_PAGAMENTO: 0 },
+    valorPorFase: { PAGAMENTO: 9.90, POS_PAGAMENTO: 0 },
     valorDefault: 3.90,
     mensagemExtra: 'Assim que confirmar, eu já libero o acesso aqui.',
   },
