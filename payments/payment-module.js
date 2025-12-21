@@ -1,3 +1,4 @@
+// payments/payment-module.js
 'use strict';
 
 const crypto = require('crypto');
@@ -48,8 +49,8 @@ function createPaymentsModule({
   const createProviders = require('./providers');
   const providers = createProviders({ axios, logger });
 
-  // UTMify client (DI)
-  const { createUtmifyClient } = require('./utmify-client');
+  // ✅ UTMify client (DI) - agora vem do ./utmify (arquivo único)
+  const { createUtmifyClient } = require('./utmify');
   const utmify = createUtmifyClient({
     axios,
     logger,
@@ -144,7 +145,7 @@ function createPaymentsModule({
       return { ok: false, reason: 'missing-callback-url', provider };
     }
 
-    // tenta 2x pra lidar com colisão externa_id (409 etc.)
+    // tenta 2x pra lidar com colisão external_id (409 etc.)
     let created = null;
     let external_id = null;
     let lastErr = null;
@@ -173,7 +174,6 @@ function createPaymentsModule({
         break;
       } catch (e) {
         lastErr = e;
-        // retry só se for conflito e for primeira tentativa
         if (e?.http_status === 409 && i === 0) continue;
         break;
       }
