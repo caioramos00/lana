@@ -30,15 +30,16 @@ function parseWaIdFromExternalId(external_id) {
   return m ? m[1] : null;
 }
 
-function safeJson(x) {
-  try { return x ? JSON.stringify(x) : null; } catch { return null; }
-}
-
 function short(v, n = 10) {
   const s = String(v || '').trim();
   if (!s) return null;
   if (s.length <= n) return s;
   return `${s.slice(0, n)}…`;
+}
+
+function sleep(ms) {
+  const t = Number(ms);
+  return new Promise(r => setTimeout(r, Number.isFinite(t) ? Math.max(0, t) : 0));
 }
 
 function createPaymentsModule({
@@ -125,10 +126,34 @@ function createPaymentsModule({
   }
 
   // ✅ pega meta_ads do lead em memória (se existir)
-  function getMetaAdsForWa(wa_id) {
+  async function getMetaAdsForWa(wa_id, { waitMs = 2500 } = {}) {
     try {
       const st = lead?.getLead?.(wa_id);
-      return st?.meta_ads || st?.metaAds || st?.ads_lookup || st?.adsLookup || null;
+      if (!st) return null;
+
+      // já tem?
+      if (st.meta_ads) return st.meta_ads;
+
+      // às vezes você salva em last_ads_lookup também
+      if (st.last_ads_lookup && !st.meta_ads) return st.last_ads_lookup;
+
+      const inflight = st.meta_ads_inflight;
+
+      // se o lookup está rodando, espera ele (com timeout)
+      if (inflight && typeof inflight.then === 'function') {
+        try {
+          await Promise.race([inflight, sleep(waitMs)]);
+        } catch { /* noop */ }
+        return st.meta_ads || st.last_ads_lookup || null;
+      }
+
+      // fallback: pequena janela de polling caso não tenha inflight mas possa ser setado “já já”
+      const until = Date.now() + (Number.isFinite(waitMs) ? Math.max(0, waitMs) : 0);
+      while (!st.meta_ads && Date.now() < until) {
+        await sleep(80);
+      }
+
+      return st.meta_ads || st.last_ads_lookup || null;
     } catch {
       return null;
     }
@@ -242,8 +267,23 @@ function createPaymentsModule({
       logger.warn('[PIX][DB][WARN] createPixDepositRow', { message: e?.message });
     }
 
-    // ✅ UTMify: waiting_payment (pendente) + meta_ads do lead
-    const meta_ads = getMetaAdsForWa(wa_id);
+    const tWait0 = Date.now();
+    const meta_ads = await getMetaAdsForWa(wa_id, { waitMs: 3500 });
+    const waitedMs = Date.now() - tWait0;
+
+    if (!meta_ads) {
+      logger.log('[UTMIFY][META_ADS][MISSING][PENDING]', { wa_id, external_id });
+    } else {
+      logger.log('[UTMIFY][META_ADS][ATTACH][PENDING]', {
+        wa_id,
+        external_id,
+        waitedMs,
+        campaign: meta_ads?.campaign_name || meta_ads?.ids?.campaign_id || null,
+        ad: meta_ads?.ad_name || meta_ads?.ids?.ad_id || null,
+        sck: meta_ads?.referral?.ctwa_clid ? short(meta_ads.referral.ctwa_clid, 12) : null,
+      });
+    }
+
     if (meta_ads) {
       logger.log('[UTMIFY][META_ADS][ATTACH][PENDING]', {
         wa_id,
@@ -374,7 +414,7 @@ function createPaymentsModule({
     const payer_document = row?.payer_document || payload?.customer?.document || payload?.payer?.document || null;
 
     // ✅ UTMify: paid + meta_ads do lead
-    const meta_ads = getMetaAdsForWa(wa_id);
+    const meta_ads = await getMetaAdsForWa(wa_id, { waitMs: 800 });
     if (meta_ads) {
       logger.log('[UTMIFY][META_ADS][ATTACH][PAID]', {
         wa_id,

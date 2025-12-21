@@ -485,9 +485,25 @@ function registerRoutes(app, {
 
             // ✅ NOVO: se tiver referral, roda lookup em paralelo (não bloqueia)
             if (m?.referral) {
-              (async () => {
-                await runAdsLookupAndLog({ wa_id, wamid, inboundPhoneNumberId, m });
-              })();
+              try {
+                const st = lead?.getLead?.(wa_id);
+                if (st) {
+                  // evita iniciar vários lookups em paralelo pro mesmo lead
+                  if (!st.meta_ads_inflight) {
+                    st.meta_ads_inflight = Promise.resolve()
+                      .then(() => runAdsLookupAndLog({ wa_id, wamid, inboundPhoneNumberId, m }))
+                      .catch(() => null)
+                      .finally(() => {
+                        try { st.meta_ads_inflight = null; } catch { }
+                      });
+                  }
+                } else {
+                  // fallback: roda sem armazenar inflight
+                  runAdsLookupAndLog({ wa_id, wamid, inboundPhoneNumberId, m }).catch?.(() => { });
+                }
+              } catch {
+                (async () => { await runAdsLookupAndLog({ wa_id, wamid, inboundPhoneNumberId, m }); })();
+              }
             }
 
             // state/meta

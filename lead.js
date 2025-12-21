@@ -186,6 +186,35 @@ function createLeadStore({
     return Math.floor(lo + Math.random() * (hi - lo + 1));
   }
 
+  // ✅ FIX: essa função estava sendo chamada mas não existia
+  function computeDebounceMs(st) {
+    const minRaw = Number(cfg.inboundDebounceMinMs);
+    const maxRaw = Number(cfg.inboundDebounceMaxMs);
+
+    const min = Number.isFinite(minRaw) ? minRaw : 1800;
+    const max = Number.isFinite(maxRaw) ? maxRaw : 3200;
+
+    const lo = Math.min(min, max);
+    const hi = Math.max(min, max);
+
+    let ms = randInt(lo, hi);
+
+    // Opcional: se já tem burst rolando, evita agendar debounce maior que o tempo restante do maxWait
+    const maxWaitRaw = Number(cfg.inboundMaxWaitMs);
+    const maxWait = Number.isFinite(maxWaitRaw) ? maxWaitRaw : 12000;
+
+    if (st && Number.isFinite(st.pending_first_ts) && maxWait > 0) {
+      const elapsed = now() - st.pending_first_ts;
+      const remaining = maxWait - elapsed;
+      if (Number.isFinite(remaining) && remaining > 50) {
+        ms = Math.min(ms, remaining);
+      }
+    }
+
+    if (!Number.isFinite(ms) || ms < 0) ms = lo;
+    return ms;
+  }
+
   function ensureAudioState(st) {
     if (!st) return null;
 
@@ -540,7 +569,7 @@ function createLeadStore({
           });
         }
 
-        const debounceMs = computeDebounceMs();
+        const debounceMs = computeDebounceMs(st); // ✅ aqui
         clearTimeout(st.pending_timer);
         st.pending_timer = setTimeout(() => {
           flushLead(wa_id, { reason: 'debounce', burstId: st.pending_burst_id }).catch(() => { });
@@ -595,7 +624,7 @@ function createLeadStore({
       });
     }
 
-    const debounceMs = computeDebounceMs();
+    const debounceMs = computeDebounceMs(st); // ✅ aqui
     clearTimeout(st.pending_timer);
     st.pending_timer = setTimeout(() => {
       flushLead(wa_id, { reason: 'debounce', burstId: st.pending_burst_id }).catch(() => { });
