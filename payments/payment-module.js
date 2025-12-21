@@ -413,7 +413,24 @@ function createPaymentsModule({
     const payer_document = row?.payer_document || payload?.customer?.document || payload?.payer?.document || null;
 
     // ✅ UTMify: paid + meta_ads do lead
-    const meta_ads = await getMetaAdsForWa(wa_id, { waitMs: 800 });
+    let meta_ads = await getMetaAdsForWa(wa_id, { waitMs: 800 });
+
+    // fallback: tenta reaproveitar algo salvo no row (caso exista no seu schema)
+    if (!meta_ads) {
+      try {
+        meta_ads =
+          row?.meta_ads ||
+          row?.ads_lookup ||
+          row?.raw_create_response?.meta_ads ||
+          null;
+
+        // se você salva como string JSON em algum lugar
+        if (!meta_ads && typeof row?.meta_ads_json === 'string') {
+          meta_ads = JSON.parse(row.meta_ads_json);
+        }
+      } catch { /* noop */ }
+    }
+
     if (meta_ads) {
       logger.log('[UTMIFY][META_ADS][ATTACH][PAID]', {
         wa_id,
