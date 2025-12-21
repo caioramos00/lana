@@ -213,12 +213,19 @@ function registerRoutes(app, {
 
       if (out) {
         try {
+          console.log('[LEAD][STORE_ID][LOOKUP]', lead?.__store_id, { wa_id });
+
           const stLead = lead?.getLead?.(wa_id);
+          console.log('[LEAD][STATE][BEFORE_SET]', lead?.__store_id, { wa_id, has_meta: !!stLead?.meta_ads, has_last: !!stLead?.last_ads_lookup });
+
           if (stLead) {
             stLead.meta_ads = out;
             stLead.meta_ads_updated_ts = Date.now();
             stLead.meta_ads_source = 'graph_api';
           }
+
+          console.log('[LEAD][STATE][AFTER_SET]', lead?.__store_id, { wa_id, has_meta: !!stLead?.meta_ads, has_last: !!stLead?.last_ads_lookup });
+
         } catch { }
       }
 

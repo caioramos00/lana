@@ -266,6 +266,18 @@ function createPaymentsModule({
       logger.warn('[PIX][DB][WARN] createPixDepositRow', { message: e?.message });
     }
 
+    logger.log('[LEAD][STORE_ID][PIX]', lead?.__store_id, { wa_id });
+
+    try {
+      const st = lead?.getLead?.(wa_id);
+      logger.log('[LEAD][STATE][PIX_BEFORE_META]', lead?.__store_id, {
+        wa_id,
+        has_meta: !!st?.meta_ads,
+        has_last: !!st?.last_ads_lookup,
+        has_inflight: !!st?.meta_ads_inflight,
+      });
+    } catch { }
+
     const tWait0 = Date.now();
     const meta_ads = await getMetaAdsForWa(wa_id, { waitMs: 3500 });
     const waitedMs = Date.now() - tWait0;

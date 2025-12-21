@@ -168,6 +168,9 @@ function readLeadFromSettings(settings) {
     },
   });
 
+  lead.__store_id = lead.__store_id || Math.random().toString(16).slice(2);
+  console.log('[LEAD][STORE_ID][BOOT]', lead.__store_id);
+
   registerRoutes(app, {
     db,
     lead,
