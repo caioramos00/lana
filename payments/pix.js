@@ -1,17 +1,13 @@
-// payments/pix.js
-const veltraxGw = require('./providers/veltrax-gateway');
-const rapdynGw = require('./providers/rapdyn-gateway');
-const zoompagGw = require('./providers/zoompag-gateway');
+'use strict';
 
-const GATEWAYS = {
-  veltrax: veltraxGw,
-  rapdyn: rapdynGw,
-  zoompag: zoompagGw,
-};
+const axios = require('axios');
+const createProviders = require('./providers');
+
+const PROVIDERS = createProviders({ axios, logger: console });
 
 function normalizeProvider(p) {
   const id = String(p || '').trim().toLowerCase();
-  return GATEWAYS[id] ? id : null;
+  return PROVIDERS[id] ? id : null;
 }
 
 function pickProviderFromCtx(ctx, { offer } = {}) {
@@ -27,62 +23,86 @@ function pickProviderFromCtx(ctx, { offer } = {}) {
   return normalizeProvider(fromCtx) || 'veltrax';
 }
 
+// Mantém o comportamento anterior: só gera callbackUrl para gateways que precisam
 function buildCallbackUrl(provider) {
   const p = normalizeProvider(provider) || 'veltrax';
+  const gw = PROVIDERS[p];
+
+  // se o provider não exige callback no createPix, retorna null e pronto
+  if (!gw?.requiresCallback) return null;
 
   if (p === 'veltrax') {
-    const base = String(global.veltraxConfig?.callback_base_url || global.botSettings?.veltrax_callback_base_url || '')
+    const base = String(
+      global.veltraxConfig?.callback_base_url ||
+      global.botSettings?.veltrax_callback_base_url ||
+      ''
+    )
       .trim()
       .replace(/\/+$/, '');
-    const path = String(global.veltraxConfig?.webhook_path || global.botSettings?.veltrax_webhook_path || '/webhook/veltrax')
-      .trim() || '/webhook/veltrax';
+    const path = String(
+      global.veltraxConfig?.webhook_path ||
+      global.botSettings?.veltrax_webhook_path ||
+      '/webhook/veltrax'
+    ).trim() || '/webhook/veltrax';
     if (!base) return null;
     return `${base}${path.startsWith('/') ? '' : '/'}${path}`;
   }
 
   if (p === 'rapdyn') {
-    const base = String(global.rapdynConfig?.callback_base_url || global.botSettings?.rapdyn_callback_base_url || '')
+    const base = String(
+      global.rapdynConfig?.callback_base_url ||
+      global.botSettings?.rapdyn_callback_base_url ||
+      ''
+    )
       .trim()
       .replace(/\/+$/, '');
-    const path = String(global.rapdynConfig?.webhook_path || global.botSettings?.rapdyn_webhook_path || '/webhook/rapdyn')
-      .trim() || '/webhook/rapdyn';
+    const path = String(
+      global.rapdynConfig?.webhook_path ||
+      global.botSettings?.rapdyn_webhook_path ||
+      '/webhook/rapdyn'
+    ).trim() || '/webhook/rapdyn';
     if (!base) return null;
     return `${base}${path.startsWith('/') ? '' : '/'}${path}`;
   }
 
-  if (p === 'zoompag') {
-    const base = String(global.zoompagConfig?.callback_base_url || global.botSettings?.zoompag_callback_base_url || '')
-      .trim()
-      .replace(/\/+$/, '');
-    const path = String(global.zoompagConfig?.webhook_path || global.botSettings?.zoompag_webhook_path || '/webhook/zoompag')
-      .trim() || '/webhook/zoompag';
-    if (!base) return null;
-    return `${base}${path.startsWith('/') ? '' : '/'}${path}`;
-  }
-
-  return null;
+  // fallback (se você colocar outros providers que exijam callback no futuro)
+  const base = String(global.botSettings?.[`${p}_callback_base_url`] || '')
+    .trim()
+    .replace(/\/+$/, '');
+  const path = String(global.botSettings?.[`${p}_webhook_path`] || `/webhook/${p}`)
+    .trim() || `/webhook/${p}`;
+  if (!base) return null;
+  return `${base}${path.startsWith('/') ? '' : '/'}${path}`;
 }
 
 async function createPix(provider, { amount, external_id, callbackUrl, payer, meta }) {
   const p = normalizeProvider(provider) || 'veltrax';
-  const gw = GATEWAYS[p];
-  return gw.createPix({ amount, external_id, callbackUrl, payer, meta });
+  const gw = PROVIDERS[p];
+
+  // settings vai para o provider novo (zoompag), e é ignorado pelos wrappers legacy
+  const settings =
+    global?.botSettings ||
+    global?.settings ||
+    {};
+
+  return gw.createPix({ amount, external_id, callbackUrl, payer, meta, settings });
 }
 
 function normalizeWebhook(provider, payload) {
   const p = normalizeProvider(provider) || 'veltrax';
-  const gw = GATEWAYS[p];
+  const gw = PROVIDERS[p];
   return gw.normalizeWebhook(payload);
 }
 
 function isPaidStatus(provider, status) {
   const p = normalizeProvider(provider) || 'veltrax';
-  const gw = GATEWAYS[p];
+  const gw = PROVIDERS[p];
   return gw.isPaidStatus(status);
 }
 
 module.exports = {
-  GATEWAYS,
+  // mantém o nome antigo pra não quebrar nada
+  GATEWAYS: PROVIDERS,
   normalizeProvider,
   pickProviderFromCtx,
   buildCallbackUrl,
