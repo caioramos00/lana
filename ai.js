@@ -3,25 +3,78 @@ const crypto = require('crypto');
 
 const { createActionRunner } = require('./actions');
 const senders = require('./senders');
-const db = require('./db');
-const lead = require('./lead');
+const dbModule = require('./db');
 const { publishState } = require('./stream/events-bus');
 const { CONFIG } = require('./actions/config');
 const { createPaymentsModule } = require('./payments/payment-module');
-const payments = createPaymentsModule({ db, lead, publishState });
 
-function createAiEngine({ db, sendMessage, aiLog = () => { } } = {}) {
+function createAiEngine({ db = dbModule, sendMessage, aiLog = () => {}, payments: injectedPayments } = {}) {
   function sha256Of(text) {
     return crypto.createHash('sha256').update(String(text || ''), 'utf8').digest('hex');
   }
 
-  const actionRunner = createActionRunner({
-    db,
-    senders,
-    publishState,
-    payments,
-    aiLog,
-  });
+  const hasInjectedPayments = !!injectedPayments;
+
+  // ✅ caches por instância de leadStore (fallback quando NÃO houver injectedPayments)
+  const _paymentsByLeadStore = new WeakMap();
+  const _runnerByLeadStore = new WeakMap();
+
+  // ✅ runner singleton quando payments é singleton
+  const _singletonRunner = hasInjectedPayments
+    ? createActionRunner({
+        db,
+        senders,
+        publishState,
+        payments: injectedPayments,
+        aiLog,
+      })
+    : null;
+
+  function getPaymentsForLeadStore(leadStore) {
+    // ✅ prioridade total: payments singleton injetado
+    if (hasInjectedPayments) return injectedPayments;
+
+    // fallback antigo (mantém)
+    if (!leadStore || (typeof leadStore !== 'object' && typeof leadStore !== 'function')) {
+      return createPaymentsModule({ db, lead: leadStore, publishState });
+    }
+
+    let p = _paymentsByLeadStore.get(leadStore);
+    if (!p) {
+      p = createPaymentsModule({ db, lead: leadStore, publishState });
+      _paymentsByLeadStore.set(leadStore, p);
+    }
+    return p;
+  }
+
+  function getActionRunnerForLeadStore(leadStore) {
+    // ✅ prioridade total: runner singleton (amarrado ao payments singleton)
+    if (hasInjectedPayments) return _singletonRunner;
+
+    // fallback antigo (mantém)
+    if (!leadStore || (typeof leadStore !== 'object' && typeof leadStore !== 'function')) {
+      return createActionRunner({
+        db,
+        senders,
+        publishState,
+        payments: getPaymentsForLeadStore(leadStore),
+        aiLog,
+      });
+    }
+
+    let r = _runnerByLeadStore.get(leadStore);
+    if (!r) {
+      r = createActionRunner({
+        db,
+        senders,
+        publishState,
+        payments: getPaymentsForLeadStore(leadStore),
+        aiLog,
+      });
+      _runnerByLeadStore.set(leadStore, r);
+    }
+    return r;
+  }
 
   function looksLikeStrongBuyIntent(userText) {
     const t = String(userText || '').toLowerCase();
@@ -127,7 +180,6 @@ function createAiEngine({ db, sendMessage, aiLog = () => { } } = {}) {
 
     const ai_provider = normalizeProvider(s.ai_provider);
 
-    // ---- Venice (mantém) ----
     const venice_api_url =
       (String(s.venice_api_url || '').trim() || 'https://api.venice.ai/api/v1/chat/completions');
 
@@ -160,7 +212,6 @@ function createAiEngine({ db, sendMessage, aiLog = () => { } } = {}) {
         : !!s.venice_enable_web_scraping,
     };
 
-    // ---- OpenAI (novo) ----
     const openai_api_url =
       (String(s.openai_api_url || '').trim() || 'https://api.openai.com/v1/responses');
 
@@ -169,7 +220,6 @@ function createAiEngine({ db, sendMessage, aiLog = () => { } } = {}) {
 
     const openai_reasoning_effort = normalizeReasoningEffort(s.openai_reasoning_effort);
 
-    // ---- Grok (novo) ----
     const grok_api_url =
       (String(s.grok_api_url || '').trim() || 'https://api.x.ai/v1/chat/completions');
 
@@ -253,7 +303,6 @@ function createAiEngine({ db, sendMessage, aiLog = () => { } } = {}) {
     return {
       ai_provider,
 
-      // venice
       venice_api_url,
       temperature,
       max_tokens,
@@ -262,7 +311,6 @@ function createAiEngine({ db, sendMessage, aiLog = () => { } } = {}) {
       venice_parameters,
       userMessage,
 
-      // openai
       openai_api_url,
       openai_max_output_tokens,
       openai_reasoning_effort,
@@ -271,7 +319,6 @@ function createAiEngine({ db, sendMessage, aiLog = () => { } } = {}) {
       grok_temperature: grokTemp,
       grok_max_tokens: grokMaxTokens,
 
-      // common
       max_out_messages,
       msg_config_incomplete,
       msg_generic_error,
@@ -501,17 +548,14 @@ function createAiEngine({ db, sendMessage, aiLog = () => { } } = {}) {
   }
 
   function extractOpenAiOutputText(data) {
-    // Prefer o campo de conveniência
     if (typeof data?.output_text === 'string' && data.output_text.trim()) {
       return data.output_text;
     }
 
-    // Fallback: tenta varrer "output" e juntar pedaços de texto
     const out = data?.output;
     if (Array.isArray(out)) {
       const chunks = [];
       for (const item of out) {
-        // item.content pode ser array de partes
         const parts = item?.content;
         if (Array.isArray(parts)) {
           for (const p of parts) {
@@ -519,7 +563,6 @@ function createAiEngine({ db, sendMessage, aiLog = () => { } } = {}) {
             else if (typeof p?.content === 'string') chunks.push(p.content);
           }
         }
-        // alguns formatos podem ter item.text direto
         if (typeof item?.text === 'string') chunks.push(item.text);
       }
       const joined = chunks.join('').trim();
@@ -538,17 +581,9 @@ function createAiEngine({ db, sendMessage, aiLog = () => { } } = {}) {
         { role: 'system', content: systemPromptRendered },
         { role: 'user', content: cfg.userMessage },
       ],
-
-      // JSON mode (retornar OBJETO JSON puro)
       text: { format: { type: 'json_object' } },
-
-      // limite de saída
       ...(Number.isFinite(cfg.openai_max_output_tokens) ? { max_output_tokens: cfg.openai_max_output_tokens } : {}),
-
-      // effort de raciocínio (se vier setado)
       ...(cfg.openai_reasoning_effort ? { reasoning: { effort: cfg.openai_reasoning_effort } } : {}),
-
-      // identifica usuário (bom pra tracking / abuse monitoring)
       ...(userId ? { user: userId } : {}),
     };
 
@@ -557,7 +592,7 @@ function createAiEngine({ db, sendMessage, aiLog = () => { } } = {}) {
         Authorization: `Bearer ${apiKey}`,
         'Content-Type': 'application/json',
       },
-      timeout: cfg.timeoutMs, // reaproveita o timeout do painel
+      timeout: cfg.timeoutMs,
       validateStatus: () => true,
     });
 
@@ -581,7 +616,6 @@ function createAiEngine({ db, sendMessage, aiLog = () => { } } = {}) {
   async function callGrokChat({ apiKey, model, systemPromptRendered, userId, cfg }) {
     const url = cfg.grok_api_url;
 
-    // tentativa 1: com response_format (se suportar)
     const body1 = {
       model,
       messages: [
@@ -590,10 +624,7 @@ function createAiEngine({ db, sendMessage, aiLog = () => { } } = {}) {
       ],
       temperature: cfg.grok_temperature,
       max_tokens: cfg.grok_max_tokens,
-
-      // alguns providers suportam isso (OpenAI-like). Se não suportar, fazemos fallback.
       response_format: { type: 'json_object' },
-
       user: userId || undefined,
       stream: false,
     };
@@ -601,7 +632,6 @@ function createAiEngine({ db, sendMessage, aiLog = () => { } } = {}) {
     const headers = {
       Authorization: `Bearer ${apiKey}`,
       'Content-Type': 'application/json',
-      // compat extra (alguns aceitam x-api-key)
       'X-API-Key': apiKey,
     };
 
@@ -613,7 +643,6 @@ function createAiEngine({ db, sendMessage, aiLog = () => { } } = {}) {
 
     let r = await post(body1);
 
-    // fallback: se reclamar do response_format, tenta de novo sem ele
     if (r.status >= 400) {
       const errStr = JSON.stringify(r.data || {});
       const looksLikeBadParam =
@@ -662,10 +691,7 @@ function createAiEngine({ db, sendMessage, aiLog = () => { } } = {}) {
           : (String(s.voice_note_grok_model || '').trim() || String(s.grok_model || '').trim());
 
     const temperature = clampNum(toNumberOrNull(s.voice_note_temperature), { min: 0, max: 2 }) ?? 0.85;
-
-    // voz: Venice usa max_tokens; OpenAI Responses usa max_output_tokens
     const maxTokens = clampInt(toNumberOrNull(s.voice_note_max_tokens), { min: 16, max: 4096 }) ?? 220;
-
     const timeoutMs = clampInt(toNumberOrNull(s.voice_note_timeout_ms), { min: 1000, max: 180000 }) ?? 45000;
 
     const histMaxChars = clampInt(toNumberOrNull(s.voice_note_history_max_chars), { min: 200, max: 8000 }) ?? 1600;
@@ -833,28 +859,26 @@ function createAiEngine({ db, sendMessage, aiLog = () => { } } = {}) {
     excludeWamids,
     replyToWamid,
     batch_items,
-
     historicoStrSnapshot,
     historyMaxTsMs,
-
-    lead,
+    lead: leadStore,
   }) {
-    if (!lead || typeof lead.getLead !== 'function') {
-      aiLog('[AI][ERROR] leadStore não foi injetado no handleInboundBlock');
+    if (!leadStore || typeof leadStore.getLead !== 'function') {
+      aiLog('[AI][ERROR] leadStore não foi injetado no handleInboundBlock (ou não tem getLead)');
       return;
     }
 
-    const st = lead.getLead(wa_id);
-    const cd = (typeof lead.getCooldownState === 'function') ? lead.getCooldownState(wa_id) : null;
+    // ✅ runner/payments ligados ao leadStore correto
+    const actionRunner = getActionRunnerForLeadStore(leadStore);
+
+    const st = leadStore.getLead(wa_id);
+    const cd = (typeof leadStore.getCooldownState === 'function') ? leadStore.getCooldownState(wa_id) : null;
     if (!st) return;
 
     const settings = global.botSettings || await db.getBotSettings();
-
     const systemPromptTpl = (settings?.system_prompt || '').trim();
-
     const cfg = readAiRuntimeConfig(settings);
 
-    // seleciona provider + credenciais
     const provider = cfg.ai_provider;
 
     const veniceApiKey = (settings?.venice_api_key || '').trim();
@@ -885,11 +909,11 @@ function createAiEngine({ db, sendMessage, aiLog = () => { } } = {}) {
     const userTextForIntent = (atual || bloco || '').trim();
     const askedAudio = leadAskedForAudio(userTextForIntent);
 
-    const audioState = (typeof lead.getAudioState === 'function')
-      ? lead.getAudioState(wa_id)
+    const audioState = (typeof leadStore.getAudioState === 'function')
+      ? leadStore.getAudioState(wa_id)
       : (st.audio_policy || { text_streak_count: 0 });
 
-    const cooldownActive = (typeof lead.isCooldownActive === 'function') ? lead.isCooldownActive(wa_id) : false;
+    const cooldownActive = (typeof leadStore.isCooldownActive === 'function') ? leadStore.isCooldownActive(wa_id) : false;
     const breakCooldown = looksLikeStrongBuyIntent(userTextForIntent);
 
     if (cooldownActive) {
@@ -910,7 +934,7 @@ function createAiEngine({ db, sendMessage, aiLog = () => { } } = {}) {
 
     const historicoStr = (typeof historicoStrSnapshot === 'string')
       ? historicoStrSnapshot
-      : lead.buildHistoryString(st, { excludeWamids });
+      : leadStore.buildHistoryString(st, { excludeWamids });
 
     const msgParaPrompt = (bloco && atual && bloco !== atual)
       ? `BLOCO_USUARIO:\n${bloco}\n\nMENSAGEM_ATUAL_BLOCO:\n${atual}`
@@ -950,7 +974,6 @@ function createAiEngine({ db, sendMessage, aiLog = () => { } } = {}) {
       endpoint: endpointUsed,
     });
 
-    // chama provider
     const resp = (provider === 'venice')
       ? await callVeniceChat({
         apiKey: veniceApiKey,
@@ -1020,11 +1043,8 @@ function createAiEngine({ db, sendMessage, aiLog = () => { } } = {}) {
 
     const modelWantsAudio = !!agent?.acoes?.enviar_audio;
 
-    // ✅ AUTO_CURTO: agora calculamos ANTES de enviar texto,
-    // simulando como se o streak fosse avançar pelos outItems
     const autoDue = cfg.autoAudioEnabled && audioState && Number.isFinite(audioState.text_streak_count) && ((audioState.text_streak_count + outItems.length) >= cfg.autoAudioAfterMsgs);
 
-    // ✅ regra final: se for mandar áudio (qualquer um dos 3 tipos), suprime texto
     const shouldSendAudio = askedAudio || modelWantsAudio || autoDue;
     const suppressTexts = shouldSendAudio;
 
@@ -1046,7 +1066,7 @@ function createAiEngine({ db, sendMessage, aiLog = () => { } } = {}) {
         if (!r?.ok) aiLog(`[AI][SEND][${wa_id}] FAIL`, r);
 
         if (r?.ok) {
-          lead.pushHistory(wa_id, 'assistant', msg, {
+          leadStore.pushHistory(wa_id, 'assistant', msg, {
             kind: 'text',
             wamid: r.wamid || '',
             phone_number_id: r.phone_number_id || inboundPhoneNumberId || null,
@@ -1076,10 +1096,10 @@ function createAiEngine({ db, sendMessage, aiLog = () => { } } = {}) {
           const settingsNow = settings || global.botSettings || await db.getBotSettings();
           const vn = readVoiceNoteRuntimeConfig(settingsNow, cfg);
 
-          const stForVoice = lead.getLead(wa_id);
+          const stForVoice = leadStore.getLead(wa_id);
           let chatStr = '';
           try {
-            chatStr = lead.buildHistoryString(stForVoice, { excludeWamids });
+            chatStr = leadStore.buildHistoryString(stForVoice, { excludeWamids });
           } catch {
             chatStr = '';
           }
@@ -1160,7 +1180,6 @@ function createAiEngine({ db, sendMessage, aiLog = () => { } } = {}) {
             }
           }
 
-          // fallback (se não gerou nada)
           if (!script) {
             const fb = String(settingsNow?.voice_note_fallback_text || '').trim();
             script = fb || makeFreeScriptFromOutItems(outItems);
@@ -1185,7 +1204,7 @@ function createAiEngine({ db, sendMessage, aiLog = () => { } } = {}) {
       } else {
         const audioText = String(rAudio?.tts_text || script || '').trim();
 
-        lead.pushHistory(wa_id, 'assistant', `[AUDIO:${mode}]`, {
+        leadStore.pushHistory(wa_id, 'assistant', `[AUDIO:${mode}]`, {
           kind: 'audio',
           audio_kind: mode,
           audio_text: audioText,
@@ -1203,14 +1222,13 @@ function createAiEngine({ db, sendMessage, aiLog = () => { } } = {}) {
     const triedLink = !!agent?.acoes?.enviar_link_acesso;
 
     if (!blockSales) {
-      if ((triedPix || triedLink) && typeof lead.startCooldown === 'function') {
+      if ((triedPix || triedLink) && typeof leadStore.startCooldown === 'function') {
         const reason = triedPix ? 'pix' : 'link';
-        // backward compatible: só injeta minUserMsgs se o leadStore souber usar
-        lead.startCooldown(wa_id, { durationMs: cfg.salesCooldownMs, reason, minUserMsgs: cfg.salesCooldownMinUserMsgs });
+        leadStore.startCooldown(wa_id, { durationMs: cfg.salesCooldownMs, reason, minUserMsgs: cfg.salesCooldownMinUserMsgs });
       }
 
-      if (breakCooldown && typeof lead.stopCooldown === 'function') {
-        lead.stopCooldown(wa_id, { reason: 'break_by_user_intent' });
+      if (breakCooldown && typeof leadStore.stopCooldown === 'function') {
+        leadStore.stopCooldown(wa_id, { reason: 'break_by_user_intent' });
       }
     }
 
@@ -1218,7 +1236,7 @@ function createAiEngine({ db, sendMessage, aiLog = () => { } } = {}) {
       agent,
       wa_id,
       inboundPhoneNumberId,
-      lead,
+      lead: leadStore, // ✅ passa o leadStore certo
       replyToWamid: fallbackReplyToWamid,
       batch_items,
       settings,

@@ -13,6 +13,9 @@ const { createLeadStore } = require('./lead');
 const { createAiEngine } = require('./ai');
 const { registerRoutes } = require('./routes');
 
+// ✅ payments singleton aqui
+const { createPaymentsModule } = require('./payments/payment-module');
+
 const app = express();
 app.use(express.json({
   limit: '2mb',
@@ -140,14 +143,10 @@ function readLeadFromSettings(settings) {
 (async () => {
   await bootstrapDb();
 
-  const ai = createAiEngine({
-    db,
-    sendMessage,
-    aiLog,
-  });
-
   const batching = readBatchingFromSettings(global.botSettings);
   const leadCfg = readLeadFromSettings(global.botSettings);
+
+  let ai = null;
 
   const lead = createLeadStore({
     maxMsgs: leadCfg.maxMsgs,
@@ -164,6 +163,10 @@ function readLeadFromSettings(settings) {
     debugLog: aiLog,
 
     onFlushBlock: async (payload) => {
+      if (!ai || typeof ai.handleInboundBlock !== 'function') {
+        console.error('[AI][BOOT] ai engine ainda não pronto (flush recebido cedo demais)');
+        return;
+      }
       return ai.handleInboundBlock({ ...payload, lead });
     },
   });
@@ -171,9 +174,22 @@ function readLeadFromSettings(settings) {
   lead.__store_id = lead.__store_id || Math.random().toString(16).slice(2);
   console.log('[LEAD][STORE_ID][BOOT]', lead.__store_id);
 
+  // ✅ payments singleton com leadStore real
+  const payments = createPaymentsModule({ db, lead, publishState });
+
+  // ✅ injeta payments no AI (ai.js não cria outro)
+  ai = createAiEngine({
+    db,
+    sendMessage,
+    aiLog,
+    payments,
+  });
+
+  // ✅ passa payments pra rotas também (evita routes criarem outro)
   registerRoutes(app, {
     db,
     lead,
+    payments,
     rememberInboundMetaPhoneNumberId,
     publishMessage,
     publishAck,

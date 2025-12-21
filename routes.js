@@ -6,7 +6,9 @@ const crypto = require('crypto');
 
 const { downloadMetaMediaToTempFile } = require('./senders');
 const { transcribeAudioOpenAI } = require('./transcribe');
-const { createPaymentsModule } = require('./payments/payment-module');
+
+// ✅ REMOVIDO: não criar payments aqui (evita 2 instâncias)
+// const { createPaymentsModule } = require('./payments/payment-module');
 
 // ✅ NOVO: lookup Ads/Campaign
 const { resolveCampaignFromInbound } = require('./meta_ads');
@@ -113,6 +115,7 @@ function extractInboundText(m) {
 function registerRoutes(app, {
   db,
   lead,
+  payments, // ✅ INJETADO PELO index.js (singleton)
   rememberInboundMetaPhoneNumberId,
   publishMessage,
   publishAck,
@@ -124,12 +127,11 @@ function registerRoutes(app, {
     return res.redirect('/login');
   }
 
-  const payments = createPaymentsModule({
-    db,
-    lead,
-    publishState,
-    logger: console,
-  });
+  // ✅ GARANTIA: não deixa subir sem payments injetado
+  if (!payments || typeof payments.makeExpressWebhookHandler !== 'function') {
+    console.error('[ROUTES][BOOT][FATAL] payments não foi injetado em registerRoutes().');
+    throw new Error('payments singleton não foi fornecido para registerRoutes (evite duplicar instâncias).');
+  }
 
   // ✅ NOVO: dedupe simples do lookup por (wa_id + ad_id)
   const adsLookupSeen = new Map(); // key -> ts_ms
