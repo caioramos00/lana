@@ -66,6 +66,14 @@ async function bootstrapDb() {
         webhook_path: String(settings.rapdyn_webhook_path || '/webhook/rapdyn').trim(),
       };
 
+      global.zoompagConfig = {
+        api_base_url: String(settings.zoompag_api_base_url || 'https://api.zoompag.com').trim(),
+        api_key: String(settings.zoompag_api_key || '').trim(),
+        create_path: String(settings.zoompag_create_path || '/transactions').trim(),
+        callback_base_url: String(settings.zoompag_callback_base_url || '').trim(),
+        webhook_path: String(settings.zoompag_webhook_path || '/webhook/zoompag').trim(),
+      };
+
       return;
     } catch (e) {
       attempt++;

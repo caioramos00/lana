@@ -441,6 +441,12 @@ function registerRoutes(app, {
     return [...list];
   }
 
+  function getZoompagWebhookPaths() {
+    const p = String(global.zoompagConfig?.webhook_path || global.botSettings?.zoompag_webhook_path || '/webhook/zoompag').trim() || '/webhook/zoompag';
+    const list = new Set(['/webhook/zoompag', p]);
+    return [...list];
+  }
+
   for (const webhookPath of getRapdynWebhookPaths()) {
     app.post(webhookPath, async (req, res) => {
       // responde rápido (Rapdyn não fica esperando)
@@ -523,6 +529,68 @@ function registerRoutes(app, {
         }
       } catch (e) {
         console.log('[RAPDYN][WEBHOOK][ERR]', { message: e?.message });
+      }
+    });
+  }
+
+  for (const webhookPath of getZoompagWebhookPaths()) {
+    app.post(webhookPath, async (req, res) => {
+      res.sendStatus(200);
+      try {
+        const payload = req.body || {};
+        // Filtra só TRANSACTION (assumido)
+        if (String(payload.eventType || '').toUpperCase() !== 'TRANSACTION') {
+          console.log('[ZOOMPAG][WEBHOOK][SKIP]', { eventType: payload.eventType || null });
+          return;
+        }
+        const norm = pix.normalizeWebhook('zoompag', payload);
+        const st = String(norm?.status || '').trim();
+        console.log('[ZOOMPAG][WEBHOOK]', {
+          status: st,
+          id: norm?.transaction_id || null,
+          external_id: norm?.external_id || null,
+          total: norm?.total ?? null,
+        });
+        const row = await db.updatePixDepositFromWebhookNormalized({
+          provider: 'zoompag',
+          transaction_id: norm?.transaction_id || null,
+          external_id: norm?.external_id || null,
+          status: norm?.status || null,
+          fee: null,  // assuma se tiver no payload
+          net_amount: null,
+          end_to_end: norm?.end_to_end || null,
+          raw_webhook: payload,
+        });
+        let wa_id = row?.wa_id || null;
+        if (!wa_id) wa_id = parseWaIdFromExternalId(norm?.external_id);
+        const paid = pix.isPaidStatus('zoompag', st);
+        if (wa_id && paid) {
+          publishState?.({
+            wa_id,
+            etapa: 'ZOOMPAG_PAID',
+            vars: {
+              provider: 'zoompag',
+              total_cents: norm?.total ?? null,
+              external_id: norm?.external_id ?? null,
+              transaction_id: norm?.transaction_id ?? null,
+              end_to_end: norm?.end_to_end ?? null,
+              status: st,
+            },
+            ts: Date.now(),
+          });
+          if (lead && typeof lead.markPaymentCompleted === 'function') {
+            lead.markPaymentCompleted(wa_id, {
+              provider: 'zoompag',
+              amount_cents: norm?.total ?? null,
+              external_id: norm?.external_id ?? null,
+              transaction_id: norm?.transaction_id ?? null,
+              end_to_end: norm?.end_to_end ?? null,
+              status: st,
+            });
+          }
+        }
+      } catch (e) {
+        console.log('[ZOOMPAG][WEBHOOK][ERR]', { message: e?.message });
       }
     });
   }

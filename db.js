@@ -165,6 +165,12 @@ async function initDatabase() {
     await alter(`ALTER TABLE bot_settings ADD COLUMN IF NOT EXISTS veltrax_callback_base_url TEXT;`);
     await alter(`ALTER TABLE bot_settings ADD COLUMN IF NOT EXISTS veltrax_webhook_path TEXT;`);
 
+    await alter(`ALTER TABLE bot_settings ADD COLUMN IF NOT EXISTS zoompag_api_base_url TEXT;`);
+    await alter(`ALTER TABLE bot_settings ADD COLUMN IF NOT EXISTS zoompag_api_key TEXT;`);
+    await alter(`ALTER TABLE bot_settings ADD COLUMN IF NOT EXISTS zoompag_create_path TEXT;`);
+    await alter(`ALTER TABLE bot_settings ADD COLUMN IF NOT EXISTS zoompag_callback_base_url TEXT;`);
+    await alter(`ALTER TABLE bot_settings ADD COLUMN IF NOT EXISTS zoompag_webhook_path TEXT;`);
+
     await alter(`ALTER TABLE bot_settings ADD COLUMN IF NOT EXISTS openai_transcribe_enabled BOOLEAN;`);
     await alter(`ALTER TABLE bot_settings ADD COLUMN IF NOT EXISTS openai_transcribe_model TEXT;`);
     await alter(`ALTER TABLE bot_settings ADD COLUMN IF NOT EXISTS openai_transcribe_language TEXT;`);
@@ -279,6 +285,10 @@ async function initDatabase() {
              veltrax_api_base_url = COALESCE(veltrax_api_base_url, 'https://api.veltraxpay.com'),
              veltrax_callback_base_url = COALESCE(veltrax_callback_base_url, ''),
              veltrax_webhook_path = COALESCE(veltrax_webhook_path, '/webhook/veltrax'),
+
+             zoompag_api_base_url = COALESCE(zoompag_api_base_url, 'https://api.zoompag.com'),
+             zoompag_create_path = COALESCE(zoompag_create_path, '/transactions'),
+             zoompag_webhook_path = COALESCE(zoompag_webhook_path, '/webhook/zoompag'),
 
              openai_transcribe_enabled = COALESCE(openai_transcribe_enabled, TRUE),
              openai_transcribe_model = COALESCE(openai_transcribe_model, 'whisper-1'),
@@ -497,6 +507,12 @@ async function getBotSettings({ bypassCache = false } = {}) {
       veltrax_callback_base_url,
       veltrax_webhook_path,
 
+      zoompag_api_base_url,
+      zoompag_api_key,
+      zoompag_create_path,
+      zoompag_callback_base_url,
+      zoompag_webhook_path,
+
       openai_transcribe_enabled,
       openai_transcribe_model,
       openai_transcribe_language,
@@ -629,6 +645,12 @@ async function updateBotSettings(payload) {
       veltrax_callback_base_url,
       veltrax_webhook_path,
 
+      zoompag_api_base_url,
+      zoompag_api_key,
+      zoompag_create_path,
+      zoompag_callback_base_url,
+      zoompag_webhook_path,
+
       openai_transcribe_enabled,
       openai_transcribe_model,
       openai_transcribe_language,
@@ -737,6 +759,12 @@ async function updateBotSettings(payload) {
     const vtxClientSecret = (veltrax_client_secret || '').trim() || null;
     const vtxCbBase = (veltrax_callback_base_url || '').trim() || null;
     const vtxWebhookPath = (veltrax_webhook_path || '').trim() || null;
+
+    const zApiBase = (zoompag_api_base_url || '').trim() || null;
+    const zKey = (zoompag_api_key || '').trim() || null;
+    const zCreatePath = (zoompag_create_path || '').trim() || null;
+    const zCbBase = (zoompag_callback_base_url || '').trim() || null;
+    const zWebhookPath = (zoompag_webhook_path || '').trim() || null;
 
     const aiProviderRaw = (ai_provider || '').trim().toLowerCase();
     const aiProvider = (aiProviderRaw === 'venice' || aiProviderRaw === 'openai' || aiProviderRaw === 'grok') ? aiProviderRaw : null;
@@ -904,6 +932,12 @@ async function updateBotSettings(payload) {
             grok_max_tokens = COALESCE($94, grok_max_tokens),
             voice_note_grok_model = COALESCE($95, voice_note_grok_model),
 
+            zoompag_api_base_url = COALESCE($96, zoompag_api_base_url),
+            zoompag_api_key = COALESCE($97, zoompag_api_key),
+            zoompag_create_path = COALESCE($98, zoompag_create_path),
+            zoompag_callback_base_url = COALESCE($99, zoompag_callback_base_url),
+            zoompag_webhook_path = COALESCE($100, zoompag_webhook_path),
+
             updated_at = NOW()
        WHERE id = 1
       `,
@@ -1023,6 +1057,12 @@ async function updateBotSettings(payload) {
         Number.isFinite(grokTemp) ? grokTemp : null,
         Number.isFinite(grokMaxTokens) ? grokMaxTokens : null,
         voiceNoteGrokModel,
+
+        zApiBase,
+        zKey,
+        zCreatePath,
+        zCbBase,
+        zWebhookPath,
       ]
     );
 

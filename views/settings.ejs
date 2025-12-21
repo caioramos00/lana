@@ -73,6 +73,7 @@
                 <select class="form-select" name="pix_gateway_default" id="pix_gateway_default">
                   <option value="veltrax" <%=(pg==='veltrax' ? 'selected' : '' ) %>>Veltrax</option>
                   <option value="rapdyn" <%=(pg==='rapdyn' ? 'selected' : '' ) %>>Rapdyn</option>
+                  <option value="zoompag" <%=(pg==='zoompag' ? 'selected' : '' ) %>>Zoompag</option>
                 </select>
                 <div class="form-text">O painel salva configs de todos os gateways, mas exibe só o selecionado.</div>
               </div>
@@ -179,6 +180,44 @@
                       </div>
                     </div>
 
+                  </div>
+                </div>
+              </div>
+
+              <!-- ZOOMPAG BOX -->
+              <div class="col-12 pay-gateway-box" id="pay_gateway_zoompag">
+                <div class="card border-0 bg-light mt-2">
+                  <div class="card-body">
+                    <h5 class="mb-2">Configurações • Zoompag</h5>
+                    <div class="form-text mb-3">Config do gateway Zoompag (base URL, API key, path do create e webhook).
+                    </div>
+                    <div class="row g-3">
+                      <div class="col-12">
+                        <label class="form-label">Zoompag API Base URL</label>
+                        <input type="text" class="form-control" name="zoompag_api_base_url"
+                          value="<%= (s.zoompag_api_base_url !== undefined && s.zoompag_api_base_url !== null) ? s.zoompag_api_base_url : 'https://api.zoompag.com' %>">
+                      </div>
+                      <div class="col-md-6">
+                        <label class="form-label">Zoompag API Key (x-api-key)</label>
+                        <input type="text" class="form-control" name="zoompag_api_key"
+                          value="<%= (s.zoompag_api_key || '') %>">
+                      </div>
+                      <div class="col-md-6">
+                        <label class="form-label">Zoompag Create Path</label>
+                        <input type="text" class="form-control" name="zoompag_create_path"
+                          value="<%= (s.zoompag_create_path !== undefined && s.zoompag_create_path !== null) ? s.zoompag_create_path : '/transactions' %>">
+                      </div>
+                      <div class="col-md-6">
+                        <label class="form-label">Callback Base URL</label>
+                        <input type="text" class="form-control" name="zoompag_callback_base_url"
+                          value="<%= (s.zoompag_callback_base_url || '') %>">
+                      </div>
+                      <div class="col-md-6">
+                        <label class="form-label">Webhook Path</label>
+                        <input type="text" class="form-control" name="zoompag_webhook_path"
+                          value="<%= (s.zoompag_webhook_path !== undefined && s.zoompag_webhook_path !== null) ? s.zoompag_webhook_path : '/webhook/zoompag' %>">
+                      </div>
+                    </div>
                   </div>
                 </div>
               </div>

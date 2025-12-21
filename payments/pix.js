@@ -1,10 +1,12 @@
 // payments/pix.js
 const veltraxGw = require('./providers/veltrax-gateway');
 const rapdynGw = require('./providers/rapdyn-gateway');
+const zoompagGw = require('./providers/zoompag-gateway');
 
 const GATEWAYS = {
   veltrax: veltraxGw,
   rapdyn: rapdynGw,
+  zoompag: zoompagGw,
 };
 
 function normalizeProvider(p) {
@@ -44,6 +46,16 @@ function buildCallbackUrl(provider) {
       .replace(/\/+$/, '');
     const path = String(global.rapdynConfig?.webhook_path || global.botSettings?.rapdyn_webhook_path || '/webhook/rapdyn')
       .trim() || '/webhook/rapdyn';
+    if (!base) return null;
+    return `${base}${path.startsWith('/') ? '' : '/'}${path}`;
+  }
+
+  if (p === 'zoompag') {
+    const base = String(global.zoompagConfig?.callback_base_url || global.botSettings?.zoompag_callback_base_url || '')
+      .trim()
+      .replace(/\/+$/, '');
+    const path = String(global.zoompagConfig?.webhook_path || global.botSettings?.zoompag_webhook_path || '/webhook/zoompag')
+      .trim() || '/webhook/zoompag';
     if (!base) return null;
     return `${base}${path.startsWith('/') ? '' : '/'}${path}`;
   }
