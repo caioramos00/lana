@@ -642,15 +642,15 @@
                   <input type="hidden" name="auto_audio_enabled" value="0" />
                   <input class="form-check-input" type="checkbox" name="auto_audio_enabled" value="1" id="auto_audio_enabled" <%=((s.auto_audio_enabled===undefined || s.auto_audio_enabled===null) ? false : !!s.auto_audio_enabled) ? 'checked' : '' %> />
                   <label class="form-check-label" for="auto_audio_enabled">
-                    Ativar áudio automático após X msgs do bot
+                    Ativar áudio automático
                   </label>
                 </div>
               </div>
 
               <div class="col-md-4">
-                <label class="form-label">Após X msgs (exato)</label>
+                <label class="form-label">Quantidade de mensagens</label>
                 <input type="number" class="form-control" name="auto_audio_after_msgs"
-                  value="<%= (s.auto_audio_after_msgs !== undefined && s.auto_audio_after_msgs !== null) ? s.auto_audio_after_msgs : 12 %>" min="5" max="50" step="1">
+                  value="<%= (s.auto_audio_after_msgs !== undefined && s.auto_audio_after_msgs !== null) ? s.auto_audio_after_msgs : 12 %>" min="15" max="1000" step="1">
               </div>
 
               <hr class="my-3" />

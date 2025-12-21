@@ -1,4 +1,3 @@
-// db.js
 const { Pool } = require('pg');
 
 let _settingsCache = null;
@@ -825,7 +824,7 @@ async function updateBotSettings(payload) {
     const voiceNoteGrokModel = (voice_note_grok_model || '').trim() || null;
 
     const autoAudioEnabled = toBoolOrNull(auto_audio_enabled);
-    const autoAudioAfterMsgs = clampInt(toIntOrNull(auto_audio_after_msgs), { min: 0, max: 100 });
+    const autoAudioAfterMsgs = clampInt(toIntOrNull(auto_audio_after_msgs), { min: 15, max: 1000 });
 
     await client.query(
       `
