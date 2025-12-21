@@ -1,10 +1,12 @@
 const DEFAULT_API_VERSION = 'v23.0';
 const DEFAULT_TIMEOUT_MS = 15000;
 const DEFAULT_CACHE_TTL_MS = 60 * 60 * 1000; // 1h
+const DEFAULT_INSIGHTS_DATE_PRESET = 'last_7d';
 
 function getFetch() {
     if (typeof fetch === 'function') return fetch;
     try {
+        // opcional: se você já tiver node-fetch instalado
         // eslint-disable-next-line global-require
         return require('node-fetch');
     } catch (e) {
@@ -32,6 +34,12 @@ function toIntOrNull(v) {
     const n = Number(String(v).trim());
     if (!Number.isFinite(n)) return null;
     return Math.trunc(n);
+}
+
+function toNum(v) {
+    if (v === undefined || v === null) return 0;
+    const n = Number(String(v).trim());
+    return Number.isFinite(n) ? n : 0;
 }
 
 function redactToken(t) {
@@ -129,7 +137,7 @@ function cacheGet(key) {
 
 function cacheSet(key, value, ttlMs) {
     const ttl = clampInt(toIntOrNull(ttlMs), { min: 0, max: 7 * 24 * 60 * 60 * 1000 }) ?? DEFAULT_CACHE_TTL_MS;
-    if (ttl === 0) return;
+    if (ttl === 0) return; // desativado
     _cache.set(key, { value, exp: Date.now() + ttl });
 }
 
@@ -151,7 +159,7 @@ async function cached(key, ttlMs, fn) {
 // -------------------- API específica --------------------
 
 async function getAd({ adId, cfg }) {
-    // ✅ inclui creative{id} pra conseguirmos buscar url_tags do criativo
+    // ✅ inclui creative{id} pra depois buscar url_tags
     const fields = 'id,name,adset_id,campaign_id,account_id,effective_status,status,created_time,updated_time,creative{id}';
     return cached(`ad:${adId}`, cfg.cacheTtlMs, () =>
         graphGet({
@@ -191,7 +199,6 @@ async function getCampaign({ campaignId, cfg }) {
 }
 
 async function getAdCreative({ creativeId, cfg }) {
-    // url_tags é onde normalmente moram os UTMs do anúncio
     const fields = 'id,name,url_tags,object_story_spec,asset_feed_spec';
     return cached(`creative:${creativeId}`, cfg.cacheTtlMs, () =>
         graphGet({
@@ -204,10 +211,80 @@ async function getAdCreative({ creativeId, cfg }) {
     );
 }
 
+function pickTopPlacement(rows) {
+    const list = Array.isArray(rows) ? rows : [];
+    if (!list.length) return null;
+
+    const norm = list.map((r) => {
+        const spend = toNum(r?.spend);
+        const clicks = toNum(r?.clicks);
+        const impressions = toNum(r?.impressions);
+        const publisher_platform = r?.publisher_platform || null;
+        const platform_position = r?.platform_position || null;
+
+        return {
+            publisher_platform,
+            platform_position,
+            spend,
+            clicks,
+            impressions,
+            date_start: r?.date_start || null,
+            date_stop: r?.date_stop || null,
+            key: (publisher_platform && platform_position) ? `${publisher_platform}:${platform_position}` : null,
+        };
+    }).filter(x => x.key);
+
+    if (!norm.length) return null;
+
+    const hasSpend = norm.some(x => x.spend > 0);
+    const hasClicks = norm.some(x => x.clicks > 0);
+
+    // Regra:
+    // 1) maior spend (se existir spend > 0)
+    // 2) senão maior clicks
+    // 3) senão maior impressions
+    const by = hasSpend ? 'spend' : (hasClicks ? 'clicks' : 'impressions');
+
+    let best = norm[0];
+    for (let i = 1; i < norm.length; i++) {
+        if (norm[i][by] > best[by]) best = norm[i];
+    }
+
+    return best;
+}
+
+async function getTopPlacementByAdId({ adId, cfg, datePreset }) {
+    const dp = String(datePreset || '').trim() || DEFAULT_INSIGHTS_DATE_PRESET;
+
+    return cached(`insights:placement:${adId}:${dp}`, cfg.cacheTtlMs, async () => {
+        const data = await graphGet({
+            accessToken: cfg.accessToken,
+            version: cfg.apiVersion,
+            path: `${String(adId).trim()}/insights`,
+            params: {
+                fields: 'impressions,clicks,spend',
+                breakdowns: 'publisher_platform,platform_position',
+                date_preset: dp,
+                limit: 500,
+            },
+            timeoutMs: cfg.timeoutMs,
+        });
+
+        const best = pickTopPlacement(data?.data);
+        return best || null;
+    });
+}
+
 /**
  * Resolve hierarquia por Ad ID (referral.source_id)
+ * Retorna:
+ * {
+ *   ad, adset, campaign, creative,
+ *   placement: { key, publisher_platform, platform_position, spend, clicks, impressions, date_start, date_stop } | null,
+ *   ids: { ad_id, adset_id, campaign_id, account_id, creative_id },
+ * }
  */
-async function resolveHierarchyByAdId(adId, cfg) {
+async function resolveHierarchyByAdId(adId, cfg, { datePreset } = {}) {
     if (!adId) return null;
 
     const ad = await getAd({ adId, cfg });
@@ -225,7 +302,6 @@ async function resolveHierarchyByAdId(adId, cfg) {
 
     const campaign = campaignId ? await getCampaign({ campaignId, cfg }) : null;
 
-    // ✅ tenta buscar o criativo pra pegar url_tags
     const creativeId = ad?.creative?.id || null;
     let creative = null;
     if (creativeId) {
@@ -236,11 +312,20 @@ async function resolveHierarchyByAdId(adId, cfg) {
         }
     }
 
+    // ✅ placement entregue (via insights)
+    let placement = null;
+    try {
+        placement = await getTopPlacementByAdId({ adId: String(adId), cfg, datePreset });
+    } catch {
+        placement = null;
+    }
+
     return {
         ad,
         adset,
         campaign,
         creative,
+        placement,
         ids: {
             ad_id: ad?.id || String(adId),
             adset_id: adset?.id || adsetId || null,
@@ -252,7 +337,7 @@ async function resolveHierarchyByAdId(adId, cfg) {
 }
 
 /**
- * Extrai referral (root e message.referral)
+ * Extrai referral de várias formas (root e message.referral).
  */
 function extractReferral(obj) {
     if (!obj) return null;
@@ -285,6 +370,7 @@ async function resolveCampaignFromInbound(inboundEvent, settings, { logger } = {
     const referral = extractReferral(inboundEvent);
     if (!referral?.source_id) return null;
 
+    // Só processa se for anúncio
     if (String(referral.source_type || '').toLowerCase() !== 'ad') return null;
 
     const token =
@@ -299,6 +385,9 @@ async function resolveCampaignFromInbound(inboundEvent, settings, { logger } = {
         cacheTtlMs: clampInt(toIntOrNull(settings?.meta_ads_cache_ttl_ms), { min: 0, max: 7 * 24 * 60 * 60 * 1000 }) ?? DEFAULT_CACHE_TTL_MS,
     };
 
+    // opcional: controlar o range do insights via settings
+    const insightsDatePreset = String(settings?.meta_ads_insights_date_preset || '').trim() || DEFAULT_INSIGHTS_DATE_PRESET;
+
     if (!cfg.accessToken) {
         log.warn?.('[META][ADS][SKIP] sem token (meta_ads_access_token / graph_api_access_token)', {
             ad_id: referral.source_id,
@@ -307,7 +396,7 @@ async function resolveCampaignFromInbound(inboundEvent, settings, { logger } = {
     }
 
     try {
-        const hier = await resolveHierarchyByAdId(String(referral.source_id), cfg);
+        const hier = await resolveHierarchyByAdId(String(referral.source_id), cfg, { datePreset: insightsDatePreset });
 
         const out = {
             referral,
@@ -318,9 +407,22 @@ async function resolveCampaignFromInbound(inboundEvent, settings, { logger } = {
             campaign_objective: hier?.campaign?.objective || null,
             campaign_status: hier?.campaign?.effective_status || hier?.campaign?.status || null,
 
-            // ✅ pro utmify: se existir, aqui ficam seus UTMs reais do Ads Manager
+            // ✅ url_tags do criativo (se existir)
             creative_id: hier?.ids?.creative_id || null,
             creative_url_tags: hier?.creative?.url_tags || null,
+
+            // ✅ placement entregue (utm_term)
+            placement: hier?.placement?.key || null,
+            placement_details: hier?.placement ? {
+                publisher_platform: hier.placement.publisher_platform,
+                platform_position: hier.placement.platform_position,
+                spend: hier.placement.spend,
+                clicks: hier.placement.clicks,
+                impressions: hier.placement.impressions,
+                date_start: hier.placement.date_start,
+                date_stop: hier.placement.date_stop,
+                date_preset: insightsDatePreset,
+            } : null,
 
             debug: {
                 apiVersion: cfg.apiVersion,
@@ -351,5 +453,5 @@ module.exports = {
     graphGet,
     resolveHierarchyByAdId,
     resolveCampaignFromInbound,
-    getAdCreative,
+    getAdCreative, // útil pra debug
 };

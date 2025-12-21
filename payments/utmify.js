@@ -62,7 +62,8 @@ function expandMetaMacros(template, metaAds) {
     'ad.name': metaAds?.ad_name,
 
     'ctwa_clid': referral?.ctwa_clid,
-    // se algum dia você adicionar placement ao meta_ads, já fica pronto
+
+    // ✅ agora existe via meta_ads
     'placement': metaAds?.placement || null,
   };
 
@@ -85,8 +86,7 @@ function buildTrackingFromCreativeUrlTags(metaAds) {
 
   const out = {};
   for (const [k, v] of Object.entries(parsed)) {
-    const expanded = expandMetaMacros(v, metaAds);
-    out[k] = expanded;
+    out[k] = expandMetaMacros(v, metaAds);
   }
   return out;
 }
@@ -96,7 +96,7 @@ function buildTrackingFromCreativeUrlTags(metaAds) {
  * Prioridade:
  * 1) data.trackingParameters (override do caller)
  * 2) url_tags do AdCreative (se existir)
- * 3) fallback usando nomes + IDs (campaign/adset/ad)
+ * 3) fallback usando nomes + IDs (campaign/adset/ad) + placement (insights)
  */
 function deriveTrackingParameters(data) {
   const base = {
@@ -115,18 +115,13 @@ function deriveTrackingParameters(data) {
     const ids = metaAds?.ids || null;
     const referral = metaAds?.referral || null;
 
-    // 2) tenta vir do creative.url_tags (UTMs reais configurados no Meta)
     const tags = buildTrackingFromCreativeUrlTags(metaAds);
 
     base.src = toStrOrNull(tags?.src) || null;
-
-    // ✅ sck: se vier no url_tags, usa. se não, ctwa_clid é o melhor substituto
     base.sck = toStrOrNull(tags?.sck) || toStrOrNull(referral?.ctwa_clid) || null;
 
-    // ✅ utm_source: se veio do anúncio, respeita; senão padroniza FB (igual exemplos da doc)
     base.utm_source = toStrOrNull(tags?.utm_source) || 'FB';
 
-    // ✅ campanha/conjunto/anúncio: se veio do anúncio, respeita; senão monta NOME|ID
     base.utm_campaign =
       toStrOrNull(tags?.utm_campaign)
       || labelId(metaAds?.campaign_name, ids?.campaign_id);
@@ -139,14 +134,14 @@ function deriveTrackingParameters(data) {
       toStrOrNull(tags?.utm_content)
       || labelId(metaAds?.ad_name, ids?.ad_id);
 
-    // ✅ placement/term: só se vier, senão null (doc permite null)
+    // ✅ upgrade: placement entregue (ex.: "facebook:feed", "instagram:instagram_reels")
     base.utm_term =
       toStrOrNull(tags?.utm_term)
       || toStrOrNull(tags?.placement)
+      || toStrOrNull(metaAds?.placement)
       || null;
   }
 
-  // 1) override do caller (maior prioridade)
   const override = data?.trackingParameters && typeof data.trackingParameters === 'object'
     ? data.trackingParameters
     : null;
@@ -238,7 +233,6 @@ function createUtmifyClient({
       return { ok: false, reason: 'missing-order-id' };
     }
 
-    // ✅ log do tracking
     try {
       logger.log('[UTMIFY][TRACKING]', {
         orderId: payload.orderId,
