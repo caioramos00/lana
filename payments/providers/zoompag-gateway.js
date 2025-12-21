@@ -17,6 +17,7 @@ function pick(obj, paths) {
 module.exports = {
   id: 'zoompag',
   async createPix({ amount, external_id, payer, meta }) {
+    console.log('[ZOOMPAG-GATEWAY] Incoming createPix call with amount:', amount);
     const payload = {
       amount: Math.round(amount),  // cents
       method: 'PIX',
@@ -37,7 +38,9 @@ module.exports = {
         }
       ]
     };
+    console.log('[ZOOMPAG-GATEWAY] Prepared payload for createPixCharge:', JSON.stringify(payload, null, 2));
     const response = await zoompag.createPixCharge(payload);
+    console.log('[ZOOMPAG-GATEWAY] Response from createPixCharge:', JSON.stringify(response, null, 2));
     const data = response.data || {};  // baseado no exemplo
     const transaction_id = data.id || null;
     const status = data.status || 'PENDING';
