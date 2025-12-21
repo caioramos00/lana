@@ -34,6 +34,13 @@ function safeJson(x) {
   try { return x ? JSON.stringify(x) : null; } catch { return null; }
 }
 
+function short(v, n = 10) {
+  const s = String(v || '').trim();
+  if (!s) return null;
+  if (s.length <= n) return s;
+  return `${s.slice(0, n)}…`;
+}
+
 function createPaymentsModule({
   db,
   lead,
@@ -49,7 +56,7 @@ function createPaymentsModule({
   const createProviders = require('./providers');
   const providers = createProviders({ axios, logger });
 
-  // ✅ UTMify client (DI) - agora vem do ./utmify (arquivo único)
+  // ✅ UTMify client (DI)
   const { createUtmifyClient } = require('./utmify');
   const utmify = createUtmifyClient({
     axios,
@@ -117,16 +124,26 @@ function createPaymentsModule({
     return `${base}${path.startsWith('/') ? '' : '/'}${path}`;
   }
 
+  // ✅ pega meta_ads do lead em memória (se existir)
+  function getMetaAdsForWa(wa_id) {
+    try {
+      const st = lead?.getLead?.(wa_id);
+      return st?.meta_ads || st?.metaAds || st?.ads_lookup || st?.adsLookup || null;
+    } catch {
+      return null;
+    }
+  }
+
   async function createPixCharge({
-    ctx,                 // opcional (pra pegar hints)
+    ctx,
     wa_id,
     offer_id,
     offer_title,
     amount,
     extKey,
-    payer,               // {name,email,document,phone,documentType?}
-    providerHint,        // opcional
-    meta,                // opcional
+    payer,
+    providerHint,
+    meta,
   }) {
     const settings = await db.getBotSettings();
 
@@ -140,12 +157,10 @@ function createPaymentsModule({
 
     const callbackUrl = buildCallbackUrl(provider, settings);
 
-    // só exige callback se provider disser que precisa
     if (gw.requiresCallback && !callbackUrl) {
       return { ok: false, reason: 'missing-callback-url', provider };
     }
 
-    // tenta 2x pra lidar com colisão external_id (409 etc.)
     let created = null;
     let external_id = null;
     let lastErr = null;
@@ -206,7 +221,6 @@ function createPaymentsModule({
     const status = String(created?.status || 'PENDING').trim() || 'PENDING';
     const qrcode = created?.qrcode || null;
 
-    // Persistência (pix_deposits)
     let row = null;
     try {
       row = await db.createPixDepositRow({
@@ -228,7 +242,20 @@ function createPaymentsModule({
       logger.warn('[PIX][DB][WARN] createPixDepositRow', { message: e?.message });
     }
 
-    // UTMify: pending (waiting_payment)
+    // ✅ UTMify: waiting_payment (pendente) + meta_ads do lead
+    const meta_ads = getMetaAdsForWa(wa_id);
+    if (meta_ads) {
+      logger.log('[UTMIFY][META_ADS][ATTACH][PENDING]', {
+        wa_id,
+        external_id,
+        campaign: meta_ads?.campaign_name || meta_ads?.ids?.campaign_id || null,
+        ad: meta_ads?.ad_name || meta_ads?.ids?.ad_id || null,
+        sck: meta_ads?.referral?.ctwa_clid ? short(meta_ads.referral.ctwa_clid, 12) : null,
+      });
+    } else {
+      logger.log('[UTMIFY][META_ADS][MISSING][PENDING]', { wa_id, external_id });
+    }
+
     try {
       await utmify.send('waiting_payment', {
         external_id,
@@ -240,6 +267,9 @@ function createPaymentsModule({
         offer_id: offer_id || null,
         offer_title: offer_title || meta?.offer_title || 'Pagamento',
         createdAt: row?.created_at?.getTime?.() || Date.now(),
+
+        // ✅ anexado para virar trackingParameters no utmify.js
+        meta_ads,
       });
     } catch (e) {
       logger.warn('[UTMIFY][WARN] waiting_payment', { message: e?.message });
@@ -271,7 +301,6 @@ function createPaymentsModule({
       total: norm?.total,
     });
 
-    // 1) resolve external_id se vier só transaction_id
     let row = null;
     try {
       if (!norm?.external_id && norm?.transaction_id) {
@@ -279,7 +308,6 @@ function createPaymentsModule({
         if (row?.external_id) norm.external_id = row.external_id;
       }
 
-      // 2) atualiza
       row = await db.updatePixDepositFromWebhookNormalized({
         provider: p,
         transaction_id: norm?.transaction_id || null,
@@ -296,7 +324,6 @@ function createPaymentsModule({
 
     const paid = gw.isPaidStatus(status);
 
-    // resolve wa_id
     let wa_id = row?.wa_id || null;
     if (!wa_id) wa_id = parseWaIdFromExternalId(norm?.external_id);
 
@@ -310,7 +337,6 @@ function createPaymentsModule({
       return;
     }
 
-    // eventos internos
     publishState?.({
       wa_id,
       etapa: `${upper(p)}_PAID`,
@@ -327,7 +353,6 @@ function createPaymentsModule({
       ts: Date.now(),
     });
 
-    // marca no lead (se existir)
     try {
       if (lead && typeof lead.markPaymentCompleted === 'function') {
         lead.markPaymentCompleted(wa_id, {
@@ -343,11 +368,27 @@ function createPaymentsModule({
       }
     } catch { /* noop */ }
 
-    // UTMify: paid (fallback payer se row não tiver)
     const payer_name = row?.payer_name || payload?.customer?.name || payload?.payer?.name || 'Cliente';
     const payer_email = row?.payer_email || payload?.customer?.email || payload?.payer?.email || 'cliente@teste.com';
     const payer_phone = row?.payer_phone || payload?.customer?.phone || payload?.payer?.phone || null;
     const payer_document = row?.payer_document || payload?.customer?.document || payload?.payer?.document || null;
+
+    // ✅ UTMify: paid + meta_ads do lead
+    const meta_ads = getMetaAdsForWa(wa_id);
+    if (meta_ads) {
+      logger.log('[UTMIFY][META_ADS][ATTACH][PAID]', {
+        wa_id,
+        external_id: norm?.external_id || row?.external_id || null,
+        campaign: meta_ads?.campaign_name || meta_ads?.ids?.campaign_id || null,
+        ad: meta_ads?.ad_name || meta_ads?.ids?.ad_id || null,
+        sck: meta_ads?.referral?.ctwa_clid ? short(meta_ads.referral.ctwa_clid, 12) : null,
+      });
+    } else {
+      logger.log('[UTMIFY][META_ADS][MISSING][PAID]', {
+        wa_id,
+        external_id: norm?.external_id || row?.external_id || null,
+      });
+    }
 
     try {
       await utmify.send('paid', {
@@ -360,6 +401,9 @@ function createPaymentsModule({
         offer_id: row?.offer_id || null,
         offer_title: 'Pagamento',
         createdAt: row?.created_at?.getTime?.() || Date.now(),
+
+        // ✅ anexado para virar trackingParameters no utmify.js
+        meta_ads,
       });
     } catch (e) {
       logger.warn('[UTMIFY][WARN] paid', { message: e?.message });
@@ -381,7 +425,7 @@ function createPaymentsModule({
     createPixCharge,
     handleWebhook,
     makeExpressWebhookHandler,
-    providers, // útil p/ debug
+    providers,
   };
 }
 

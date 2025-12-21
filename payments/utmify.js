@@ -7,12 +7,81 @@ function formatDateUTC(ts) {
   return d.toISOString().replace('T', ' ').replace(/\.\d+Z$/, '');
 }
 
+function toStrOrNull(v) {
+  if (v === undefined || v === null) return null;
+  const s = String(v).trim();
+  return s ? s : null;
+}
+
+function pickMetaAds(data) {
+  return data?.meta_ads || data?.metaAds || data?.ads_lookup || data?.adsLookup || null;
+}
+
+/**
+ * Deriva trackingParameters pro Utmify.
+ * Prioridade:
+ * 1) data.trackingParameters (se já vier pronto, sobrescreve)
+ * 2) data.meta_ads (lookup da Graph API)
+ * 3) fallback nulls
+ */
+function deriveTrackingParameters(data) {
+  const base = {
+    src: null,
+    sck: null,
+    utm_source: null,
+    utm_campaign: null,
+    utm_medium: null,
+    utm_content: null,
+    utm_term: null,
+  };
+
+  const metaAds = pickMetaAds(data);
+
+  // se veio meta_ads (Graph API), preenche com ele
+  if (metaAds) {
+    const referral = metaAds?.referral || null;
+    const ids = metaAds?.ids || null;
+
+    // escolhas práticas (você pode mudar depois se quiser outro mapeamento)
+    // - src: "meta"
+    // - sck: ctwa_clid (identificador do click-to-whatsapp)
+    // - utm_*: nomes (com fallback para IDs)
+    base.src = 'meta';
+    base.sck = toStrOrNull(referral?.ctwa_clid);
+
+    base.utm_source = 'meta';
+    base.utm_medium = 'cpc';
+
+    base.utm_campaign = toStrOrNull(metaAds?.campaign_name) || toStrOrNull(ids?.campaign_id);
+    base.utm_content = toStrOrNull(metaAds?.ad_name) || toStrOrNull(ids?.ad_id);
+    base.utm_term = toStrOrNull(metaAds?.adset_name) || toStrOrNull(ids?.adset_id);
+  }
+
+  // se o caller já mandou trackingParameters, ele tem precedência
+  const override = data?.trackingParameters && typeof data.trackingParameters === 'object'
+    ? data.trackingParameters
+    : null;
+
+  if (override) {
+    return {
+      ...base,
+      ...Object.fromEntries(
+        Object.entries(override).map(([k, v]) => [k, toStrOrNull(v)])
+      ),
+    };
+  }
+
+  return base;
+}
+
 function buildPayload(status, data, { platform = 'lana', isTest = false } = {}) {
   const amount = Number(data?.amount || 0);
   const amountCents = Math.round(amount * 100);
 
   const createdAt = formatDateUTC(data?.createdAt || Date.now());
   const approvedDate = (String(status).toLowerCase() === 'paid') ? formatDateUTC(Date.now()) : null;
+
+  const trackingParameters = deriveTrackingParameters(data);
 
   return {
     orderId: data?.external_id,
@@ -40,15 +109,7 @@ function buildPayload(status, data, { platform = 'lana', isTest = false } = {}) 
         priceInCents: amountCents,
       }
     ],
-    trackingParameters: {
-      src: null,
-      sck: null,
-      utm_source: null,
-      utm_campaign: null,
-      utm_medium: null,
-      utm_content: null,
-      utm_term: null,
-    },
+    trackingParameters,
     commission: {
       totalPriceInCents: amountCents,
       gatewayFeeInCents: 0,
@@ -87,6 +148,19 @@ function createUtmifyClient({
       });
       return { ok: false, reason: 'missing-order-id' };
     }
+
+    // ✅ log do tracking (sem vazar token)
+    try {
+      logger.log('[UTMIFY][TRACKING]', {
+        orderId: payload.orderId,
+        src: payload?.trackingParameters?.src,
+        sck: payload?.trackingParameters?.sck ? String(payload.trackingParameters.sck).slice(0, 12) + '…' : null,
+        utm_source: payload?.trackingParameters?.utm_source,
+        utm_campaign: payload?.trackingParameters?.utm_campaign,
+        utm_content: payload?.trackingParameters?.utm_content,
+        utm_term: payload?.trackingParameters?.utm_term,
+      });
+    } catch {}
 
     try {
       await axios.post(endpoint, payload, {
