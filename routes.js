@@ -12,6 +12,7 @@ const { downloadMetaMediaToTempFile } = require('./senders');
 const { transcribeAudioOpenAI } = require('./transcribe');
 const pix = require('./payments/pix');
 const utmify = require('./payments/utmify');
+const { publishState } = require('./stream/events-bus');
 
 function parseWaIdFromExternalId(external_id) {
   // seu external_id é: ord_<wa>_<key>_<ts>_<rand>
