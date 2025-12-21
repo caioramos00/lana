@@ -20,6 +20,101 @@ function parseWaIdFromExternalId(external_id) {
   return m ? m[1] : null;
 }
 
+// Mapa default de allowed event types por provider (uppercase, baseado em padrões PIX)
+const DEFAULT_ALLOWED_EVENT_TYPES = {
+  zoompag: new Set(['TRANSACTION', 'TRANSACTION_PAID', 'PAID', 'COMPLETED', 'APPROVED', 'PAYMENT_UPDATED']),
+  rapdyn: new Set(['TRANSACTION', 'TRANSACTION_PAID', 'PAID', 'COMPLETED', 'APPROVED', 'PAYMENT_CREATED']),
+  veltrax: null, // null = processa todos (sem filtro, como atual)
+};
+
+// Função global para validar eventType
+async function isAllowedEventType(provider, eventType) {
+  const settings = global.botSettings || await db.getBotSettings();
+  const key = `${provider}_allowed_event_types`;
+  const customSet = settings[key] ? new Set(settings[key].split(',').map(s => s.trim().toUpperCase())) : null;
+  const allowed = customSet || DEFAULT_ALLOWED_EVENT_TYPES[provider] || new Set(); // Fallback vazio = skipa tudo
+  if (allowed === null) return true; // Sem filtro para o provider
+  return allowed.has(String(eventType || '').toUpperCase());
+}
+
+async function processPixWebhook(provider, payload) {
+  const norm = pix.normalizeWebhook(provider, payload);
+  const st = String(norm?.status || '').trim();
+  console.log(`[${provider.toUpperCase()}][WEBHOOK]`, { status: st, transaction_id: norm?.transaction_id, external_id: norm?.external_id, total: norm?.total });
+
+  let row = null;
+  try {
+    if (provider === 'veltrax' && db?.updateVeltraxDepositFromWebhook) {
+      row = await db.updateVeltraxDepositFromWebhook(payload);
+    } else if (db?.updatePixDepositFromWebhookNormalized) {
+      row = await db.updatePixDepositFromWebhookNormalized({
+        provider,
+        transaction_id: norm?.transaction_id || null,
+        external_id: norm?.external_id || null,
+        status: norm?.status || null,
+        fee: null, // assuma se tiver no payload
+        net_amount: null,
+        end_to_end: norm?.end_to_end || null,
+        raw_webhook: payload,
+      });
+    } else if (provider === 'rapdyn' && db?.updateRapdynDepositFromWebhook) {
+      row = await db.updateRapdynDepositFromWebhook(payload);
+    }
+  } catch (e) {
+    console.log(`[${provider.toUpperCase()}][WEBHOOK][DB_WARN]`, { message: e?.message });
+  }
+
+  let wa_id = row?.wa_id || null;
+  if (!wa_id) wa_id = parseWaIdFromExternalId(norm?.external_id);
+
+  const paid = pix.isPaidStatus(provider, st);
+
+  if (wa_id && paid) {
+    publishState?.({
+      wa_id,
+      etapa: `${provider.toUpperCase()}_PAID`,
+      vars: {
+        provider,
+        offer_id: row?.offer_id || null,
+        amount: Number(row?.amount || (norm?.total || 0) / 100),
+        total_cents: norm?.total ?? null,
+        external_id: norm?.external_id ?? null,
+        transaction_id: norm?.transaction_id ?? null,
+        end_to_end: norm?.end_to_end ?? null,
+        status: st,
+      },
+      ts: Date.now(),
+    });
+
+    try {
+      if (lead && typeof lead.markPaymentCompleted === 'function') {
+        lead.markPaymentCompleted(wa_id, {
+          provider,
+          offer_id: row?.offer_id || null,
+          amount: Number(row?.amount || (norm?.total || 0) / 100),
+          amount_cents: norm?.total ?? null,
+          external_id: norm?.external_id ?? null,
+          transaction_id: norm?.transaction_id ?? null,
+          end_to_end: norm?.end_to_end ?? null,
+          status: st,
+        });
+      }
+    } catch { }
+
+    utmify.sendToUtmify('paid', {
+      external_id: norm?.external_id || row?.external_id,
+      amount: Number(row?.amount || (norm?.total || 0) / 100),
+      payer_name: row?.payer_name,
+      payer_email: row?.payer_email,
+      payer_phone: row?.payer_phone,
+      payer_document: row?.payer_document,
+      offer_id: row?.offer_id,
+      offer_title: 'Pagamento', // Adjust based on offer
+      createdAt: row?.created_at?.getTime() || Date.now(),
+    });
+  }
+}
+
 function registerRoutes(app, {
   db,
   lead,
@@ -406,54 +501,14 @@ function registerRoutes(app, {
   for (const webhookPath of getVeltraxWebhookPaths()) {
     app.post(webhookPath, async (req, res) => {
       res.sendStatus(200);
-
       try {
         const payload = req.body || {};
-        const row = await db.updateVeltraxDepositFromWebhook(payload);
-
-        // log mínimo
-        const tid = payload?.transaction_id || payload?.transactionId || row?.transaction_id || '';
-        const ext = payload?.external_id || payload?.externalId || row?.external_id || '';
-        const st = payload?.status || row?.status || '';
-        console.log('[VELTRAX][WEBHOOK]', { status: st, transaction_id: tid, external_id: ext });
-
-        if (row?.wa_id && String(st).toUpperCase() === 'COMPLETED') {
-          publishState?.({
-            wa_id: row.wa_id,
-            etapa: 'VELTRAX_COMPLETED',
-            vars: {
-              offer_id: row.offer_id,
-              amount: Number(row.amount),
-              external_id: row.external_id,
-              transaction_id: row.transaction_id,
-            },
-            ts: Date.now(),
-          });
-
-          try {
-            if (lead && typeof lead.markPaymentCompleted === 'function') {
-              lead.markPaymentCompleted(row.wa_id, {
-                provider: 'veltrax',
-                offer_id: row.offer_id,
-                amount: Number(row.amount),
-                external_id: row.external_id,
-                transaction_id: row.transaction_id,
-              });
-            }
-          } catch { }
-
-          utmify.sendToUtmify('paid', {
-            external_id: row.external_id,
-            amount: Number(row.amount),
-            payer_name: row.payer_name,
-            payer_email: row.payer_email,
-            payer_phone: row.payer_phone,
-            payer_document: row.payer_document,
-            offer_id: row.offer_id,
-            offer_title: 'Pagamento', // Adjust based on offer
-            createdAt: row.created_at.getTime(),
-          });
+        const eventType = String(payload.eventType || '').trim(); // Veltrax pode não ter eventType, então filtro opcional
+        if (!(await isAllowedEventType('veltrax', eventType))) {
+          console.log('[VELTRAX][WEBHOOK][SKIP]', { eventType: payload.eventType || null });
+          return;
         }
+        await processPixWebhook('veltrax', payload);
       } catch (e) {
         console.log('[VELTRAX][WEBHOOK][ERR]', { message: e?.message });
       }
@@ -462,96 +517,15 @@ function registerRoutes(app, {
 
   for (const webhookPath of getRapdynWebhookPaths()) {
     app.post(webhookPath, async (req, res) => {
-      // responde rápido (Rapdyn não fica esperando)
       res.sendStatus(200);
-
       try {
         const payload = req.body || {};
-
-        // só processa eventos de transação (doc)
-        if (String(payload.notification_type || '').toLowerCase() !== 'transaction') {
+        const eventType = String(payload.notification_type || '').trim(); // Rapdyn usa 'notification_type'
+        if (!(await isAllowedEventType('rapdyn', eventType))) {
           console.log('[RAPDYN][WEBHOOK][SKIP]', { notification_type: payload.notification_type || null });
           return;
         }
-
-        const norm = pix.normalizeWebhook('rapdyn', payload);
-        const st = String(norm?.status || '').trim();
-
-        console.log('[RAPDYN][WEBHOOK]', {
-          status: st,
-          id: norm?.transaction_id || payload?.id || null,
-          external_id: norm?.external_id || payload?.external_id || null,
-          total: norm?.total ?? payload?.total ?? null,
-        });
-
-        // atualiza DB (tente usar um método dedicado; se não existir, não quebra)
-        let row = null;
-        try {
-          if (db?.updateRapdynDepositFromWebhook) {
-            row = await db.updateRapdynDepositFromWebhook(payload);
-          } else if (db?.updatePixDepositFromWebhook) {
-            // sugestão de API genérica (se você já tiver)
-            row = await db.updatePixDepositFromWebhook({
-              provider: 'rapdyn',
-              transaction_id: norm?.transaction_id || null,
-              external_id: norm?.external_id || null,
-              status: norm?.status || null,
-              total: norm?.total || null,
-              end_to_end: norm?.end_to_end || null,
-              raw_webhook_payload: payload,
-            });
-          }
-        } catch (e) {
-          console.log('[RAPDYN][WEBHOOK][DB_WARN]', { message: e?.message });
-        }
-
-        // descobre wa_id
-        let wa_id = row?.wa_id || null;
-        if (!wa_id) wa_id = parseWaIdFromExternalId(norm?.external_id || payload?.external_id);
-
-        // se for pago: publica estado e marca no lead store
-        const paid = pix.isPaidStatus('rapdyn', st);
-
-        if (wa_id && paid) {
-          publishState?.({
-            wa_id,
-            etapa: 'RAPDYN_PAID',
-            vars: {
-              provider: 'rapdyn',
-              total_cents: norm?.total ?? null,
-              external_id: norm?.external_id ?? null,
-              transaction_id: norm?.transaction_id ?? null,
-              end_to_end: norm?.end_to_end ?? null,
-              status: st,
-            },
-            ts: Date.now(),
-          });
-
-          try {
-            if (lead && typeof lead.markPaymentCompleted === 'function') {
-              lead.markPaymentCompleted(wa_id, {
-                provider: 'rapdyn',
-                amount_cents: norm?.total ?? null,
-                external_id: norm?.external_id ?? null,
-                transaction_id: norm?.transaction_id ?? null,
-                end_to_end: norm?.end_to_end ?? null,
-                status: st,
-              });
-            }
-          } catch { }
-
-          utmify.sendToUtmify('paid', {
-            external_id: norm.external_id,
-            amount: (norm.total || 0) / 100,
-            payer_name: row?.payer_name,
-            payer_email: row?.payer_email,
-            payer_phone: row?.payer_phone,
-            payer_document: row?.payer_document,
-            offer_id: row?.offer_id,
-            offer_title: 'Pagamento', // Adjust based on offer
-            createdAt: row?.created_at.getTime(),
-          });
-        }
+        await processPixWebhook('rapdyn', payload);
       } catch (e) {
         console.log('[RAPDYN][WEBHOOK][ERR]', { message: e?.message });
       }
@@ -563,69 +537,12 @@ function registerRoutes(app, {
       res.sendStatus(200);
       try {
         const payload = req.body || {};
-        // Filtra só TRANSACTION (assumido)
-        if (String(payload.eventType || '').toUpperCase() !== 'TRANSACTION') {
+        const eventType = String(payload.eventType || '').trim();
+        if (!(await isAllowedEventType('zoompag', eventType))) {
           console.log('[ZOOMPAG][WEBHOOK][SKIP]', { eventType: payload.eventType || null });
           return;
         }
-        const norm = pix.normalizeWebhook('zoompag', payload);
-        const st = String(norm?.status || '').trim();
-        console.log('[ZOOMPAG][WEBHOOK]', {
-          status: st,
-          id: norm?.transaction_id || null,
-          external_id: norm?.external_id || null,
-          total: norm?.total ?? null,
-        });
-        const row = await db.updatePixDepositFromWebhookNormalized({
-          provider: 'zoompag',
-          transaction_id: norm?.transaction_id || null,
-          external_id: norm?.external_id || null,
-          status: norm?.status || null,
-          fee: null,  // assuma se tiver no payload
-          net_amount: null,
-          end_to_end: norm?.end_to_end || null,
-          raw_webhook: payload,
-        });
-        let wa_id = row?.wa_id || null;
-        if (!wa_id) wa_id = parseWaIdFromExternalId(norm?.external_id);
-        const paid = pix.isPaidStatus('zoompag', st);
-        if (wa_id && paid) {
-          publishState?.({
-            wa_id,
-            etapa: 'ZOOMPAG_PAID',
-            vars: {
-              provider: 'zoompag',
-              total_cents: norm?.total ?? null,
-              external_id: norm?.external_id ?? null,
-              transaction_id: norm?.transaction_id ?? null,
-              end_to_end: norm?.end_to_end ?? null,
-              status: st,
-            },
-            ts: Date.now(),
-          });
-          if (lead && typeof lead.markPaymentCompleted === 'function') {
-            lead.markPaymentCompleted(wa_id, {
-              provider: 'zoompag',
-              amount_cents: norm?.total ?? null,
-              external_id: norm?.external_id ?? null,
-              transaction_id: norm?.transaction_id ?? null,
-              end_to_end: norm?.end_to_end ?? null,
-              status: st,
-            });
-          }
-
-          utmify.sendToUtmify('paid', {
-            external_id: norm.external_id,
-            amount: (norm.total || 0) / 100,
-            payer_name: row?.payer_name,
-            payer_email: row?.payer_email,
-            payer_phone: row?.payer_phone,
-            payer_document: row?.payer_document,
-            offer_id: row?.offer_id,
-            offer_title: 'Pagamento', // Adjust based on offer
-            createdAt: row?.created_at.getTime(),
-          });
-        }
+        await processPixWebhook('zoompag', payload);
       } catch (e) {
         console.log('[ZOOMPAG][WEBHOOK][ERR]', { message: e?.message });
       }
