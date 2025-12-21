@@ -1,3 +1,4 @@
+// payments/providers/zoompag.js
 'use strict';
 
 function pick(obj, path) {
@@ -13,14 +14,17 @@ function pick(obj, path) {
   let cur = obj;
   for (const k of parts) {
     if (cur == null) return null;
+
     if (typeof k === 'number') {
       if (!Array.isArray(cur) || k < 0 || k >= cur.length) return null;
       cur = cur[k];
-    } else {
-      if (typeof cur !== 'object' || !(k in cur)) return null;
-      cur = cur[k];
+      continue;
     }
+
+    if (typeof cur !== 'object' || !(k in cur)) return null;
+    cur = cur[k];
   }
+
   return cur == null ? null : cur;
 }
 
@@ -32,7 +36,9 @@ function pickAny(obj, paths) {
   return null;
 }
 
-function upper(v) { return String(v || '').trim().toUpperCase(); }
+function upper(v) {
+  return String(v || '').trim().toUpperCase();
+}
 
 function pickRequestId(headers) {
   if (!headers) return null;
@@ -45,8 +51,10 @@ function toZoompagError(err, meta = {}) {
     const statusText = err.response.statusText || '';
     const data = err.response.data;
     const reqId = pickRequestId(err.response.headers);
+
     const providerMsg =
-      (data && (data.message || data.error || data.details)) ? (data.message || data.error || data.details)
+      (data && (data.message || data.error || data.details))
+        ? (data.message || data.error || data.details)
         : (typeof data === 'string' ? data : null);
 
     const e = new Error(
@@ -60,26 +68,43 @@ function toZoompagError(err, meta = {}) {
     e.meta = meta;
     return e;
   }
+
   if (err?.request) {
     const e = new Error(`Zoompag NETWORK error: ${err?.message || 'request failed'}`);
     e.code = 'ZOOMPAG_NETWORK';
     e.meta = meta;
     return e;
   }
+
   const e = new Error(err?.message || 'Zoompag unknown error');
   e.code = err?.code || 'ZOOMPAG_UNKNOWN';
   e.meta = meta;
   return e;
 }
 
+// Normaliza "corpo" retornado pela Zoompag.
+// Exemplo que você mandou vem assim:
+// { status: true, data: { id, status: "PENDING", pix: { copyPaste, qrcodeUrl, qrcode(base64) } } }
+function unwrapBody(respData) {
+  const root = respData || {};
+  const inner = (root && typeof root === 'object' && root.data && typeof root.data === 'object')
+    ? root.data
+    : root;
+  return { root, inner };
+}
+
 module.exports = function createZoompagProvider({ axios, logger = console } = {}) {
   return {
     id: 'zoompag',
-    requiresCallback: false, // ajuste se precisar
+    requiresCallback: false, // Zoompag não precisa de callback para criar charge
 
     async createPix({ amount, external_id, payer, meta, settings }) {
-      const baseUrl = String(settings?.zoompag_api_base_url || 'https://api.zoompag.com').trim().replace(/\/+$/, '');
-      const createPath = String(settings?.zoompag_create_path || '/transactions').trim().replace(/^\/+/, '/');
+      const baseUrl = String(settings?.zoompag_api_base_url || 'https://api.zoompag.com')
+        .trim()
+        .replace(/\/+$/, '');
+      const createPath = String(settings?.zoompag_create_path || '/transactions')
+        .trim()
+        .replace(/^\/+/, '/');
       const apiKey = String(settings?.zoompag_api_key || '').trim();
 
       if (!apiKey) {
@@ -102,7 +127,7 @@ module.exports = function createZoompagProvider({ axios, logger = console } = {}
         },
         items: [
           {
-            title: meta?.offer_title || 'Pagamento',
+            title: meta?.offer_title || meta?.product_name || 'Pagamento',
             amount: amountInCents,
             quantity: 1,
             tangible: false,
@@ -119,10 +144,27 @@ module.exports = function createZoompagProvider({ axios, logger = console } = {}
           timeout: 60000,
         });
 
-        const data = resp?.data || {};
-        const transaction_id = data.id || null;
-        const status = data.status || 'PENDING';
-        const qrcode = pickAny(data, ['pix.copyPaste', 'pix.copy_paste', 'pix.qrCode', 'pix.qrcode']) || null;
+        const respData = resp?.data || {};
+        const { root, inner } = unwrapBody(respData);
+
+        // ✅ id / status corretos: sempre prioriza inner (data)
+        const transaction_id = pickAny(inner, ['id']) || pickAny(root, ['id']) || null;
+
+        // status pode ser "PENDING" em inner, mas no root pode vir boolean (true/false)
+        const statusRaw = pickAny(inner, ['status']) ?? pickAny(root, ['status']);
+        const status =
+          typeof statusRaw === 'string'
+            ? statusRaw
+            : (statusRaw === true ? 'PENDING' : (statusRaw === false ? 'FAILED' : 'PENDING'));
+
+        // ✅ "copia e cola" (EMV) vem como copyPaste ou qrcodeUrl (no exemplo ambos são EMV)
+        // "qrcode" (base64 png) NÃO é copia-e-cola, então fica como fallback final só se não tiver EMV.
+        const qrcode =
+          pickAny(inner, ['pix.copyPaste', 'pix.copy_paste', 'pix.qrcodeUrl', 'pix.qrCodeUrl', 'pix.qrcode_url']) ||
+          pickAny(inner, ['pix.qrCode', 'pix.qrcode']) ||
+          pickAny(root,  ['pix.copyPaste', 'pix.copy_paste', 'pix.qrcodeUrl', 'pix.qrCodeUrl', 'pix.qrcode_url']) ||
+          pickAny(root,  ['pix.qrCode', 'pix.qrcode']) ||
+          null;
 
         return {
           provider: 'zoompag',
@@ -130,7 +172,7 @@ module.exports = function createZoompagProvider({ axios, logger = console } = {}
           transaction_id,
           status,
           qrcode,
-          raw: data, // salva só o corpo (não o resp inteiro)
+          raw: respData, // guarda o corpo inteiro (root), pra debug e auditoria
         };
       } catch (err) {
         throw toZoompagError(err, { step: 'createPix' });
@@ -138,12 +180,25 @@ module.exports = function createZoompagProvider({ axios, logger = console } = {}
     },
 
     normalizeWebhook(payload) {
-      const data = payload?.data || payload || {};
-      const transaction_id = pickAny(data, ['id']) || null;
-      const external_id = pickAny(data, ['items[0].externalRef', 'externalRef']) || null;
-      const status = pickAny(data, ['status']) || null;
-      const total = pickAny(data, ['amount']); // cents
-      const end_to_end = pickAny(data, ['pix.end2endId', 'end2endId', 'pix.endToEnd']) || null;
+      // tenta cobrir: payload, payload.data, payload.data.data
+      const root = payload || {};
+      const inner =
+        (root?.data && typeof root.data === 'object' && root.data.data && typeof root.data.data === 'object')
+          ? root.data.data
+          : (root?.data && typeof root.data === 'object' ? root.data : root);
+
+      const transaction_id = pickAny(inner, ['id']) || null;
+      const external_id = pickAny(inner, ['items[0].externalRef', 'externalRef']) || null;
+
+      const statusRaw = pickAny(inner, ['status']) ?? pickAny(root, ['status']);
+      const status =
+        typeof statusRaw === 'string'
+          ? statusRaw
+          : (statusRaw === true ? 'PENDING' : (statusRaw === false ? 'FAILED' : null));
+
+      const total = pickAny(inner, ['amount']); // cents
+      const end_to_end =
+        pickAny(inner, ['pix.end2endId', 'end2endId', 'pix.endToEnd']) || null;
 
       return {
         transaction_id,
