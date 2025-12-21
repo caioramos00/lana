@@ -14,7 +14,10 @@ const { createAiEngine } = require('./ai');
 const { registerRoutes } = require('./routes');
 
 const app = express();
-app.use(express.json({ limit: '2mb' }));
+app.use(express.json({
+  limit: '2mb',
+  verify: (req, _res, buf) => { req.rawBody = buf; }
+}));
 app.use(express.urlencoded({ extended: true, limit: '2mb' }));
 
 app.set('view engine', 'ejs');

@@ -8,6 +8,9 @@ const { downloadMetaMediaToTempFile } = require('./senders');
 const { transcribeAudioOpenAI } = require('./transcribe');
 const { createPaymentsModule } = require('./payments/payment-module');
 
+// ✅ NOVO: lookup Ads/Campaign
+const { resolveCampaignFromInbound } = require('./meta_ads');
+
 function safeTsMsFromSeconds(tsSec) {
   const n = Number(tsSec);
   if (!Number.isFinite(n) || n <= 0) return Date.now();
@@ -127,6 +130,125 @@ function registerRoutes(app, {
     publishState,
     logger: console,
   });
+
+  // ✅ NOVO: dedupe simples do lookup por (wa_id + ad_id)
+  const adsLookupSeen = new Map(); // key -> ts_ms
+  const ADS_LOOKUP_TTL_MS = 10 * 60 * 1000; // 10min
+
+  function adsLookupShouldRun(wa_id, ad_id) {
+    const key = `${String(wa_id || '').trim()}:${String(ad_id || '').trim()}`;
+    const now = Date.now();
+    const last = adsLookupSeen.get(key);
+    if (last && (now - last) < ADS_LOOKUP_TTL_MS) return false;
+    adsLookupSeen.set(key, now);
+
+    // limpeza simples
+    if (adsLookupSeen.size > 5000) {
+      for (const [k, ts] of adsLookupSeen.entries()) {
+        if (now - ts > ADS_LOOKUP_TTL_MS) adsLookupSeen.delete(k);
+      }
+    }
+    return true;
+  }
+
+  async function resolveAdsToken({ inboundPhoneNumberId, settingsNow }) {
+    // 1) settings (preferível)
+    let token =
+      String(settingsNow?.meta_ads_access_token || '').trim()
+      || String(settingsNow?.graph_api_access_token || '').trim()
+      || '';
+
+    // 2) env fallback
+    if (!token) token = String(process.env.META_ADS_ACCESS_TOKEN || '').trim();
+
+    // 3) fallback opcional: token salvo no número Meta (pode funcionar ou não para Ads)
+    if (!token && inboundPhoneNumberId && db?.listMetaNumbers) {
+      try {
+        const list = await db.listMetaNumbers();
+        const found = Array.isArray(list)
+          ? list.find(n => String(n?.phone_number_id || '').trim() === String(inboundPhoneNumberId || '').trim())
+          : null;
+        const t = String(found?.access_token || '').trim();
+        if (t) token = t;
+      } catch { }
+    }
+
+    return token;
+  }
+
+  async function runAdsLookupAndLog({ wa_id, wamid, inboundPhoneNumberId, m }) {
+    try {
+      const referral = m?.referral || null;
+      if (!referral) return;
+
+      const sourceType = String(referral?.source_type || '').toLowerCase();
+      const adId = String(referral?.source_id || '').trim();
+
+      if (!adId || sourceType !== 'ad') return;
+
+      if (!adsLookupShouldRun(wa_id, adId)) return;
+
+      const settingsNow = global.botSettings || await db.getBotSettings();
+
+      const token = await resolveAdsToken({ inboundPhoneNumberId, settingsNow });
+
+      const settingsForLookup = {
+        ...(settingsNow || {}),
+        meta_ads_access_token: token, // garante que resolveCampaignFromInbound tenha o token
+      };
+
+      console.log('[META][ADS][LOOKUP][START]', {
+        wa_id,
+        wamid,
+        inboundPhoneNumberId: inboundPhoneNumberId || null,
+        ad_id: adId,
+        source_type: sourceType,
+      });
+
+      const out = await resolveCampaignFromInbound(
+        { referral, message: m }, // inboundEvent compatível com seu extractor
+        settingsForLookup,
+        { logger: console }
+      );
+
+      if (!out) {
+        console.log('[META][ADS][LOOKUP][NO_DATA]', {
+          wa_id,
+          wamid,
+          ad_id: adId,
+        });
+        return;
+      }
+
+      // opcional: salva no state do lead pra você debugar depois
+      try {
+        const stLead = lead?.getLead?.(wa_id);
+        if (stLead) {
+          stLead.last_ads_lookup = {
+            ...out,
+            looked_up_at_iso: new Date().toISOString(),
+            looked_up_ts_ms: Date.now(),
+            wa_id,
+            wamid,
+          };
+        }
+      } catch { }
+
+      console.log('[META][ADS][LOOKUP][OK]');
+      console.log(JSON.stringify({
+        wa_id,
+        wamid,
+        inboundPhoneNumberId: inboundPhoneNumberId || null,
+        ...out,
+      }, null, 2));
+    } catch (e) {
+      console.log('[META][ADS][LOOKUP][ERR]', {
+        wa_id,
+        wamid,
+        message: e?.message || 'err',
+      });
+    }
+  }
 
   // ---------- AUTH/UI ----------
   app.get(['/', '/login'], (req, res) => res.sendFile(path.join(__dirname, 'public', 'login.html')));
@@ -350,6 +472,13 @@ function registerRoutes(app, {
               }
             } catch { }
 
+            // ✅ NOVO: se tiver referral, roda lookup em paralelo (não bloqueia)
+            if (m?.referral) {
+              (async () => {
+                await runAdsLookupAndLog({ wa_id, wamid, inboundPhoneNumberId, m });
+              })();
+            }
+
             // state/meta
             let stLead = null;
             try {
@@ -358,7 +487,7 @@ function registerRoutes(app, {
               if (stLead && inboundPhoneNumberId) stLead.meta_phone_number_id = inboundPhoneNumberId;
               if (inboundPhoneNumberId) rememberInboundMetaPhoneNumberId?.(wa_id, inboundPhoneNumberId);
 
-              // ✅ CAPTURA do PRIMEIRO inbound (onde o referral costuma vir)
+              // ✅ CAPTURA do PRIMEIRO inbound
               if (stLead && !stLead.first_inbound_payload) {
                 const contact = getInboundContact(value, wa_id);
 
