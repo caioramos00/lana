@@ -44,9 +44,22 @@ async function processPixWebhook(provider, payload) {
 
   let row = null;
   try {
-    if (provider === 'veltrax' && db?.updateVeltraxDepositFromWebhook) {
-      row = await db.updateVeltraxDepositFromWebhook(payload);
-    } else if (db?.updatePixDepositFromWebhookNormalized) {
+    if (!db) {
+      console.error(`[${provider.toUpperCase()}][WEBHOOK][DB_ERROR] db not defined - using fallback for Utmify`);
+    } else {
+      // Se external_id null, lookup por transaction_id
+      let lookupField = 'external_id';
+      let lookupValue = norm?.external_id;
+      if (!lookupValue && norm?.transaction_id) {
+        lookupField = 'transaction_id';
+        lookupValue = norm.transaction_id;
+        row = await db.getPixDepositByTransactionId(provider, lookupValue);
+        if (row) {
+          console.log(`[${provider.toUpperCase()}][WEBHOOK][LOOKUP_OK] Found row by transaction_id`, { external_id: row.external_id });
+          norm.external_id = row.external_id; // Preenche norm com external_id do DB
+        }
+      }
+      // Update (use o método existente, agora com external_id preenchido se possível)
       row = await db.updatePixDepositFromWebhookNormalized({
         provider,
         transaction_id: norm?.transaction_id || null,
@@ -57,8 +70,6 @@ async function processPixWebhook(provider, payload) {
         end_to_end: norm?.end_to_end || null,
         raw_webhook: payload,
       });
-    } else if (provider === 'rapdyn' && db?.updateRapdynDepositFromWebhook) {
-      row = await db.updateRapdynDepositFromWebhook(payload);
     }
   } catch (e) {
     console.log(`[${provider.toUpperCase()}][WEBHOOK][DB_WARN]`, { message: e?.message });
@@ -101,17 +112,27 @@ async function processPixWebhook(provider, payload) {
       }
     } catch { }
 
+    // Fallback para payer_* se row null (use customer ou payer do payload)
+    const payer_name = row?.payer_name || payload?.customer?.name || payload?.payer?.name || 'Cliente';
+    const payer_email = row?.payer_email || payload?.customer?.email || payload?.payer?.email || 'cliente@teste.com';
+    const payer_phone = row?.payer_phone || payload?.customer?.phone || payload?.payer?.phone || null;
+    const payer_document = row?.payer_document || payload?.customer?.document || payload?.payer?.document || null;
+    const offer_id = row?.offer_id || null;
+    const createdAt = row?.created_at?.getTime() || Date.now();
+
     utmify.sendToUtmify('paid', {
       external_id: norm?.external_id || row?.external_id,
       amount: Number(row?.amount || (norm?.total || 0) / 100),
-      payer_name: row?.payer_name,
-      payer_email: row?.payer_email,
-      payer_phone: row?.payer_phone,
-      payer_document: row?.payer_document,
-      offer_id: row?.offer_id,
+      payer_name,
+      payer_email,
+      payer_phone,
+      payer_document,
+      offer_id,
       offer_title: 'Pagamento', // Adjust based on offer
-      createdAt: row?.created_at?.getTime() || Date.now(),
+      createdAt,
     });
+  } else if (paid) {
+    console.warn(`[${provider.toUpperCase()}][WEBHOOK][SKIP_UTMIFY] Paid but missing wa_id/external_id`, { transaction_id: norm.transaction_id });
   }
 }
 

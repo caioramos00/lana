@@ -236,7 +236,6 @@ async function initDatabase() {
              grok_max_tokens = COALESCE(grok_max_tokens, 700),
 
              openai_api_url = COALESCE(openai_api_url, 'https://api.openai.com/v1/responses'),
-             voice_note_ai_provider = COALESCE(voice_note_ai_provider, 'inherit'),
 
              ai_max_out_messages = COALESCE(ai_max_out_messages, 3),
              ai_error_msg_config = COALESCE(ai_error_msg_config, 'Config incompleta no painel (venice key/model/prompt).'),
@@ -270,15 +269,8 @@ async function initDatabase() {
              voice_note_temperature = COALESCE(voice_note_temperature, 0.85),
              voice_note_max_tokens = COALESCE(voice_note_max_tokens, 220),
              voice_note_timeout_ms = COALESCE(voice_note_timeout_ms, 45000),
-             voice_note_history_max_items = COALESCE(voice_note_history_max_items, 10),
              voice_note_history_max_chars = COALESCE(voice_note_history_max_chars, 1600),
              voice_note_script_max_chars = COALESCE(voice_note_script_max_chars, 650),
-             voice_note_fallback_text = COALESCE(
-               voice_note_fallback_text,
-               '[whispers] Ei… me diz uma coisa… você tá me provocando ou eu tô imaginando? [mischievously]'
-             ),
-             voice_note_system_prompt = COALESCE(voice_note_system_prompt, ''),
-             voice_note_user_prompt = COALESCE(voice_note_user_prompt, ''),
 
              pix_gateway_default = COALESCE(pix_gateway_default, 'veltrax'),
              rapdyn_api_base_url = COALESCE(rapdyn_api_base_url, ''),
@@ -377,6 +369,7 @@ async function initDatabase() {
     await client.query(`CREATE INDEX IF NOT EXISTS idx_pix_deposits_wa_offer ON pix_deposits (wa_id, offer_id);`);
     await client.query(`CREATE INDEX IF NOT EXISTS idx_pix_deposits_status ON pix_deposits (status);`);
     await client.query(`CREATE INDEX IF NOT EXISTS idx_pix_deposits_provider ON pix_deposits (provider);`);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_pix_deposits_transaction_id ON pix_deposits (transaction_id);`);
 
 
     await client.query(`CREATE INDEX IF NOT EXISTS idx_veltrax_deposits_wa_offer ON veltrax_deposits (wa_id, offer_id);`);
@@ -431,13 +424,6 @@ async function getBotSettings({ bypassCache = false } = {}) {
       openai_max_output_tokens,
       openai_reasoning_effort,
 
-      voice_note_system_prompt,
-      voice_note_user_prompt,
-      voice_note_ai_provider,
-      voice_note_openai_model,
-      voice_note_venice_model,
-      voice_note_temperature,
-
       venice_api_url,
       venice_temperature,
       venice_max_tokens,
@@ -457,6 +443,12 @@ async function getBotSettings({ bypassCache = false } = {}) {
       grok_max_tokens,
 
       voice_note_grok_model,
+
+      openai_api_url,
+
+      voice_note_ai_provider,
+      voice_note_openai_model,
+      voice_note_venice_model,
 
       ai_max_out_messages,
       ai_error_msg_config,
@@ -1334,6 +1326,14 @@ async function updatePixDepositFromWebhookNormalized({
   return rows[0] || null;
 }
 
+async function getPixDepositByTransactionId(provider, transaction_id) {
+  const { rows } = await pool.query(
+    `SELECT * FROM pix_deposits WHERE provider = $1 AND transaction_id = $2 LIMIT 1`,
+    [String(provider), String(transaction_id)]
+  );
+  return rows[0] || null;
+}
+
 async function countPixAttempts(wa_id, offer_id, provider) {
   const { rows } = await pool.query(
     `
@@ -1389,6 +1389,7 @@ module.exports = {
   getLatestPendingVeltraxDeposit,
   createPixDepositRow,
   updatePixDepositFromWebhookNormalized,
+  getPixDepositByTransactionId,
   countPixAttempts,
   getLatestPendingPixDeposit,
 };
