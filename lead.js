@@ -186,25 +186,18 @@ function createLeadStore({
     return Math.floor(lo + Math.random() * (hi - lo + 1));
   }
 
-  function computeDebounceMs() {
-    return randInt(cfg.inboundDebounceMinMs, cfg.inboundDebounceMaxMs);
-  }
-
   function ensureAudioState(st) {
     if (!st) return null;
 
     if (!st.audio_policy || typeof st.audio_policy !== 'object') {
       st.audio_policy = {
-        text_streak_count: 0,     // quantos TEXT do bot seguidos desde o último NÃO-TEXTO
-        next_audio_at: randInt(10, 15), // alvo aleatório 10..15
+        text_streak_count: 0,
         last_audio_ts: null,
-        last_audio_kind: null,    // AUTO_CURTO | PEDIDO_LEAD | MODEL
+        last_audio_kind: null,
       };
     }
 
-    // sane defaults
     if (!Number.isFinite(st.audio_policy.text_streak_count)) st.audio_policy.text_streak_count = 0;
-    if (!Number.isFinite(st.audio_policy.next_audio_at)) st.audio_policy.next_audio_at = randInt(10, 15);
 
     return st.audio_policy;
   }
@@ -247,7 +240,6 @@ function createLeadStore({
 
         audio_policy: {
           text_streak_count: 0,
-          next_audio_at: randInt(10, 15),
           last_audio_ts: null,
           last_audio_kind: null,
         },
@@ -332,7 +324,6 @@ function createLeadStore({
         a.text_streak_count = (a.text_streak_count || 0) + 1;
       } else {
         a.text_streak_count = 0;
-        a.next_audio_at = randInt(10, 15);
         a.last_audio_ts = tsMs;
         a.last_audio_kind = String(extra?.audio_kind || kind || '').trim() || null;
       }

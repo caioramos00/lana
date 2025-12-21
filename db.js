@@ -177,6 +177,9 @@ async function initDatabase() {
     await alter(`ALTER TABLE bot_settings ADD COLUMN IF NOT EXISTS openai_transcribe_prompt TEXT;`);
     await alter(`ALTER TABLE bot_settings ADD COLUMN IF NOT EXISTS openai_transcribe_timeout_ms INTEGER;`);
 
+    await alter(`ALTER TABLE bot_settings ADD COLUMN IF NOT EXISTS auto_audio_enabled BOOLEAN;`);
+    await alter(`ALTER TABLE bot_settings ADD COLUMN IF NOT EXISTS auto_audio_after_msgs INTEGER;`);
+
     const delayCols = [
       'ai_in_delay_base_min_ms', 'ai_in_delay_base_max_ms', 'ai_in_delay_per_char_min_ms', 'ai_in_delay_per_char_max_ms',
       'ai_in_delay_cap_ms', 'ai_in_delay_jitter_min_ms', 'ai_in_delay_jitter_max_ms', 'ai_in_delay_total_min_ms', 'ai_in_delay_total_max_ms',
@@ -295,6 +298,9 @@ async function initDatabase() {
              openai_transcribe_language = COALESCE(openai_transcribe_language, 'pt'),
              openai_transcribe_prompt = COALESCE(openai_transcribe_prompt, ''),
              openai_transcribe_timeout_ms = COALESCE(openai_transcribe_timeout_ms, 60000),
+
+             auto_audio_enabled = COALESCE(auto_audio_enabled, FALSE),
+             auto_audio_after_msgs = COALESCE(auto_audio_after_msgs, 12),
 
              updated_at = NOW()
        WHERE id = 1;
@@ -519,6 +525,9 @@ async function getBotSettings({ bypassCache = false } = {}) {
       openai_transcribe_prompt,
       openai_transcribe_timeout_ms,
 
+      auto_audio_enabled,
+      auto_audio_after_msgs,
+
       updated_at
     FROM bot_settings
     WHERE id = 1
@@ -656,6 +665,9 @@ async function updateBotSettings(payload) {
       openai_transcribe_language,
       openai_transcribe_prompt,
       openai_transcribe_timeout_ms,
+
+      auto_audio_enabled,
+      auto_audio_after_msgs,
 
     } = payload;
 
@@ -812,6 +824,9 @@ async function updateBotSettings(payload) {
 
     const voiceNoteGrokModel = (voice_note_grok_model || '').trim() || null;
 
+    const autoAudioEnabled = toBoolOrNull(auto_audio_enabled);
+    const autoAudioAfterMsgs = clampInt(toIntOrNull(auto_audio_after_msgs), { min: 0, max: 100 });
+
     await client.query(
       `
       UPDATE bot_settings
@@ -935,6 +950,9 @@ async function updateBotSettings(payload) {
             zoompag_create_path = COALESCE($98, zoompag_create_path),
             zoompag_callback_base_url = COALESCE($99, zoompag_callback_base_url),
             zoompag_webhook_path = COALESCE($100, zoompag_webhook_path),
+
+            auto_audio_enabled = COALESCE($101, auto_audio_enabled),
+            auto_audio_after_msgs = COALESCE($102, auto_audio_after_msgs),
 
             updated_at = NOW()
        WHERE id = 1
@@ -1061,6 +1079,10 @@ async function updateBotSettings(payload) {
         zCreatePath,
         zCbBase,
         zWebhookPath,
+
+        autoAudioEnabled,
+        Number.isFinite(autoAudioAfterMsgs) ? autoAudioAfterMsgs : null,
+
       ]
     );
 

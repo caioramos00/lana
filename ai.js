@@ -241,6 +241,9 @@ function createAiEngine({ db, sendMessage, aiLog = () => { } } = {}) {
     const salesCooldownMinUserMsgs =
       clampInt(toNumberOrNull(s.ai_sales_cooldown_min_user_msgs), { min: 0, max: 200 }) ?? 12;
 
+    const autoAudioEnabled = (s.auto_audio_enabled === undefined || s.auto_audio_enabled === null) ? false : !!s.auto_audio_enabled;
+    const autoAudioAfterMsgs = clampInt(toNumberOrNull(s.auto_audio_after_msgs), { min: 5, max: 50 }) ?? 12;
+
     return {
       ai_provider,
 
@@ -271,6 +274,8 @@ function createAiEngine({ db, sendMessage, aiLog = () => { } } = {}) {
       outboundDelay,
       salesCooldownMs,
       salesCooldownMinUserMsgs,
+      autoAudioEnabled,
+      autoAudioAfterMsgs,
     };
   }
 
@@ -838,6 +843,7 @@ function createAiEngine({ db, sendMessage, aiLog = () => { } } = {}) {
     if (!st) return;
 
     const settings = global.botSettings || await db.getBotSettings();
+
     const systemPromptTpl = (settings?.system_prompt || '').trim();
 
     const cfg = readAiRuntimeConfig(settings);
@@ -875,7 +881,7 @@ function createAiEngine({ db, sendMessage, aiLog = () => { } } = {}) {
 
     const audioState = (typeof lead.getAudioState === 'function')
       ? lead.getAudioState(wa_id)
-      : (st.audio_policy || { text_streak_count: 0, next_audio_at: 12 });
+      : (st.audio_policy || { text_streak_count: 0 });
 
     const cooldownActive = (typeof lead.isCooldownActive === 'function') ? lead.isCooldownActive(wa_id) : false;
     const breakCooldown = looksLikeStrongBuyIntent(userTextForIntent);
@@ -890,10 +896,9 @@ function createAiEngine({ db, sendMessage, aiLog = () => { } } = {}) {
 
     facts.audio_policy = {
       lead_pediu_audio: !!askedAudio,
+      auto_enabled: cfg.autoAudioEnabled,
+      auto_after_msgs: cfg.autoAudioAfterMsgs,
       text_streak_count: audioState?.text_streak_count ?? 0,
-      next_audio_at: audioState?.next_audio_at ?? null,
-      auto_min: 10,
-      auto_max: 15,
       auto_max_seconds: 5,
     };
 
@@ -1011,13 +1016,7 @@ function createAiEngine({ db, sendMessage, aiLog = () => { } } = {}) {
 
     // ✅ AUTO_CURTO: agora calculamos ANTES de enviar texto,
     // simulando como se o streak fosse avançar pelos outItems
-    const autoDue =
-      !askedAudio &&
-      !modelWantsAudio &&
-      audioState &&
-      Number.isFinite(audioState.text_streak_count) &&
-      Number.isFinite(audioState.next_audio_at) &&
-      ((audioState.text_streak_count + outItems.length) >= audioState.next_audio_at);
+    const autoDue = cfg.autoAudioEnabled && audioState && Number.isFinite(audioState.text_streak_count) && ((audioState.text_streak_count + outItems.length) >= cfg.autoAudioAfterMsgs);
 
     // ✅ regra final: se for mandar áudio (qualquer um dos 3 tipos), suprime texto
     const shouldSendAudio = askedAudio || modelWantsAudio || autoDue;
@@ -1190,7 +1189,7 @@ function createAiEngine({ db, sendMessage, aiLog = () => { } } = {}) {
           reply_to_wamid: fallbackReplyToWamid || null,
         });
 
-        aiLog(`[AI][AUDIO][${wa_id}] OK mode=${mode} streak_reset next_at=${lead.getAudioState(wa_id)?.next_audio_at}`);
+        aiLog(`[AI][AUDIO][${wa_id}] OK mode=${mode} streak_reset`);
       }
     }
 
