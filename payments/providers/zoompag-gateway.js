@@ -6,19 +6,28 @@ function pick(obj, paths) {
   for (const p of paths) {
     let cur = obj;
     const keys = p.split('.');
+    let valid = true;
     for (const k of keys) {
-      if (!cur || typeof cur !== 'object') break;
+      if (!cur || typeof cur !== 'object') {
+        valid = false;
+        break;
+      }
       if (/^\d+$/.test(k) && Array.isArray(cur)) {
         const idx = parseInt(k, 10);
-        if (idx < 0 || idx >= cur.length) break;
-        cur = cur[idx];
+        if (idx >= 0 && idx < cur.length) {
+          cur = cur[idx];
+        } else {
+          valid = false;
+          break;
+        }
       } else if (k in cur) {
         cur = cur[k];
       } else {
+        valid = false;
         break;
       }
     }
-    if (cur != null) return cur;
+    if (valid && cur != null) return cur;
   }
   return null;
 }
