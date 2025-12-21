@@ -75,6 +75,10 @@ async function processPixWebhook(provider, payload) {
     console.log(`[${provider.toUpperCase()}][WEBHOOK][DB_WARN]`, { message: e?.message });
   }
 
+  if (!row && db) {
+    console.warn(`[${provider.toUpperCase()}][WEBHOOK][LOOKUP_FAIL] No row found for transaction_id`, { transaction_id: norm.transaction_id });
+  }
+
   let wa_id = row?.wa_id || null;
   if (!wa_id) wa_id = parseWaIdFromExternalId(norm?.external_id);
 

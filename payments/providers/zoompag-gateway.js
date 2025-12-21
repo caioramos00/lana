@@ -5,9 +5,18 @@ function upper(v) { return String(v || '').trim().toUpperCase(); }
 function pick(obj, paths) {
   for (const p of paths) {
     let cur = obj;
-    for (const k of p.split('.')) {
-      if (!cur || typeof cur !== 'object' || !(k in cur)) break;
-      cur = cur[k];
+    const keys = p.split('.');
+    for (const k of keys) {
+      if (!cur || typeof cur !== 'object') break;
+      if (/^\d+$/.test(k) && Array.isArray(cur)) {
+        const idx = parseInt(k, 10);
+        if (idx < 0 || idx >= cur.length) break;
+        cur = cur[idx];
+      } else if (k in cur) {
+        cur = cur[k];
+      } else {
+        break;
+      }
     }
     if (cur != null) return cur;
   }
