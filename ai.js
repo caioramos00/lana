@@ -3,6 +3,9 @@ const crypto = require('crypto');
 
 const { createActionRunner } = require('./actions');
 const senders = require('./senders');
+const db = require('./db');
+const lead = require('./lead');
+const { publishState } = require('./stream/events-bus');
 const { CONFIG } = require('./actions/config');
 const { createPaymentsModule } = require('./payments/payment-module');
 const payments = createPaymentsModule({ db, lead, publishState });
