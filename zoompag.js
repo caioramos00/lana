@@ -61,21 +61,14 @@ async function createPixCharge(payload) {
   if (!key) throw new Error('Zoompag config missing (api_key).');
   const url = `${b}${createPath()}`;
   const headers = { 'Content-Type': 'application/json', ...authHeaders() };
-  console.log('[ZOOMPAG] Sending POST to URL:', url);
-  console.log('[ZOOMPAG] With headers (API key redacted):', JSON.stringify({ 'Content-Type': 'application/json' }, null, 2)); // Redact API key for safety
-  console.log('[ZOOMPAG] With payload:', JSON.stringify(payload, null, 2));
   try {
     const { data } = await axios.post(url, payload, {
       headers,
       timeout: 60000,
     });
-    console.log('[ZOOMPAG] Successful response data:', JSON.stringify(data, null, 2));
     return data;
   } catch (err) {
-    console.log('[ZOOMPAG] Error during createPixCharge:', err.message);
     if (err.response) {
-      console.log('[ZOOMPAG] Error response status:', err.response.status);
-      console.log('[ZOOMPAG] Error response data:', JSON.stringify(err.response.data, null, 2));
     }
     throw toZoompagError(err, { step: 'createPixCharge' });
   }
