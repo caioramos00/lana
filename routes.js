@@ -2,6 +2,15 @@
 
 const path = require('path');
 const fs = require('fs');
+const crypto = require('crypto');
+
+app.use(
+  express.json({
+    verify: (req, _res, buf) => {
+      req.rawBody = buf;
+    },
+  })
+);
 
 let FormData = null;
 try { FormData = require('form-data'); } catch { /* ok */ }
@@ -9,6 +18,149 @@ try { FormData = require('form-data'); } catch { /* ok */ }
 const { downloadMetaMediaToTempFile } = require('./senders');
 const { transcribeAudioOpenAI } = require('./transcribe');
 const { createPaymentsModule } = require('./payments/payment-module');
+
+function safeTsMsFromSeconds(tsSec) {
+  const n = Number(tsSec);
+  if (!Number.isFinite(n) || n <= 0) return Date.now();
+  const ms = n * 1000;
+  return Number.isFinite(ms) && ms > 0 ? ms : Date.now();
+}
+
+function collapseOneLine(s) {
+  return String(s || '').replace(/\s+/g, ' ').trim();
+}
+
+function timingSafeEqualHex(a, b) {
+  try {
+    const ba = Buffer.from(String(a || ''), 'utf8');
+    const bb = Buffer.from(String(b || ''), 'utf8');
+    if (ba.length !== bb.length) return false;
+    return crypto.timingSafeEqual(ba, bb);
+  } catch {
+    return false;
+  }
+}
+
+function verifyMetaSignature(req, appSecret) {
+  // Header vem como: "sha256=<hex>"
+  const sig = String(req.get('X-Hub-Signature-256') || '').trim();
+  if (!sig || !sig.startsWith('sha256=')) return false;
+
+  const provided = sig.slice('sha256='.length);
+  const raw = req.rawBody || Buffer.from(JSON.stringify(req.body || {}));
+
+  const expected = crypto.createHmac('sha256', appSecret).update(raw).digest('hex');
+  return timingSafeEqualHex(provided, expected);
+}
+
+function getInboundContact(value, wa_id) {
+  const contacts = Array.isArray(value.contacts) ? value.contacts : [];
+  const found =
+    contacts.find(c => String(c?.wa_id || '').trim() === String(wa_id || '').trim()) ||
+    contacts[0] ||
+    null;
+  return found;
+}
+
+// Extrai “texto útil” para IA/histórico em vários tipos (text, interactive, button, etc.)
+function extractInboundText(m) {
+  const type = String(m?.type || '').trim();
+
+  if (type === 'text') return m?.text?.body || '';
+
+  if (type === 'interactive') {
+    const it = m?.interactive || {};
+    const itType = String(it?.type || '').trim();
+
+    if (itType === 'button_reply') {
+      const t = it?.button_reply?.title || it?.button_reply?.id || '';
+      return t ? `[btn] ${t}` : '[interactive]';
+    }
+
+    if (itType === 'list_reply') {
+      const t = it?.list_reply?.title || it?.list_reply?.id || '';
+      return t ? `[list] ${t}` : '[interactive]';
+    }
+
+    return '[interactive]';
+  }
+
+  // WhatsApp Cloud às vezes manda reply de botão assim:
+  if (type === 'button') {
+    const t = m?.button?.text || m?.button?.payload || '';
+    return t ? `[btn] ${t}` : '[button]';
+  }
+
+  if (type === 'reaction') {
+    const emoji = m?.reaction?.emoji || '';
+    const to = m?.reaction?.message_id || '';
+    return `[reaction] ${emoji}${to ? ` -> ${to}` : ''}`.trim();
+  }
+
+  if (type === 'image') return m?.image?.caption ? collapseOneLine(m.image.caption) : '[image]';
+  if (type === 'video') return m?.video?.caption ? collapseOneLine(m.video.caption) : '[video]';
+  if (type === 'document') return m?.document?.caption ? collapseOneLine(m.document.caption) : `[document] ${m?.document?.filename || ''}`.trim();
+  if (type === 'audio') return '[audio]';
+  if (type === 'sticker') return '[sticker]';
+  if (type === 'location') {
+    const lat = m?.location?.latitude;
+    const lng = m?.location?.longitude;
+    return `[location] ${lat ?? ''},${lng ?? ''}`.trim();
+  }
+
+  return `[${type || 'msg'}]`;
+}
+
+function mergeTranscriptIntoAudioHistory({ wa_id, wamid, mediaId, transcriptText }) {
+  try {
+    // se você já tem uma implementação própria, ela ganha:
+    if (typeof globalThis.mergeTranscriptIntoAudioHistory === 'function' && globalThis.mergeTranscriptIntoAudioHistory !== mergeTranscriptIntoAudioHistory) {
+      return globalThis.mergeTranscriptIntoAudioHistory({ wa_id, wamid, mediaId, transcriptText });
+    }
+  } catch { }
+
+  try {
+    const stLead = lead?.getLead?.(wa_id);
+    if (!stLead) return { ok: false, reason: 'no-lead' };
+
+    const hist =
+      (Array.isArray(stLead.history) && stLead.history) ||
+      (Array.isArray(stLead.hist) && stLead.hist) ||
+      (Array.isArray(stLead.chat_history) && stLead.chat_history) ||
+      (Array.isArray(stLead.messages) && stLead.messages) ||
+      null;
+
+    if (!hist) return { ok: false, reason: 'no-history-array' };
+
+    for (let i = hist.length - 1; i >= 0; i--) {
+      const h = hist[i] || {};
+      const meta = h?.meta || {};
+      const hwamid = String(meta?.wamid || h?.wamid || h?.id || '').trim();
+      const hkind = String(meta?.kind || h?.kind || h?.type || '').trim();
+
+      const htext = String(h?.text ?? h?.msg ?? h?.message ?? '').trim();
+      const looksLikeAudio = htext.includes('[audio]') || hkind === 'audio';
+
+      if (hwamid && hwamid === String(wamid || '').trim() && looksLikeAudio) {
+        const merged = collapseOneLine(`${htext || '[audio]'} ${transcriptText}`);
+
+        if (h.text !== undefined) h.text = merged;
+        else if (h.msg !== undefined) h.msg = merged;
+        else if (h.message !== undefined) h.message = merged;
+        else h.text = merged;
+
+        h.meta = { ...meta, kind: 'audio', wamid, mediaId, has_transcript: true };
+        hist[i] = h;
+
+        return { ok: true, idx: i };
+      }
+    }
+
+    return { ok: false, reason: 'not-found' };
+  } catch (e) {
+    return { ok: false, reason: e?.message || 'err' };
+  }
+}
 
 function registerRoutes(app, {
   db,
@@ -190,25 +342,38 @@ function registerRoutes(app, {
     }
   });
 
-  app.get('/webhook', async (req, res) => {
-    const mode = req.query['hub.mode'];
-    const token = req.query['hub.verify_token'];
-    const challenge = req.query['hub.challenge'];
-
+  app.get('/webhook', (req, res) => {
     try {
-      const settings = await db.getBotSettings();
-      const VERIFY_TOKEN = (settings?.contact_token || '').trim();
+      const mode = req.query['hub.mode'];
+      const token = req.query['hub.verify_token'];
+      const challenge = req.query['hub.challenge'];
 
-      if (mode === 'subscribe' && token && VERIFY_TOKEN && token === VERIFY_TOKEN) {
-        return res.status(200).send(challenge);
+      const VERIFY_TOKEN = process.env.META_VERIFY_TOKEN || process.env.WHATSAPP_VERIFY_TOKEN || '';
+
+      if (mode === 'subscribe' && token && token === VERIFY_TOKEN) {
+        return res.status(200).send(String(challenge || ''));
       }
+
       return res.sendStatus(403);
     } catch {
-      return res.sendStatus(500);
+      return res.sendStatus(403);
     }
   });
 
   app.post('/webhook', async (req, res) => {
+    // 1) valida assinatura (antes de responder 200)
+    try {
+      const APP_SECRET = process.env.META_APP_SECRET || '';
+      if (APP_SECRET) {
+        const ok = verifyMetaSignature(req, APP_SECRET);
+        if (!ok) return res.sendStatus(401);
+      }
+    } catch {
+      // se der erro na validação, melhor negar do que aceitar silencioso
+      return res.sendStatus(401);
+    }
+
+    // 2) ACK imediato
     res.sendStatus(200);
 
     const body = req.body || {};
@@ -220,33 +385,38 @@ function registerRoutes(app, {
         const changes = Array.isArray(e.changes) ? e.changes : [];
 
         for (const ch of changes) {
-          const value = ch.value || {};
+          const value = ch?.value || {};
           const inboundPhoneNumberId = value?.metadata?.phone_number_id || null;
 
           const statuses = Array.isArray(value.statuses) ? value.statuses : [];
           for (const st of statuses) {
-            publishAck?.({
-              wa_id: st.recipient_id || '',
-              wamid: st.id || '',
-              status: st.status || '',
-              ts: Number(st.timestamp) * 1000 || Date.now(),
-            });
+            try {
+              publishAck?.({
+                wa_id: st.recipient_id || '',
+                wamid: st.id || '',
+                status: st.status || '',
+                ts: safeTsMsFromSeconds(st.timestamp),
+              });
+            } catch { }
           }
 
           const msgs = Array.isArray(value.messages) ? value.messages : [];
           for (const m of msgs) {
-            const wa_id = m.from;
-            const wamid = m.id;
-            const type = m.type;
+            const wa_id = String(m?.from || '').trim();
+            const wamid = String(m?.id || '').trim();
+            const type = String(m?.type || '').trim();
+
+            if (!wa_id || !wamid) continue;
 
             // ✅ DEDUPE AQUI (entrada)
-            if (lead && typeof lead.markInboundWamidSeen === 'function') {
-              const r = lead.markInboundWamidSeen(wa_id, wamid);
-              if (r?.duplicate) {
-                continue;
+            try {
+              if (lead && typeof lead.markInboundWamidSeen === 'function') {
+                const r = lead.markInboundWamidSeen(wa_id, wamid);
+                if (r?.duplicate) continue;
               }
-            }
+            } catch { }
 
+            // tenta carregar state e guardar meta_phone_number_id
             let stLead = null;
 
             try {
@@ -257,179 +427,181 @@ function registerRoutes(app, {
 
               // ✅ CAPTURA + LOG do PRIMEIRO inbound
               if (stLead && !stLead.first_inbound_payload) {
-                const contact =
-                  Array.isArray(value.contacts)
-                    ? (value.contacts.find(c => String(c?.wa_id || '').trim() === String(wa_id || '').trim()) || value.contacts[0] || null)
-                    : null;
+                const contact = getInboundContact(value, wa_id);
 
                 const snapshot = {
                   captured_at_iso: new Date().toISOString(),
                   captured_ts_ms: Date.now(),
 
-                  wa_id: String(wa_id || '').trim(),
-                  wamid: String(wamid || '').trim(),
-                  type: String(type || '').trim(),
+                  wa_id,
+                  wamid,
+                  type,
                   inboundPhoneNumberId: inboundPhoneNumberId || null,
 
-                  // texto “cru” quando for text (ajuda debug rápido)
-                  text_body: (type === 'text') ? (m?.text?.body || '') : null,
+                  text_body: type === 'text' ? (m?.text?.body || '') : null,
 
-                  // ✅ CTWA costuma vir aqui
                   referral: m?.referral || null,
-
-                  // contexto (às vezes vem encadeado)
                   context: m?.context || null,
 
-                  // contato/metadata (úteis pra match e auditoria)
                   contact: contact || null,
                   metadata: value?.metadata || null,
 
-                  // snapshot da msg completa (guarda tudo que a Meta mandou nessa msg)
                   message: m || null,
                 };
 
-                // salva em memória (lead state)
                 stLead.first_inbound_payload = snapshot;
                 stLead.first_inbound_captured_ts = snapshot.captured_ts_ms;
 
-                // loga no console (bem visível)
                 console.log('[INBOUND][FIRST_MESSAGE_CAPTURED]');
                 console.log(JSON.stringify(snapshot, null, 2));
               }
             } catch { }
 
-            let text = '';
-            if (type === 'text') text = m.text?.body || '';
-            else text = `[${type || 'msg'}]`;
+            // Texto “canônico” pra histórico/IA
+            const extracted = extractInboundText(m);
+            const textForLog = extracted || `[${type || 'msg'}]`;
+            console.log(`[${wa_id}] ${textForLog}`);
 
-            console.log(`[${wa_id}] ${text}`);
+            // histórico “cru”
+            try {
+              lead?.pushHistory?.(wa_id, 'user', textForLog, { wamid, kind: type });
+            } catch { }
 
-            // histórico “cru” do evento recebido
-            lead?.pushHistory?.(wa_id, 'user', text, { wamid, kind: type });
-
-            publishMessage?.({
-              dir: 'in',
-              wa_id,
-              wamid,
-              kind: type,
-              text,
-              ts: Number(m.timestamp) * 1000 || Date.now(),
-            });
-
-            publishState?.({ wa_id, etapa: 'RECEBIDO', vars: { kind: type }, ts: Date.now() });
-
-            if (type === 'text') {
-              lead?.enqueueInboundText?.({
+            // SSE/debug
+            try {
+              publishMessage?.({
+                dir: 'in',
                 wa_id,
-                inboundPhoneNumberId,
-                text,
                 wamid,
+                kind: type,
+                text: textForLog,
+                ts: safeTsMsFromSeconds(m?.timestamp),
               });
+            } catch { }
+
+            try {
+              publishState?.({ wa_id, etapa: 'RECEBIDO', vars: { kind: type }, ts: Date.now() });
+            } catch { }
+
+            const shouldEnqueueAsText = type === 'text' || type === 'interactive' || type === 'button' || type === 'reaction';
+
+            if (shouldEnqueueAsText) {
+              try {
+                const clean = collapseOneLine(textForLog);
+                if (clean) {
+                  lead?.enqueueInboundText?.({
+                    wa_id,
+                    inboundPhoneNumberId,
+                    text: clean,
+                    wamid,
+                  });
+                }
+              } catch { }
             }
 
             if (type === 'audio') {
-              const mediaId = String(m.audio?.id || '').trim();
+              const mediaId = String(m?.audio?.id || '').trim();
 
-              // se não tiver mediaId, não tem o que transcrever
-              if (mediaId) {
-                (async () => {
-                  let tmp = null;
-                  try {
-                    const settingsNow = await db.getBotSettings();
+              // sem mediaId, não tem transcrição
+              if (!mediaId) continue;
 
-                    const sttEnabled =
-                      (settingsNow?.openai_transcribe_enabled === undefined || settingsNow?.openai_transcribe_enabled === null)
-                        ? true
-                        : !!settingsNow.openai_transcribe_enabled;
+              (async () => {
+                let tmp = null;
 
-                    if (!sttEnabled) {
-                      console.log('[AUDIO][TRANSCRIBE][SKIP]', { wa_id, reason: 'disabled' });
-                      publishState?.({ wa_id, etapa: 'AUDIO_TRANSCRIBE_DISABLED', vars: {}, ts: Date.now() });
-                      return;
-                    }
+                try {
+                  const settingsNow = await db.getBotSettings();
 
-                    // baixa áudio pra temp
-                    const dl = await downloadMetaMediaToTempFile(wa_id, mediaId, {
-                      meta_phone_number_id: inboundPhoneNumberId || null,
-                    });
+                  const sttEnabled =
+                    settingsNow?.openai_transcribe_enabled === undefined || settingsNow?.openai_transcribe_enabled === null
+                      ? true
+                      : !!settingsNow.openai_transcribe_enabled;
 
-                    tmp = dl?.filePath || null;
-
-                    // transcreve
-                    const tr = await transcribeAudioOpenAI({ filePath: tmp, settings: settingsNow });
-
-                    if (!tr?.ok) {
-                      console.log('[AUDIO][TRANSCRIBE][FAIL]', { wa_id, reason: tr?.reason });
-                      publishState?.({ wa_id, etapa: 'AUDIO_TRANSCRIBE_FAIL', vars: { reason: tr?.reason || '' }, ts: Date.now() });
-                      return;
-                    }
-
-                    const transcriptText = collapseOneLine(tr.text);
-                    if (!transcriptText) {
-                      console.log('[AUDIO][TRANSCRIBE][FAIL]', { wa_id, reason: 'empty-transcript' });
-                      publishState?.({ wa_id, etapa: 'AUDIO_TRANSCRIBE_FAIL', vars: { reason: 'empty-transcript' }, ts: Date.now() });
-                      return;
-                    }
-
-                    // ✅ NOVO: transforma "USER: [audio]" em "USER: [audio] <transcrição>" (uma linha só)
-                    const merged = mergeTranscriptIntoAudioHistory({
-                      wa_id,
-                      wamid,
-                      mediaId,
-                      transcriptText,
-                    });
-
-                    if (!merged?.ok) {
-                      console.log('[AUDIO][TRANSCRIBE][MERGE_FAIL]', { wa_id, reason: merged?.reason });
-                      // fallback: se não achou a entrada pra editar, ao menos não cria 2 linhas no histórico.
-                      // (mantém só o [audio] já existente, e segue com inbound do transcript)
-                    }
-
-                    // (mantém um wamid derivado só pro SSE/debug, sem mexer no reply threading)
-                    const transcriptWamid = `${wamid}:transcript`;
-
-                    publishMessage?.({
-                      dir: 'in',
-                      wa_id,
-                      wamid: transcriptWamid,
-                      kind: 'text',
-                      text: transcriptText,
-                      ts: Date.now(),
-                      meta: { is_transcript: true, source_kind: 'audio', source_wamid: wamid },
-                    });
-
-                    publishState?.({
-                      wa_id,
-                      etapa: 'AUDIO_TRANSCRIBE_OK',
-                      vars: { model: tr.model || '', source_wamid: wamid },
-                      ts: Date.now(),
-                    });
-
-                    // ✅ NOVO: inbound para IA também vai com tag + transcrição numa linha (e usa wamid real)
-                    const combinedInbound = `[audio] ${transcriptText}`.trim();
-
-                    lead?.enqueueInboundText?.({
-                      wa_id,
-                      inboundPhoneNumberId,
-                      text: combinedInbound,
-                      wamid, // usa o wamid REAL do áudio (evita reply_to_wamid inválido)
-                    });
-                  } catch (e) {
-                    console.log('[AUDIO][TRANSCRIBE][ERR]', { wa_id, message: e?.message });
-                    publishState?.({ wa_id, etapa: 'AUDIO_TRANSCRIBE_ERR', vars: { message: e?.message || '' }, ts: Date.now() });
-                  } finally {
-                    if (tmp) {
-                      try { fs.unlinkSync(tmp); } catch { }
-                    }
+                  if (!sttEnabled) {
+                    console.log('[AUDIO][TRANSCRIBE][SKIP]', { wa_id, reason: 'disabled' });
+                    publishState?.({ wa_id, etapa: 'AUDIO_TRANSCRIBE_DISABLED', vars: {}, ts: Date.now() });
+                    return;
                   }
-                })();
-              }
+
+                  // baixa áudio pra temp
+                  const dl = await downloadMetaMediaToTempFile(wa_id, mediaId, {
+                    meta_phone_number_id: inboundPhoneNumberId || null,
+                  });
+
+                  tmp = dl?.filePath || null;
+
+                  // transcreve
+                  const tr = await transcribeAudioOpenAI({ filePath: tmp, settings: settingsNow });
+
+                  if (!tr?.ok) {
+                    console.log('[AUDIO][TRANSCRIBE][FAIL]', { wa_id, reason: tr?.reason });
+                    publishState?.({ wa_id, etapa: 'AUDIO_TRANSCRIBE_FAIL', vars: { reason: tr?.reason || '' }, ts: Date.now() });
+                    return;
+                  }
+
+                  const transcriptText = collapseOneLine(tr.text);
+                  if (!transcriptText) {
+                    console.log('[AUDIO][TRANSCRIBE][FAIL]', { wa_id, reason: 'empty-transcript' });
+                    publishState?.({ wa_id, etapa: 'AUDIO_TRANSCRIBE_FAIL', vars: { reason: 'empty-transcript' }, ts: Date.now() });
+                    return;
+                  }
+
+                  // ✅ transforma "USER: [audio]" em "USER: [audio] <transcrição>" (1 linha)
+                  const merged = mergeTranscriptIntoAudioHistory({
+                    wa_id,
+                    wamid,
+                    mediaId,
+                    transcriptText,
+                  });
+
+                  if (!merged?.ok) {
+                    console.log('[AUDIO][TRANSCRIBE][MERGE_FAIL]', { wa_id, reason: merged?.reason });
+                  }
+
+                  // SSE/debug (wamid derivado só pra UI)
+                  const transcriptWamid = `${wamid}:transcript`;
+
+                  publishMessage?.({
+                    dir: 'in',
+                    wa_id,
+                    wamid: transcriptWamid,
+                    kind: 'text',
+                    text: transcriptText,
+                    ts: Date.now(),
+                    meta: { is_transcript: true, source_kind: 'audio', source_wamid: wamid },
+                  });
+
+                  publishState?.({
+                    wa_id,
+                    etapa: 'AUDIO_TRANSCRIBE_OK',
+                    vars: { model: tr.model || '', source_wamid: wamid },
+                    ts: Date.now(),
+                  });
+
+                  // ✅ inbound pra IA: “[audio] <texto>” numa linha e usando o wamid REAL do áudio
+                  const combinedInbound = collapseOneLine(`[audio] ${transcriptText}`);
+
+                  lead?.enqueueInboundText?.({
+                    wa_id,
+                    inboundPhoneNumberId,
+                    text: combinedInbound,
+                    wamid, // usa o wamid REAL do áudio (evita reply_to_wamid inválido)
+                  });
+                } catch (e) {
+                  console.log('[AUDIO][TRANSCRIBE][ERR]', { wa_id, message: e?.message });
+                  publishState?.({ wa_id, etapa: 'AUDIO_TRANSCRIBE_ERR', vars: { message: e?.message || '' }, ts: Date.now() });
+                } finally {
+                  if (tmp) {
+                    try {
+                      fs.unlinkSync(tmp);
+                    } catch { }
+                  }
+                }
+              })();
             }
           }
         }
       }
     } catch {
-      // sem logs
     }
   });
 

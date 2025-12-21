@@ -181,6 +181,12 @@ async function initDatabase() {
 
     await alter(`ALTER TABLE bot_settings ADD COLUMN IF NOT EXISTS utmify_api_token TEXT;`);
 
+    await alter(`ALTER TABLE bot_settings ADD COLUMN IF NOT EXISTS meta_ads_access_token TEXT;`);
+    await alter(`ALTER TABLE bot_settings ADD COLUMN IF NOT EXISTS meta_ads_ad_account_id TEXT;`);
+    await alter(`ALTER TABLE bot_settings ADD COLUMN IF NOT EXISTS meta_ads_api_version TEXT;`);
+    await alter(`ALTER TABLE bot_settings ADD COLUMN IF NOT EXISTS meta_ads_timeout_ms INTEGER;`);
+    await alter(`ALTER TABLE bot_settings ADD COLUMN IF NOT EXISTS meta_ads_cache_ttl_ms INTEGER;`);
+
     const delayCols = [
       'ai_in_delay_base_min_ms', 'ai_in_delay_base_max_ms', 'ai_in_delay_per_char_min_ms', 'ai_in_delay_per_char_max_ms',
       'ai_in_delay_cap_ms', 'ai_in_delay_jitter_min_ms', 'ai_in_delay_jitter_max_ms', 'ai_in_delay_total_min_ms', 'ai_in_delay_total_max_ms',
@@ -296,6 +302,10 @@ async function initDatabase() {
              auto_audio_after_msgs = COALESCE(auto_audio_after_msgs, 12),
 
              utmify_api_token = COALESCE(utmify_api_token, ''),
+
+             meta_ads_api_version = COALESCE(meta_ads_api_version, 'v23.0'),
+             meta_ads_timeout_ms = COALESCE(meta_ads_timeout_ms, 15000),
+             meta_ads_cache_ttl_ms = COALESCE(meta_ads_cache_ttl_ms, 3600000),
 
              updated_at = NOW()
        WHERE id = 1;
@@ -525,6 +535,12 @@ async function getBotSettings({ bypassCache = false } = {}) {
 
       utmify_api_token,
 
+      meta_ads_access_token,
+      meta_ads_ad_account_id,
+      meta_ads_api_version,
+      meta_ads_timeout_ms,
+      meta_ads_cache_ttl_ms,
+
       updated_at
     FROM bot_settings
     WHERE id = 1
@@ -667,6 +683,12 @@ async function updateBotSettings(payload) {
       auto_audio_after_msgs,
 
       utmify_api_token,
+
+      meta_ads_access_token,
+      meta_ads_ad_account_id,
+      meta_ads_api_version,
+      meta_ads_timeout_ms,
+      meta_ads_cache_ttl_ms,
 
     } = payload;
 
@@ -832,6 +854,12 @@ async function updateBotSettings(payload) {
 
     const utmifyApiToken = (utmify_api_token || '').trim() || null;
 
+    const metaAdsToken = (meta_ads_access_token || '').trim() || null;
+    const metaAdsAccount = (meta_ads_ad_account_id || '').trim() || null;
+    const metaAdsVersion = (meta_ads_api_version || '').trim() || null;
+    const metaAdsTimeout = clampInt(toIntOrNull(meta_ads_timeout_ms), { min: 1000, max: 120000 });
+    const metaAdsCacheTtl = clampInt(toIntOrNull(meta_ads_cache_ttl_ms), { min: 0, max: 604800000 });
+
     await client.query(
       `
       UPDATE bot_settings
@@ -960,6 +988,12 @@ async function updateBotSettings(payload) {
             auto_audio_after_msgs = COALESCE($102, auto_audio_after_msgs),
 
             utmify_api_token = COALESCE($103, utmify_api_token),
+
+            meta_ads_access_token = COALESCE($104, meta_ads_access_token),
+            meta_ads_ad_account_id = COALESCE($105, meta_ads_ad_account_id),
+            meta_ads_api_version = COALESCE($106, meta_ads_api_version),
+            meta_ads_timeout_ms = COALESCE($107, meta_ads_timeout_ms),
+            meta_ads_cache_ttl_ms = COALESCE($108, meta_ads_cache_ttl_ms),
 
             updated_at = NOW()
        WHERE id = 1
@@ -1091,6 +1125,12 @@ async function updateBotSettings(payload) {
         Number.isFinite(autoAudioAfterMsgs) ? autoAudioAfterMsgs : null,
 
         utmifyApiToken,
+
+        metaAdsToken,
+        metaAdsAccount,
+        metaAdsVersion,
+        Number.isFinite(metaAdsTimeout) ? metaAdsTimeout : null,
+        Number.isFinite(metaAdsCacheTtl) ? metaAdsCacheTtl : null,
 
       ]
     );

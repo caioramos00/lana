@@ -58,6 +58,55 @@
 
               <hr class="my-3" />
 
+              <div class="col-12">
+                <h3 class="mt-3">Meta • Marketing API (Campanhas)</h3>
+                <div class="form-text">
+                  Usado para resolver <b>Campanha / Conjunto / Anúncio</b> a partir do <code>referral.source_id</code>
+                  (CTWA).
+                  Se este token estiver vazio, o backend usa o <b>Graph API Access Token</b> global como fallback.
+                </div>
+              </div>
+
+              <div class="col-12">
+                <label class="form-label">Meta Ads Access Token</label>
+                <input type="text" class="form-control" name="meta_ads_access_token"
+                  value="<%= (s.meta_ads_access_token || '') %>" placeholder="EAAB...">
+                <div class="form-text">
+                  Precisa ter permissão <code>ads_read</code> (ou superior) e acesso à conta de anúncios.
+                </div>
+              </div>
+
+              <div class="col-md-4">
+                <label class="form-label">Ad Account ID (opcional)</label>
+                <input type="text" class="form-control" name="meta_ads_ad_account_id"
+                  value="<%= (s.meta_ads_ad_account_id || '') %>" placeholder="act_123...">
+                <div class="form-text">Opcional (fica pronto pra insights depois).</div>
+              </div>
+
+              <div class="col-md-4">
+                <label class="form-label">Graph API Version</label>
+                <input type="text" class="form-control" name="meta_ads_api_version"
+                  value="<%= (s.meta_ads_api_version !== undefined && s.meta_ads_api_version !== null) ? s.meta_ads_api_version : 'v20.0' %>"
+                  placeholder="v20.0">
+              </div>
+
+              <div class="col-md-4">
+                <label class="form-label">Timeout (ms)</label>
+                <input type="number" class="form-control" name="meta_ads_timeout_ms"
+                  value="<%= (s.meta_ads_timeout_ms !== undefined && s.meta_ads_timeout_ms !== null) ? s.meta_ads_timeout_ms : 15000 %>"
+                  min="1000" max="120000" step="500">
+              </div>
+
+              <div class="col-md-4">
+                <label class="form-label">Cache TTL (ms)</label>
+                <input type="number" class="form-control" name="meta_ads_cache_ttl_ms"
+                  value="<%= (s.meta_ads_cache_ttl_ms !== undefined && s.meta_ads_cache_ttl_ms !== null) ? s.meta_ads_cache_ttl_ms : 3600000 %>"
+                  min="0" max="604800000" step="1000">
+                <div class="form-text">Cache em memória (0 desativa).</div>
+              </div>
+
+              <hr class="my-3" />
+
               <!-- =========================
       PAGAMENTOS • MULTI-GATEWAY
       - Dropdown escolhe gateway padrão
@@ -230,7 +279,8 @@
 
               <div class="col-12">
                 <label class="form-label">Utmify API Token</label>
-                <input type="text" class="form-control" name="utmify_api_token" value="<%= (s.utmify_api_token || '') %>" placeholder="ex.: KVRxalfMiBfm8Rm1nP5YxfwYzArNsA0VLeWC">
+                <input type="text" class="form-control" name="utmify_api_token"
+                  value="<%= (s.utmify_api_token || '') %>" placeholder="ex.: KVRxalfMiBfm8Rm1nP5YxfwYzArNsA0VLeWC">
                 <div class="form-text">Credencial de API para enviar vendas pendentes e aprovadas.</div>
               </div>
 
@@ -635,8 +685,8 @@
                 <div class="form-check">
                   <input type="hidden" name="lead_debug_debounce" value="0" />
                   <input class="form-check-input" type="checkbox" name="lead_debug_debounce" value="1"
-                    id="lead_debug_debounce" <%=((s.lead_debug_debounce===undefined || s.lead_debug_debounce===null)
-                    ? true : !!s.lead_debug_debounce) ? 'checked' : '' %> />
+                    id="lead_debug_debounce" <%=((s.lead_debug_debounce===undefined || s.lead_debug_debounce===null) ?
+                    true : !!s.lead_debug_debounce) ? 'checked' : '' %> />
                   <label class="form-check-label" for="lead_debug_debounce">
                     Debug Debounce (logs do lead.js)
                   </label>
@@ -652,7 +702,9 @@
               <div class="col-12">
                 <div class="form-check">
                   <input type="hidden" name="auto_audio_enabled" value="0" />
-                  <input class="form-check-input" type="checkbox" name="auto_audio_enabled" value="1" id="auto_audio_enabled" <%=((s.auto_audio_enabled===undefined || s.auto_audio_enabled===null) ? false : !!s.auto_audio_enabled) ? 'checked' : '' %> />
+                  <input class="form-check-input" type="checkbox" name="auto_audio_enabled" value="1"
+                    id="auto_audio_enabled" <%=((s.auto_audio_enabled===undefined || s.auto_audio_enabled===null) ?
+                    false : !!s.auto_audio_enabled) ? 'checked' : '' %> />
                   <label class="form-check-label" for="auto_audio_enabled">
                     Ativar áudio automático
                   </label>
@@ -662,7 +714,8 @@
               <div class="col-md-4">
                 <label class="form-label">Quantidade de mensagens</label>
                 <input type="number" class="form-control" name="auto_audio_after_msgs"
-                  value="<%= (s.auto_audio_after_msgs !== undefined && s.auto_audio_after_msgs !== null) ? s.auto_audio_after_msgs : 12 %>" min="15" max="1000" step="1">
+                  value="<%= (s.auto_audio_after_msgs !== undefined && s.auto_audio_after_msgs !== null) ? s.auto_audio_after_msgs : 12 %>"
+                  min="15" max="1000" step="1">
               </div>
 
               <hr class="my-3" />
