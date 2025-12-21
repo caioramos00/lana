@@ -34,7 +34,7 @@ async function sendToUtmify(status, data) {
       phone: data.payer_phone || null,
       document: data.payer_document || null,
       country: 'BR',
-      ip: null,
+      ip: '0.0.0.0',
     },
     products: [
       {
@@ -61,7 +61,7 @@ async function sendToUtmify(status, data) {
       userCommissionInCents: amountCents,
       currency: 'BRL',
     },
-    isTest: true, // start with true, change to false in production
+    isTest: false, // start with true, change to false in production
   };
 
   try {
