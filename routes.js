@@ -1,7 +1,6 @@
 'use strict';
 
 const path = require('path');
-const axios = require('axios');
 const fs = require('fs');
 
 let FormData = null;
@@ -12,135 +11,7 @@ const { downloadMetaMediaToTempFile } = require('./senders');
 const { transcribeAudioOpenAI } = require('./transcribe');
 const pix = require('./payments/pix');
 const utmify = require('./payments/utmify');
-const { publishState } = require('./stream/events-bus');
-
-function parseWaIdFromExternalId(external_id) {
-  // seu external_id é: ord_<wa>_<key>_<ts>_<rand>
-  // ex.: ord_5511999999999_fase_xxx_yyy
-  const s = String(external_id || '').trim();
-  const m = s.match(/^ord_(\d{6,18})_/);
-  return m ? m[1] : null;
-}
-
-// Mapa default de allowed event types por provider (uppercase, baseado em padrões PIX)
-const DEFAULT_ALLOWED_EVENT_TYPES = {
-  zoompag: new Set(['TRANSACTION', 'TRANSACTION_PAID', 'PAID', 'COMPLETED', 'APPROVED', 'PAYMENT_UPDATED']),
-  rapdyn: new Set(['TRANSACTION', 'TRANSACTION_PAID', 'PAID', 'COMPLETED', 'APPROVED', 'PAYMENT_CREATED']),
-  veltrax: null, // null = processa todos (sem filtro, como atual)
-};
-
-// Função global para validar eventType
-async function isAllowedEventType(provider, eventType) {
-  const settings = global.botSettings || await db.getBotSettings();
-  const key = `${provider}_allowed_event_types`;
-  const customSet = settings[key] ? new Set(settings[key].split(',').map(s => s.trim().toUpperCase())) : null;
-  const allowed = customSet || DEFAULT_ALLOWED_EVENT_TYPES[provider] || new Set(); // Fallback vazio = skipa tudo
-  if (allowed === null) return true; // Sem filtro para o provider
-  return allowed.has(String(eventType || '').toUpperCase());
-}
-
-async function processPixWebhook(provider, payload) {
-  const norm = pix.normalizeWebhook(provider, payload);
-  const st = String(norm?.status || '').trim();
-  console.log(`[${provider.toUpperCase()}][WEBHOOK]`, { status: st, transaction_id: norm?.transaction_id, external_id: norm?.external_id, total: norm?.total });
-
-  let row = null;
-  try {
-    if (!db) {
-      console.error(`[${provider.toUpperCase()}][WEBHOOK][DB_ERROR] db not defined - using fallback for Utmify`);
-    } else {
-      // Se external_id null, lookup por transaction_id
-      let lookupField = 'external_id';
-      let lookupValue = norm?.external_id;
-      if (!lookupValue && norm?.transaction_id) {
-        lookupField = 'transaction_id';
-        lookupValue = norm.transaction_id;
-        row = await db.getPixDepositByTransactionId(provider, lookupValue);
-        if (row) {
-          console.log(`[${provider.toUpperCase()}][WEBHOOK][LOOKUP_OK] Found row by transaction_id`, { external_id: row.external_id });
-          norm.external_id = row.external_id; // Preenche norm com external_id do DB
-        }
-      }
-      // Update (use o método existente, agora com external_id preenchido se possível)
-      row = await db.updatePixDepositFromWebhookNormalized({
-        provider,
-        transaction_id: norm?.transaction_id || null,
-        external_id: norm?.external_id || null,
-        status: norm?.status || null,
-        fee: null, // assuma se tiver no payload
-        net_amount: null,
-        end_to_end: norm?.end_to_end || null,
-        raw_webhook: payload,
-      });
-    }
-  } catch (e) {
-    console.log(`[${provider.toUpperCase()}][WEBHOOK][DB_WARN]`, { message: e?.message });
-  }
-
-  if (!row && db) {
-    console.warn(`[${provider.toUpperCase()}][WEBHOOK][LOOKUP_FAIL] No row found for transaction_id`, { transaction_id: norm.transaction_id });
-  }
-
-  let wa_id = row?.wa_id || null;
-  if (!wa_id) wa_id = parseWaIdFromExternalId(norm?.external_id);
-
-  const paid = pix.isPaidStatus(provider, st);
-
-  if (wa_id && paid) {
-    publishState?.({
-      wa_id,
-      etapa: `${provider.toUpperCase()}_PAID`,
-      vars: {
-        provider,
-        offer_id: row?.offer_id || null,
-        amount: Number(row?.amount || (norm?.total || 0) / 100),
-        total_cents: norm?.total ?? null,
-        external_id: norm?.external_id ?? null,
-        transaction_id: norm?.transaction_id ?? null,
-        end_to_end: norm?.end_to_end ?? null,
-        status: st,
-      },
-      ts: Date.now(),
-    });
-
-    try {
-      if (lead && typeof lead.markPaymentCompleted === 'function') {
-        lead.markPaymentCompleted(wa_id, {
-          provider,
-          offer_id: row?.offer_id || null,
-          amount: Number(row?.amount || (norm?.total || 0) / 100),
-          amount_cents: norm?.total ?? null,
-          external_id: norm?.external_id ?? null,
-          transaction_id: norm?.transaction_id ?? null,
-          end_to_end: norm?.end_to_end ?? null,
-          status: st,
-        });
-      }
-    } catch { }
-
-    // Fallback para payer_* se row null (use customer ou payer do payload)
-    const payer_name = row?.payer_name || payload?.customer?.name || payload?.payer?.name || 'Cliente';
-    const payer_email = row?.payer_email || payload?.customer?.email || payload?.payer?.email || 'cliente@teste.com';
-    const payer_phone = row?.payer_phone || payload?.customer?.phone || payload?.payer?.phone || null;
-    const payer_document = row?.payer_document || payload?.customer?.document || payload?.payer?.document || null;
-    const offer_id = row?.offer_id || null;
-    const createdAt = row?.created_at?.getTime() || Date.now();
-
-    utmify.sendToUtmify('paid', {
-      external_id: norm?.external_id || row?.external_id,
-      amount: Number(row?.amount || (norm?.total || 0) / 100),
-      payer_name,
-      payer_email,
-      payer_phone,
-      payer_document,
-      offer_id,
-      offer_title: 'Pagamento', // Adjust based on offer
-      createdAt,
-    });
-  } else if (paid) {
-    console.warn(`[${provider.toUpperCase()}][WEBHOOK][SKIP_UTMIFY] Paid but missing wa_id/external_id`, { transaction_id: norm.transaction_id });
-  }
-}
+const { createPaymentsModule } = require('./payments/payment-module');
 
 function registerRoutes(app, {
   db,
@@ -155,6 +26,13 @@ function registerRoutes(app, {
     if (req.session?.loggedIn) return next();
     return res.redirect('/login');
   }
+
+  const payments = createPaymentsModule({
+    db,
+    lead,
+    publishState,
+    logger: console,
+  });
 
   function collapseOneLine(s) {
     return String(s || '').replace(/\s+/g, ' ').trim();
@@ -526,54 +404,15 @@ function registerRoutes(app, {
   }
 
   for (const webhookPath of getVeltraxWebhookPaths()) {
-    app.post(webhookPath, async (req, res) => {
-      res.sendStatus(200);
-      try {
-        const payload = req.body || {};
-        const eventType = String(payload.eventType || '').trim(); // Veltrax pode não ter eventType, então filtro opcional
-        if (!(await isAllowedEventType('veltrax', eventType))) {
-          console.log('[VELTRAX][WEBHOOK][SKIP]', { eventType: payload.eventType || null });
-          return;
-        }
-        await processPixWebhook('veltrax', payload);
-      } catch (e) {
-        console.log('[VELTRAX][WEBHOOK][ERR]', { message: e?.message });
-      }
-    });
+    app.post(webhookPath, payments.makeExpressWebhookHandler('veltrax'));
   }
 
   for (const webhookPath of getRapdynWebhookPaths()) {
-    app.post(webhookPath, async (req, res) => {
-      res.sendStatus(200);
-      try {
-        const payload = req.body || {};
-        const eventType = String(payload.notification_type || '').trim(); // Rapdyn usa 'notification_type'
-        if (!(await isAllowedEventType('rapdyn', eventType))) {
-          console.log('[RAPDYN][WEBHOOK][SKIP]', { notification_type: payload.notification_type || null });
-          return;
-        }
-        await processPixWebhook('rapdyn', payload);
-      } catch (e) {
-        console.log('[RAPDYN][WEBHOOK][ERR]', { message: e?.message });
-      }
-    });
+    app.post(webhookPath, payments.makeExpressWebhookHandler('rapdyn'));
   }
 
   for (const webhookPath of getZoompagWebhookPaths()) {
-    app.post(webhookPath, async (req, res) => {
-      res.sendStatus(200);
-      try {
-        const payload = req.body || {};
-        const eventType = String(payload.eventType || '').trim();
-        if (!(await isAllowedEventType('zoompag', eventType))) {
-          console.log('[ZOOMPAG][WEBHOOK][SKIP]', { eventType: payload.eventType || null });
-          return;
-        }
-        await processPixWebhook('zoompag', payload);
-      } catch (e) {
-        console.log('[ZOOMPAG][WEBHOOK][ERR]', { message: e?.message });
-      }
-    });
+    app.post(webhookPath, payments.makeExpressWebhookHandler('zoompag'));
   }
 
   const originalOnFlush = app.locals.__onFlushProxy;

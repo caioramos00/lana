@@ -27,7 +27,7 @@ function hashActionPayload(payload) {
   }
 }
 
-function createActionRunner({ db, senders, publishState, aiLog = () => { } } = {}) {
+function createActionRunner({ db, senders, publishState, payments, aiLog = () => { } } = {}) {
   // ✅ whitelist: só executa o que existir aqui
   const handlers = {
     // ❌ mostrar_ofertas removido (agora é 100% via prompt / messages)
@@ -57,6 +57,7 @@ function createActionRunner({ db, senders, publishState, aiLog = () => { } } = {
 
     const ctxBase = {
       db,
+      payments,
       senders,
       publishState,
       aiLog,
