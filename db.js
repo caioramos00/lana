@@ -823,7 +823,11 @@ async function updateBotSettings(payload) {
 
     const voiceNoteGrokModel = (voice_note_grok_model || '').trim() || null;
 
-    const autoAudioEnabled = toBoolOrNull(auto_audio_enabled);
+    let autoAudioEnabled = toBoolOrNull(auto_audio_enabled);
+    if (Array.isArray(payload.auto_audio_enabled)) {
+      autoAudioEnabled = toBoolOrNull(payload.auto_audio_enabled[payload.auto_audio_enabled.length - 1]);
+    }
+
     const autoAudioAfterMsgs = clampInt(toIntOrNull(auto_audio_after_msgs), { min: 15, max: 1000 });
 
     await client.query(
