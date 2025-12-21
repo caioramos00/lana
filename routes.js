@@ -7,6 +7,7 @@ const fs = require('fs');
 let FormData = null;
 try { FormData = require('form-data'); } catch { /* ok */ }
 
+const db = require('../db');
 const { downloadMetaMediaToTempFile } = require('./senders');
 const { transcribeAudioOpenAI } = require('./transcribe');
 const pix = require('./payments/pix');
