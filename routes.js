@@ -247,10 +247,55 @@ function registerRoutes(app, {
               }
             }
 
+            let stLead = null;
+
             try {
-              const stLead = lead?.getLead?.(wa_id);
+              stLead = lead?.getLead?.(wa_id);
+
               if (stLead && inboundPhoneNumberId) stLead.meta_phone_number_id = inboundPhoneNumberId;
               if (inboundPhoneNumberId) rememberInboundMetaPhoneNumberId?.(wa_id, inboundPhoneNumberId);
+
+              // ✅ CAPTURA + LOG do PRIMEIRO inbound
+              if (stLead && !stLead.first_inbound_payload) {
+                const contact =
+                  Array.isArray(value.contacts)
+                    ? (value.contacts.find(c => String(c?.wa_id || '').trim() === String(wa_id || '').trim()) || value.contacts[0] || null)
+                    : null;
+
+                const snapshot = {
+                  captured_at_iso: new Date().toISOString(),
+                  captured_ts_ms: Date.now(),
+
+                  wa_id: String(wa_id || '').trim(),
+                  wamid: String(wamid || '').trim(),
+                  type: String(type || '').trim(),
+                  inboundPhoneNumberId: inboundPhoneNumberId || null,
+
+                  // texto “cru” quando for text (ajuda debug rápido)
+                  text_body: (type === 'text') ? (m?.text?.body || '') : null,
+
+                  // ✅ CTWA costuma vir aqui
+                  referral: m?.referral || null,
+
+                  // contexto (às vezes vem encadeado)
+                  context: m?.context || null,
+
+                  // contato/metadata (úteis pra match e auditoria)
+                  contact: contact || null,
+                  metadata: value?.metadata || null,
+
+                  // snapshot da msg completa (guarda tudo que a Meta mandou nessa msg)
+                  message: m || null,
+                };
+
+                // salva em memória (lead state)
+                stLead.first_inbound_payload = snapshot;
+                stLead.first_inbound_captured_ts = snapshot.captured_ts_ms;
+
+                // loga no console (bem visível)
+                console.log('[INBOUND][FIRST_MESSAGE_CAPTURED]');
+                console.log(JSON.stringify(snapshot, null, 2));
+              }
             } catch { }
 
             let text = '';

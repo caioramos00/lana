@@ -222,6 +222,9 @@ function createLeadStore({
         last_user_ts: null,
         created_at: now(),
 
+        first_inbound_payload: null,
+        first_inbound_captured_ts: null,
+
         pending_inbound: [],
         pending_first_ts: null,
         pending_timer: null,
