@@ -965,61 +965,70 @@
             <script>
               // ==== Provider UI toggle (AI + VoiceNote + Pagamentos) ====
               (function () {
+                function toKey(v, fallback) {
+                  const s = (v == null ? '' : String(v)).trim().toLowerCase();
+                  return s || (fallback || '');
+                }
+
+                // Deixa a UI 100% extensível:
+                // - AI: crie containers com id="ai_provider_<provider>"
+                // - VoiceNote: crie containers com id="vn_provider_<provider>"
+                // - Pagamentos: crie containers com id="pay_gateway_<gateway>"
+                // O JS ativa automaticamente o container correspondente ao value do <select>.
+                function toggleGroupByPrefix(prefix, activeKey) {
+                  const nodes = document.querySelectorAll(`[id^="${prefix}"]`);
+                  nodes.forEach((el) => {
+                    const key = toKey(el.id.slice(prefix.length));
+                    el.classList.toggle('active', key === activeKey);
+                  });
+                }
+
                 function updateAIProviderUI() {
                   const sel = document.getElementById('ai_provider');
-                  const provider = (sel && sel.value) ? String(sel.value).toLowerCase() : 'venice';
-
-                  const boxVenice = document.getElementById('ai_provider_venice');
-                  const boxOpenAI = document.getElementById('ai_provider_openai');
-
-                  if (boxVenice) boxVenice.classList.toggle('active', provider === 'venice');
-                  if (boxOpenAI) boxOpenAI.classList.toggle('active', provider === 'openai');
+                  const provider = toKey(sel && sel.value, 'venice');
+                  toggleGroupByPrefix('ai_provider_', provider);
                 }
 
                 function updateVoiceNoteUI() {
                   const vnSel = document.getElementById('voice_note_ai_provider');
                   const mainSel = document.getElementById('ai_provider');
 
-                  let provider = 'venice';
-                  const vn = (vnSel && vnSel.value) ? String(vnSel.value).toLowerCase() : 'inherit';
+                  const vn = toKey(vnSel && vnSel.value, 'inherit');
+                  const provider =
+                    vn === 'inherit'
+                      ? toKey(mainSel && mainSel.value, 'venice')
+                      : vn;
 
-                  if (vn === 'inherit') {
-                    provider = (mainSel && mainSel.value) ? String(mainSel.value).toLowerCase() : 'venice';
-                  } else {
-                    provider = vn;
-                  }
-
-                  const boxV = document.getElementById('vn_provider_venice');
-                  const boxO = document.getElementById('vn_provider_openai');
-
-                  if (boxV) boxV.classList.toggle('active', provider === 'venice');
-                  if (boxO) boxO.classList.toggle('active', provider === 'openai');
+                  toggleGroupByPrefix('vn_provider_', provider);
                 }
 
                 function updatePayGatewayUI() {
                   const sel = document.getElementById('pix_gateway_default');
-                  const gw = (sel && sel.value) ? String(sel.value).toLowerCase() : 'veltrax';
-
-                  const boxVeltrax = document.getElementById('pay_gateway_veltrax');
-                  const boxRapdyn = document.getElementById('pay_gateway_rapdyn');
-
-                  if (boxVeltrax) boxVeltrax.classList.toggle('active', gw === 'veltrax');
-                  if (boxRapdyn) boxRapdyn.classList.toggle('active', gw === 'rapdyn');
+                  const gw = toKey(sel && sel.value, 'veltrax');
+                  toggleGroupByPrefix('pay_gateway_', gw);
                 }
 
-                const aiSel = document.getElementById('ai_provider');
-                if (aiSel) aiSel.addEventListener('change', updateAIProviderUI);
+                function bind() {
+                  const aiSel = document.getElementById('ai_provider');
+                  if (aiSel) aiSel.addEventListener('change', updateAIProviderUI);
 
-                const vnSel = document.getElementById('voice_note_ai_provider');
-                if (vnSel) vnSel.addEventListener('change', updateVoiceNoteUI);
-                if (aiSel) aiSel.addEventListener('change', updateVoiceNoteUI);
+                  const vnSel = document.getElementById('voice_note_ai_provider');
+                  if (vnSel) vnSel.addEventListener('change', updateVoiceNoteUI);
+                  if (aiSel) aiSel.addEventListener('change', updateVoiceNoteUI);
 
-                const paySel = document.getElementById('pix_gateway_default');
-                if (paySel) paySel.addEventListener('change', updatePayGatewayUI);
+                  const paySel = document.getElementById('pix_gateway_default');
+                  if (paySel) paySel.addEventListener('change', updatePayGatewayUI);
 
-                updateAIProviderUI();
-                updateVoiceNoteUI();
-                updatePayGatewayUI();
+                  updateAIProviderUI();
+                  updateVoiceNoteUI();
+                  updatePayGatewayUI();
+                }
+
+                if (document.readyState === 'loading') {
+                  document.addEventListener('DOMContentLoaded', bind);
+                } else {
+                  bind();
+                }
               })();
 
               // ==== Máscara número Meta ====
@@ -1059,9 +1068,12 @@
                 });
               }
 
-              attachNumeroMasks();
+              if (document.readyState === 'loading') {
+                document.addEventListener('DOMContentLoaded', attachNumeroMasks);
+              } else {
+                attachNumeroMasks();
+              }
             </script>
-
 </body>
 
 </html>
