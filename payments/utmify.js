@@ -1,4 +1,3 @@
-// payments/utmify.js
 'use strict';
 
 const axiosLib = require('axios');
@@ -8,7 +7,7 @@ function formatDateUTC(ts) {
   return d.toISOString().replace('T', ' ').replace(/\.\d+Z$/, '');
 }
 
-function buildPayload(status, data, { platform = 'BotProjeto', isTest = false } = {}) {
+function buildPayload(status, data, { platform = 'lana', isTest = false } = {}) {
   const amount = Number(data?.amount || 0);
   const amountCents = Math.round(amount * 100);
 
@@ -60,9 +59,6 @@ function buildPayload(status, data, { platform = 'BotProjeto', isTest = false } 
   };
 }
 
-/**
- * Client desacoplado (injeção de axios + token getter)
- */
 function createUtmifyClient({
   axios,
   getToken,
@@ -118,11 +114,6 @@ function createUtmifyClient({
   return { send };
 }
 
-/**
- * Compat (mantém sua API antiga): utmify.sendToUtmify(status, data)
- * - Usa axios local
- * - Token vem de global.botSettings.utmify_api_token
- */
 async function sendToUtmify(status, data) {
   const client = createUtmifyClient({
     axios: axiosLib,
