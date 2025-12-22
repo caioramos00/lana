@@ -47,7 +47,7 @@ function normalizeMessagePreview(evt) {
   return `[${kind}]`;
 }
 
-function createChatIndex({ lead, maxChats = 2000 } = {}) {
+function createChatIndex({ lead, maxChats = 10000 } = {}) {
   const chats = new Map(); // wa_id -> summary
 
   function ensure(wa_id, ts) {

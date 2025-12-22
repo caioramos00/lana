@@ -670,7 +670,7 @@ function registerRoutes(app, {
 
   app.get('/admin/api/chats', checkAuth, (req, res) => {
     try {
-      const limit = Math.max(1, Math.min(5000, Number(req.query.limit) || 2000));
+      const limit = Math.max(1, Math.min(10000, Number(req.query.limit) || 5000));
       const chats = (chatIndex && typeof chatIndex.list === 'function')
         ? chatIndex.list({ limit })
         : [];
