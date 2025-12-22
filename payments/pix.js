@@ -115,13 +115,15 @@ function isPaidStatus(provider, status) {
    =========================== */
 
 function pickOfferId(ctx) {
-  return String(
-    ctx?.agent?.offer_id ||
-    ctx?.agent?.offerId ||
-    ctx?.vars?.offer_id ||
-    ctx?.vars?.offerId ||
-    ''
-  ).trim() || null;
+  const a = ctx?.agent || {};
+  const v = ctx?.vars || {};
+
+  const id =
+    a.offer_id || a.oferta_id || a.offerId || a.ofertaId ||
+    v.offer_id || v.oferta_id || v.offerId || v.ofertaId ||
+    null;
+
+  return id ? String(id).trim() : null;
 }
 
 function normalizePhone(v) {
@@ -164,7 +166,7 @@ async function enviar_pix(ctx, _payload) {
     return { ok: false, reason: 'missing-payments-module' };
   }
 
-  const extKey = offer_id || (fase || 'fase');
+  const extKey = `${wa_id}:${offer_id || fase || 'pagamento'}`;
 
   const created = await ctx.payments.createPixCharge({
     ctx,

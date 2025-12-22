@@ -3,12 +3,37 @@ function moneyBRL(n) {
   return `R$ ${v.toFixed(2).replace('.', ',')}`;
 }
 
+function parseBRL(n) {
+  if (n == null) return null;
+
+  // number direto
+  if (typeof n === 'number') return Number.isFinite(n) ? n : null;
+
+  // string tipo "49,90" / "R$ 49,90" / "49.90"
+  const s = String(n)
+    .trim()
+    .replace(/\s/g, '')
+    .replace('R$', '')
+    .replace(/\./g, '')       // remove separador de milhar
+    .replace(',', '.');       // decimal BR -> US
+
+  const v = Number(s);
+  return Number.isFinite(v) ? v : null;
+}
+
 const CONFIG = {
   pix: {
     chave: 'SUA_CHAVE_PIX_AQUI',
     recebedor: 'SEU_NOME/EMPRESA',
-    valorPorFase: { PAGAMENTO: 9.90, POS_PAGAMENTO: 0 },
+
+    // ⚠️ IMPORTANTE:
+    // Removemos PAGAMENTO daqui pra não "forçar" 9,90.
+    // POS_PAGAMENTO continua 0.
+    valorPorFase: { POS_PAGAMENTO: 0 },
+
+    // fallback se não vier offer/valor do agent
     valorDefault: 3.90,
+
     mensagemExtra: 'Assim que confirmar, eu já libero o acesso aqui.',
   },
 
@@ -85,15 +110,6 @@ const CONFIG = {
   media: { videoUrl: 'https://seu-video-hosted-aqui.mp4' },
 };
 
-function getPixForCtx(ctx) {
-  const fase = String(ctx?.agent?.proxima_fase || '').trim();
-  const v = (fase && CONFIG.pix.valorPorFase[fase] != null)
-    ? CONFIG.pix.valorPorFase[fase]
-    : CONFIG.pix.valorDefault;
-
-  return { ...CONFIG.pix, valor: v, valorFmt: moneyBRL(v) };
-}
-
 let _offerIndex = null;
 
 function buildOfferIndex() {
@@ -120,4 +136,43 @@ function listAllOffers() {
   return Object.values(_offerIndex);
 }
 
-module.exports = { CONFIG, getPixForCtx, moneyBRL, getOfferById, listAllOffers };
+// 👇 AQUI É O PONTO PRINCIPAL
+function getPixForCtx(ctx) {
+  const agent = ctx?.agent || {};
+  const fase = String(agent?.proxima_fase || '').trim();
+
+  // 1) se o prompt mandar o valor final, ele ganha
+  const valorDoAgent =
+    parseBRL(agent?.valor_pix) ??
+    parseBRL(agent?.valor_final) ??
+    parseBRL(agent?.preco_final) ??
+    parseBRL(agent?.valor);
+
+  // 2) se o prompt mandar o id da oferta, usamos o catálogo
+  const offerId =
+    (agent?.offer_id || agent?.oferta_id || agent?.ofertaId || agent?.offerId || '').toString().trim();
+
+  const offer = offerId ? getOfferById(offerId) : null;
+  const valorDaOffer = offer ? parseBRL(offer.preco) : null;
+
+  // 3) fallback antigo (fase/default)
+  const fallbackPorFase =
+    (fase && CONFIG.pix.valorPorFase[fase] != null) ? CONFIG.pix.valorPorFase[fase] : null;
+
+  // valor final
+  const v =
+    (valorDoAgent != null ? valorDoAgent :
+      (valorDaOffer != null ? valorDaOffer :
+        (fallbackPorFase != null ? fallbackPorFase : CONFIG.pix.valorDefault)));
+
+  return {
+    ...CONFIG.pix,
+    valor: v,
+    valorFmt: moneyBRL(v),
+    offerId: offer?.id || (offerId || null),
+    offerTitulo: offer?.titulo || null,
+    fase: fase || null,
+  };
+}
+
+module.exports = { CONFIG, getPixForCtx, moneyBRL, getOfferById, listAllOffers, parseBRL };

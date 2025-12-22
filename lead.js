@@ -245,8 +245,13 @@ function createLeadStore({
 
   function isVipOffer(offer_id) {
     const id = String(offer_id || '').toLowerCase();
-    // heurística simples (não depende do config.js)
-    return /\bvip\b/.test(id) || id.includes('assin') || id.includes('plano');
+    return (
+      /\bvip\b/.test(id) ||
+      id.includes('assin') ||
+      id.includes('plano') ||
+      id.includes('vital') ||
+      id.includes('grupo_whats')
+    );
   }
 
   function markPixCreated(wa_id, info = {}) {
