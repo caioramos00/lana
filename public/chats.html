@@ -397,6 +397,8 @@
         // wa_id -> Set de chaves para dedupe
         state.msgSeen = new Map();
 
+        window.__CHATS_STATE = state;
+
         function getSeenSet(wa_id) {
             let s = state.msgSeen.get(wa_id);
             if (!s) {
@@ -650,22 +652,40 @@
             $('hName').textContent = wa_id;
             $('hSub').textContent = 'Carregando…';
 
-            const r = await fetch('/admin/api/chats/' + encodeURIComponent(wa_id) + '/messages');
-            const j = await r.json();
+            // ✅ mostra imediatamente o que já chegou via SSE desde que abriu /admin/chats
+            const liveNow = state.msgBuffer.get(wa_id) || [];
+            if (liveNow.length) {
+                renderMessages(liveNow);
+                scrollToBottom(true);
+            } else {
+                // não deixa “parecer travado”
+                clearChat();
+            }
+
+            let j;
+            try {
+                const r = await fetch('/admin/api/chats/' + encodeURIComponent(wa_id) + '/messages');
+                j = await r.json();
+            } catch {
+                j = { ok: false, messages: [] };
+            }
+
             $('hName').textContent = j.title || wa_id;
             $('hSub').textContent = wa_id;
 
-            state.loaded.add(wa_id);
-
-            // histórico do backend (se existir)
             const histMsgs = (Array.isArray(j.messages) ? j.messages : []).map(normalizeHistoryToMsg);
-
-            // buffer do SSE (desde que você abriu /admin/chats)
             const liveMsgs = state.msgBuffer.get(wa_id) || [];
 
-            // merge + dedupe + ordena por tempo
             const merged = mergeAndDedupeMessages(histMsgs, liveMsgs);
+
             renderMessages(merged);
+            scrollToBottom(true);
+
+            console.debug('[openChat]', wa_id, {
+                hist: histMsgs.length,
+                live: liveMsgs.length,
+                merged: merged.length,
+            });
         }
 
         function upsertChatFromEvt(evt) {
@@ -730,37 +750,55 @@
         function connectSSE() {
             const es = new EventSource('/api/stream');
 
-            es.addEventListener('ready', () => setConn(true));
-            es.addEventListener('ping', () => { /* noop */ });
-
-            const onEvt = (e) => {
+            const handle = (eventName) => (e) => {
+                let evt;
                 try {
-                    const evt = JSON.parse(e.data);
+                    evt = JSON.parse(e.data);
+                } catch {
+                    return;
+                }
 
-                    // atualiza preview/lista (já fazia)
-                    upsertChatFromEvt(evt);
+                const wa_id = String(evt?.wa_id || '').trim();
+                if (!wa_id) return;
 
-                    // ✅ SOLUÇÃO A: guarda mensagem no buffer, SEM precisar abrir o chat
-                    if (evt && evt.type === 'message' && evt.wa_id) {
-                        const msg = normalizeEventToMsg(evt);
-                        bufferPush(evt.wa_id, msg);
+                // fonte da verdade: nome do evento SSE (message/state/ack)
+                const type = String(evt.type || eventName);
+
+                // garante consistência para o resto do código
+                evt.type = type;
+
+                // sempre atualiza lista/preview
+                upsertChatFromEvt(evt);
+
+                // ✅ SOLUÇÃO A: guarda TODA mensagem no buffer, mesmo sem abrir chat
+                if (type === 'message') {
+                    const msg = normalizeEventToMsg(evt);
+                    bufferPush(wa_id, msg);
+
+                    // se o chat estiver aberto, mostra ao vivo também
+                    if (state.selected === wa_id) {
+                        appendMsg({ role: msg.role, text: msg.text, ts_ms: msg.ts_ms });
+                        scrollToBottom();
                     }
+                }
 
-                    renderList();
+                renderList();
 
-                    // se o chat estiver aberto, também mostra ao vivo (já fazia)
-                    tryAppendLive(evt);
-                } catch { }
+                // debug rápido: veja no console se o buffer está enchendo
+                // console.debug('[SSE]', type, wa_id, 'buf=', (state.msgBuffer.get(wa_id) || []).length);
             };
 
-            es.addEventListener('message', onEvt);
-            es.addEventListener('state', onEvt);
-            es.addEventListener('ack', onEvt);
+            es.addEventListener('ready', () => setConn(true));
+            es.addEventListener('ping', () => { });
 
-            es.onerror = () => {
-                setConn(false);
-                // EventSource não expõe status direto, então só não "garante" aqui
-            };
+            es.addEventListener('message', handle('message'));
+            es.addEventListener('state', handle('state'));
+            es.addEventListener('ack', handle('ack'));
+
+            // fallback (não atrapalha): alguns setups dependem disso
+            es.onmessage = handle('message');
+
+            es.onerror = () => setConn(false);
         }
 
         $('q').addEventListener('input', (e) => {
