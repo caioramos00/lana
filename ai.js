@@ -8,7 +8,7 @@ const { publishState } = require('./stream/events-bus');
 const { CONFIG } = require('./actions/config');
 const { createPaymentsModule } = require('./payments/payment-module');
 
-function createAiEngine({ db = dbModule, sendMessage, aiLog = () => {}, payments: injectedPayments } = {}) {
+function createAiEngine({ db = dbModule, sendMessage, aiLog = () => { }, payments: injectedPayments } = {}) {
   function sha256Of(text) {
     return crypto.createHash('sha256').update(String(text || ''), 'utf8').digest('hex');
   }
@@ -22,12 +22,12 @@ function createAiEngine({ db = dbModule, sendMessage, aiLog = () => {}, payments
   // ✅ runner singleton quando payments é singleton
   const _singletonRunner = hasInjectedPayments
     ? createActionRunner({
-        db,
-        senders,
-        publishState,
-        payments: injectedPayments,
-        aiLog,
-      })
+      db,
+      senders,
+      publishState,
+      payments: injectedPayments,
+      aiLog,
+    })
     : null;
 
   function getPaymentsForLeadStore(leadStore) {
@@ -396,11 +396,15 @@ function createAiEngine({ db = dbModule, sendMessage, aiLog = () => {}, payments
       intentToOfferSet: CONFIG.intentToOfferSet || {},
     };
 
+    const ps = st?.payments_state || {};
+    const pending = ps?.pending || null;
+    const lastPaid = ps?.last_paid || null;
+
     return {
       status_lead,
       horas_desde_ultima_mensagem_usuario: Math.round(hoursSince * 100) / 100,
       motivo_interacao: 'RESPOSTA_USUARIO',
-      ja_comprou_vip: false,
+      ja_comprou_vip: !!(st?.ja_comprou_vip || st?.payments_state?.last_paid && /vip/i.test(String(st?.payments_state?.last_paid?.offer_id || ''))),
       lead_pediu_pra_parar: false,
       meta_phone_number_id: inboundPhoneNumberId || st?.meta_phone_number_id || null,
 
@@ -409,6 +413,23 @@ function createAiEngine({ db = dbModule, sendMessage, aiLog = () => {}, payments
       cooldown_msgs_desde_inicio: cd ? (cd.msgs_since_start || 0) : 0,
       cooldown_motivo: cd ? (cd.last_reason || null) : null,
       catalogo_ofertas: offersForPrompt,
+      pagamento: {
+        tem_pix_pendente: !!pending,
+        pix_status: pending?.status || null,
+        pix_offer_id: pending?.offer_id || null,
+        pix_valor: pending?.amount ?? null,
+        pix_provider: pending?.provider || null,
+        pix_external_id: pending?.external_id || null,
+        pix_transaction_id: pending?.transaction_id || null,
+
+        pago: !!lastPaid,
+        pago_offer_id: lastPaid?.offer_id || null,
+        pago_valor: lastPaid?.amount ?? null,
+        pago_provider: lastPaid?.provider || null,
+        pago_ts_ms: lastPaid?.paid_ts_ms || null,
+
+        vip_link_enviado: !!ps?.vip_link_sent,
+      },
     };
   }
 

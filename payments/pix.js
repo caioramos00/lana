@@ -207,18 +207,19 @@ async function enviar_pix(ctx, _payload) {
     ctx.agent.offer_id = offer_id || ctx.agent.offer_id || null;
   }
 
-  // mensagens
-  await ctx.sendText(`Segue o Pix pra confirmar:\nValor: ${amountFmt}\nCopia e cola:`, {
-    reply_to_wamid: ctx.replyToWamid,
-  });
+  await ctx.sendText('Fechou. vou te mandar o pix agora.', { reply_to_wamid: ctx.replyToWamid });
+  await ctx.delay();
+
+  await ctx.sendText(`Valor: ${amountFmt}`, { reply_to_wamid: ctx.replyToWamid });
   await ctx.delay();
 
   if (offer?.titulo) {
-    await ctx.sendText(`Produto: ${offer.titulo}`, {
-      reply_to_wamid: ctx.replyToWamid,
-    });
+    await ctx.sendText(`Do: ${offer.titulo}`, { reply_to_wamid: ctx.replyToWamid });
     await ctx.delay();
   }
+
+  await ctx.sendText('Copia e cola:', { reply_to_wamid: ctx.replyToWamid });
+  await ctx.delay();
 
   if (qrcode) {
     await ctx.sendText(String(qrcode), { reply_to_wamid: ctx.replyToWamid });

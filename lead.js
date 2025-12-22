@@ -231,6 +231,77 @@ function createLeadStore({
     return st.audio_policy;
   }
 
+  function ensurePaymentsState(st) {
+    if (!st) return null;
+
+    if (!st.payments_state || typeof st.payments_state !== 'object') {
+      st.payments_state = { pending: null, last_paid: null, vip_link_sent: false };
+    }
+
+    if (st.ja_comprou_vip === undefined || st.ja_comprou_vip === null) st.ja_comprou_vip = false;
+
+    return st.payments_state;
+  }
+
+  function isVipOffer(offer_id) {
+    const id = String(offer_id || '').toLowerCase();
+    // heurística simples (não depende do config.js)
+    return /\bvip\b/.test(id) || id.includes('assin') || id.includes('plano');
+  }
+
+  function markPixCreated(wa_id, info = {}) {
+    const st = getLead(wa_id);
+    if (!st) return { ok: false };
+
+    const ps = ensurePaymentsState(st);
+
+    ps.pending = {
+      provider: info.provider || null,
+      external_id: info.external_id || null,
+      transaction_id: info.transaction_id || null,
+      status: info.status || 'PENDING',
+      offer_id: info.offer_id || null,
+      amount: Number(info.amount || 0) || 0,
+      created_ts_ms: Number(info.created_ts_ms || Date.now()),
+    };
+
+    return { ok: true };
+  }
+
+  function markPaymentCompleted(wa_id, info = {}) {
+    const st = getLead(wa_id);
+    if (!st) return { ok: false };
+
+    const ps = ensurePaymentsState(st);
+
+    ps.last_paid = {
+      provider: info.provider || null,
+      external_id: info.external_id || null,
+      transaction_id: info.transaction_id || null,
+      status: info.status || 'PAID',
+      offer_id: info.offer_id || null,
+      amount: Number(info.amount || 0) || 0,
+      paid_ts_ms: Number(info.paid_ts_ms || Date.now()),
+      end_to_end: info.end_to_end || null,
+    };
+
+    ps.pending = null;
+
+    if (isVipOffer(info.offer_id)) {
+      st.ja_comprou_vip = true;
+    }
+
+    return { ok: true };
+  }
+
+  function markVipLinkSent(wa_id) {
+    const st = getLead(wa_id);
+    if (!st) return { ok: false };
+    const ps = ensurePaymentsState(st);
+    ps.vip_link_sent = true;
+    return { ok: true };
+  }
+
   function getAudioState(wa_id) {
     const st = getLead(wa_id);
     if (!st) return null;
@@ -276,7 +347,13 @@ function createLeadStore({
           last_audio_kind: null,
         },
 
-        __seen_in_wamids: new Map(), // wamid -> ts_ms
+        __seen_in_wamids: new Map(),
+        ja_comprou_vip: false,
+        payments_state: {
+          pending: null,
+          last_paid: null,
+          vip_link_sent: false,
+        },
       };
       leadStore.set(key, st);
     }
@@ -669,6 +746,9 @@ function createLeadStore({
     bumpCooldownOnUserMsg,
     getAudioState,
     markInboundWamidSeen,
+    markPixCreated,
+    markPaymentCompleted,
+    markVipLinkSent,
   };
 }
 

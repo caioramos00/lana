@@ -269,6 +269,20 @@ function createPaymentsModule({
     logger.log('[LEAD][STORE_ID][PIX]', lead?.__store_id, { wa_id });
 
     try {
+      if (lead && typeof lead.markPixCreated === 'function') {
+        lead.markPixCreated(wa_id, {
+          provider,
+          external_id,
+          transaction_id,
+          status,
+          offer_id: offer_id || null,
+          amount,
+          created_ts_ms: row?.created_at?.getTime?.() || Date.now(),
+        });
+      }
+    } catch { /* noop */ }
+
+    try {
       const st = lead?.getLead?.(wa_id);
       logger.log('[LEAD][STATE][PIX_BEFORE_META]', lead?.__store_id, {
         wa_id,
