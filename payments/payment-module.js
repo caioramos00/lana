@@ -42,12 +42,26 @@ function sleep(ms) {
   return new Promise(r => setTimeout(r, Number.isFinite(t) ? Math.max(0, t) : 0));
 }
 
+const PAYMENT_CONFIRMED_MESSAGES = [
+  "acabou de cair o pix aqui amor",
+  "o pix acabou de cair aqui amor",
+  "o pix caiu aqui amor",
+  "acabou de cair o pagamento aqui amor",
+];
+
+function pickRandomMessage(list) {
+  const arr = Array.isArray(list) ? list : [];
+  if (!arr.length) return "o pix caiu aqui amor";
+  return arr[Math.floor(Math.random() * arr.length)];
+}
+
 function createPaymentsModule({
   db,
   lead,
   publishState,
   logger = console,
   axiosInstance,
+  sendMessage,
 } = {}) {
   if (!db) throw new Error('[payments] db is required');
 
@@ -477,6 +491,51 @@ function createPaymentsModule({
       });
     } catch (e) {
       logger.warn('[UTMIFY][WARN] paid', { message: e?.message });
+    }
+
+    try {
+      if (typeof sendMessage === 'function' && lead?.getLead) {
+        const st = lead.getLead(wa_id);
+
+        const txKey = String(
+          norm?.transaction_id ||
+          row?.transaction_id ||
+          norm?.external_id ||
+          row?.external_id ||
+          ''
+        ).trim();
+
+        if (st) {
+          if (!st.payments_state || typeof st.payments_state !== 'object') st.payments_state = {};
+
+          const alreadySent = String(st.payments_state.paid_msg_sent_tx || '').trim() === txKey;
+
+          if (!alreadySent) {
+            const msg = pickRandomMessage(PAYMENT_CONFIRMED_MESSAGES);
+            const metaPhoneId = st.meta_phone_number_id || null;
+
+            const r = await sendMessage(wa_id, msg, { meta_phone_number_id: metaPhoneId });
+
+            if (r?.ok) {
+              // marca dedupe
+              st.payments_state.paid_msg_sent_tx = txKey || 'paid';
+
+              // opcional: espelha no histórico (igual AI)
+              try {
+                lead.pushHistory?.(wa_id, 'assistant', msg, {
+                  kind: 'text',
+                  wamid: r.wamid || '',
+                  phone_number_id: r.phone_number_id || metaPhoneId || null,
+                  ts_ms: Date.now(),
+                  source: 'payment_confirmed',
+                });
+              } catch { /* noop */ }
+            }
+          }
+        }
+      }
+    } catch (e) {
+      logger.warn('[PAYMENT_CONFIRM_MSG][ERR]', { wa_id, message: e?.message || 'err' });
     }
   }
 

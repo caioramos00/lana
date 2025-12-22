@@ -178,7 +178,13 @@ function readLeadFromSettings(settings) {
   const chatIndex = createChatIndex({ lead });
 
   // ✅ payments singleton com leadStore real
-  const payments = createPaymentsModule({ db, lead, publishState });
+  const payments = createPaymentsModule({
+    db,
+    lead,
+    publishState,
+    sendMessage,     // ✅ necessário pra disparar "pix caiu..." pelo payment-module
+    logger: console, // ✅ opcional (mas recomendo) pros warns do módulo
+  });
 
   // ✅ injeta payments no AI (ai.js não cria outro)
   ai = createAiEngine({
