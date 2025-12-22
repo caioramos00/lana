@@ -466,15 +466,20 @@
         }
 
         function msgKeyFromEvent(evt) {
-            const id = String(evt?.id || '').trim();
-            if (id) return `id:${id}`;
             const wamid = String(evt?.wamid || '').trim();
             if (wamid) return `wamid:${wamid}`;
-            const ts = Number(evt?.ts) || 0;
-            const dir = evt?.dir === 'out' ? 'out' : 'in';
-            const kind = String(evt?.kind || '');
-            const txt = String(evt?.text || '');
-            return `f:${ts}|${dir}|${kind}|${txt}`;
+
+            // fallback "estável" em segundos (evita duplicatas por ms)
+            const when = Number(evt?.ts) || 0;
+            const role = (evt?.dir === 'out') ? 'assistant' : 'user';
+            const text = String(evt?.text || '').trim();
+            if (when && text) return `h:${Math.floor(when / 1000)}|${role}|${text}`;
+
+            // só usa id se não der pra construir fallback
+            const id = String(evt?.id || '').trim();
+            if (id) return `id:${id}`;
+
+            return `x:${Date.now()}|${Math.random()}`;
         }
 
         function normalizeEventToMsg(evt) {
@@ -501,9 +506,10 @@
         }
 
         function bufferPush(wa_id, msg) {
-            if (!wa_id || !msg) return;
+            if (!wa_id || !msg) return false;
+
             const seen = getSeenSet(wa_id);
-            if (seen.has(msg._k)) return;
+            if (seen.has(msg._k)) return false;
             seen.add(msg._k);
 
             const arr = getBufferArr(wa_id);
@@ -512,6 +518,8 @@
             if (arr.length > MAX_BUFFER_PER_CHAT) {
                 arr.splice(0, arr.length - MAX_BUFFER_PER_CHAT);
             }
+
+            return true;
         }
 
         function normalizeHistoryToMsg(m) {
@@ -522,7 +530,9 @@
                 : String(m?.text || m?.audio_text || '');
 
             const wamid = String(m?.wamid || '').trim();
-            const key = wamid ? `wamid:${wamid}` : `h:${when}|${role}|${text}`;
+            const key = wamid
+                ? `wamid:${wamid}`
+                : `h:${Math.floor(when / 1000)}|${role}|${text}`;
             return { _k: key, role, text, ts_ms: when, kind: String(m?.kind || 'text') };
         }
 
@@ -753,12 +763,10 @@
 
                 if (evt.type === 'message') {
                     const msg = normalizeEventToMsg(evt);
-                    bufferPush(wa_id, msg);
+                    const added = bufferPush(wa_id, msg);
 
-                    if (state.selected === wa_id) {
-                        setEmptyVisible(false);
-                        ensureDividerIfNeeded(msg.ts_ms);
-                        appendMsg(msg);
+                    if (added && state.selected === wa_id) {
+                        appendMsg({ role: msg.role, text: msg.text, ts_ms: msg.ts_ms });
                         scrollToBottom();
                     }
                 }
