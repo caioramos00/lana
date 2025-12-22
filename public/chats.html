@@ -1,0 +1,383 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Admin • Chats (somente leitura)</title>
+  <style>
+    :root{
+      --bg:#f0f2f5;--panel:#fff;--border:#e5e7eb;--text:#111827;--muted:#6b7280;
+      --accent:#00a884;--hover:#f3f4f6;--active:#e7f7f3;
+      --in:#fff;--out:#d9fdd3;--shadow:0 1px 2px rgba(16,24,40,.08);
+      --radius:12px;--font:ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto,Arial;
+    }
+    *{box-sizing:border-box} html,body{height:100%}
+    body{margin:0;font-family:var(--font);color:var(--text);background:var(--bg);overflow:hidden}
+    .app{height:100vh;display:flex}
+
+    /* sidebar */
+    .side{width:360px;min-width:320px;background:var(--panel);border-right:1px solid var(--border);display:flex;flex-direction:column}
+    .sideTop{height:60px;display:flex;align-items:center;justify-content:space-between;padding:0 14px;border-bottom:1px solid var(--border)}
+    .brand{display:flex;gap:10px;align-items:center}
+    .dot{width:10px;height:10px;border-radius:50%;background:#9ca3af}
+    .dot.ok{background:var(--accent)}
+    .title{font-weight:700}
+    .pill{font-size:12px;color:var(--muted)}
+    .search{padding:10px 12px;border-bottom:1px solid var(--border)}
+    .search input{width:100%;padding:10px 12px;border:1px solid var(--border);border-radius:999px;background:#fafafa;outline:none}
+    .list{overflow:auto}
+    .item{display:flex;gap:10px;padding:10px 12px;cursor:pointer;border-bottom:1px solid #f2f2f2}
+    .item:hover{background:var(--hover)}
+    .item.active{background:var(--active)}
+    .avatar{width:44px;height:44px;border-radius:50%;background:linear-gradient(135deg,#e5e7eb,#cbd5e1)}
+    .meta{flex:1;min-width:0}
+    .row1{display:flex;align-items:center;justify-content:space-between;gap:10px}
+    .name{font-weight:650;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+    .time{font-size:12px;color:var(--muted)}
+    .row2{display:flex;align-items:center;gap:8px}
+    .prev{font-size:13px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+
+    /* chat */
+    .main{flex:1;display:flex;flex-direction:column;min-width:0}
+    .head{height:60px;background:var(--panel);border-bottom:1px solid var(--border);display:flex;align-items:center;justify-content:space-between;padding:0 16px}
+    .hLeft{display:flex;align-items:center;gap:10px;min-width:0}
+    .hName{font-weight:750;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+    .hSub{font-size:12px;color:var(--muted);margin-top:2px}
+    .body{flex:1;overflow:auto;padding:18px;background:var(--bg)}
+    .empty{max-width:560px;margin:70px auto 0;background:var(--panel);border:1px solid var(--border);border-radius:16px;padding:18px;box-shadow:var(--shadow);text-align:center;color:var(--muted)}
+    .msgRow{display:flex;margin:8px 0}
+    .msgRow.in{justify-content:flex-start}
+    .msgRow.out{justify-content:flex-end}
+    .bubble{max-width:min(720px,84%);padding:10px 10px 8px;border-radius:var(--radius);box-shadow:var(--shadow);white-space:pre-wrap;word-break:break-word}
+    .in .bubble{background:var(--in);border-top-left-radius:6px}
+    .out .bubble{background:var(--out);border-top-right-radius:6px}
+    .mFoot{display:flex;gap:10px;justify-content:flex-end;align-items:center;margin-top:6px;font-size:11px;color:var(--muted)}
+    .divider{display:flex;justify-content:center;margin:14px 0}
+    .divider span{font-size:12px;color:var(--muted);background:#e9eef2;border:1px solid var(--border);border-radius:999px;padding:6px 10px}
+
+    .foot{height:64px;background:var(--panel);border-top:1px solid var(--border);display:flex;align-items:center;gap:10px;padding:0 14px}
+    .foot input{flex:1;padding:12px 14px;border:1px solid var(--border);border-radius:999px;background:#fafafa}
+    .foot button{padding:10px 14px;border-radius:10px;border:1px solid var(--border);background:#f9fafb;color:var(--muted)}
+    .kbd{font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace;font-size:12px;color:#0f172a;background:#eef2f7;border:1px solid var(--border);border-radius:8px;padding:2px 6px}
+
+    @media (max-width:880px){
+      .side{width:320px}
+      .bubble{max-width:92%}
+    }
+  </style>
+</head>
+<body>
+  <div class="app">
+    <aside class="side">
+      <div class="sideTop">
+        <div class="brand">
+          <div id="connDot" class="dot"></div>
+          <div>
+            <div class="title">Chats</div>
+            <div class="pill">somente leitura</div>
+          </div>
+        </div>
+        <div class="pill"><span class="kbd">/admin/chats</span></div>
+      </div>
+
+      <div class="search">
+        <input id="q" type="search" placeholder="Buscar por nome ou número…" autocomplete="off" />
+      </div>
+
+      <div id="list" class="list"></div>
+    </aside>
+
+    <main class="main">
+      <div class="head">
+        <div class="hLeft">
+          <div class="avatar" style="width:40px;height:40px;"></div>
+          <div style="min-width:0">
+            <div id="hName" class="hName">Selecione um chat</div>
+            <div id="hSub" class="hSub"></div>
+          </div>
+        </div>
+        <div class="pill" id="statusTxt">Conectando…</div>
+      </div>
+
+      <div id="body" class="body">
+        <div id="empty" class="empty">
+          Abra um chat na lista à esquerda.<br/>
+          O painel atualiza em tempo real via <span class="kbd">/api/stream</span>.
+        </div>
+      </div>
+
+      <div class="foot">
+        <input disabled placeholder="Visualização apenas (não envia mensagens)" />
+        <button disabled>Enviar</button>
+      </div>
+    </main>
+  </div>
+
+  <script>
+    const $ = (id) => document.getElementById(id);
+
+    const state = {
+      chats: new Map(),
+      selected: null,
+      loaded: new Set(),
+      filter: '',
+      nearBottom: true,
+    };
+
+    function fmtTime(ts){
+      const d = new Date(ts || Date.now());
+      return new Intl.DateTimeFormat('pt-BR', { hour:'2-digit', minute:'2-digit' }).format(d);
+    }
+    function fmtDay(ts){
+      const d = new Date(ts || Date.now());
+      return new Intl.DateTimeFormat('pt-BR', { day:'2-digit', month:'2-digit', year:'numeric' }).format(d);
+    }
+    function dividerLabel(ts){
+      const d = new Date(ts||Date.now());
+      const now = new Date();
+      const a = new Date(d.getFullYear(),d.getMonth(),d.getDate()).getTime();
+      const b = new Date(now.getFullYear(),now.getMonth(),now.getDate()).getTime();
+      const diff = Math.round((a-b)/(24*3600*1000));
+      if(diff===0) return 'hoje';
+      if(diff===-1) return 'ontem';
+      return fmtDay(ts);
+    }
+
+    function setConn(ok){
+      $('connDot').classList.toggle('ok', !!ok);
+      $('statusTxt').textContent = ok ? 'Online' : 'Reconectando…';
+    }
+
+    function renderList(){
+      const list = $('list');
+      list.innerHTML = '';
+      const arr = Array.from(state.chats.values())
+        .sort((a,b) => (b.last_ts||0)-(a.last_ts||0))
+        .filter(c => {
+          if(!state.filter) return true;
+          const f = state.filter.toLowerCase();
+          return (String(c.title||'').toLowerCase().includes(f) || String(c.wa_id||'').includes(f));
+        });
+
+      if(arr.length === 0){
+        const div = document.createElement('div');
+        div.className = 'empty';
+        div.style.margin = '16px';
+        div.textContent = 'Nenhum chat ainda.';
+        list.appendChild(div);
+        return;
+      }
+
+      for(const c of arr){
+        const it = document.createElement('div');
+        it.className = 'item' + (state.selected===c.wa_id ? ' active':'');
+        it.onclick = () => openChat(c.wa_id);
+
+        const av = document.createElement('div');
+        av.className = 'avatar';
+
+        const meta = document.createElement('div');
+        meta.className = 'meta';
+
+        const row1 = document.createElement('div');
+        row1.className = 'row1';
+
+        const name = document.createElement('div');
+        name.className = 'name';
+        name.textContent = c.title || c.wa_id;
+
+        const time = document.createElement('div');
+        time.className = 'time';
+        time.textContent = c.last_ts ? fmtTime(c.last_ts) : '';
+
+        row1.appendChild(name); row1.appendChild(time);
+
+        const row2 = document.createElement('div');
+        row2.className = 'row2';
+        const prev = document.createElement('div');
+        prev.className = 'prev';
+        prev.textContent = c.last_text || '';
+        row2.appendChild(prev);
+
+        meta.appendChild(row1); meta.appendChild(row2);
+        it.appendChild(av); it.appendChild(meta);
+        list.appendChild(it);
+      }
+    }
+
+    function onBodyScroll(){
+      const el = $('body');
+      state.nearBottom = (el.scrollTop + el.clientHeight) >= (el.scrollHeight - 120);
+    }
+    $('body').addEventListener('scroll', onBodyScroll, { passive:true });
+
+    function scrollToBottom(force=false){
+      const el = $('body');
+      if(force || state.nearBottom) el.scrollTop = el.scrollHeight;
+    }
+
+    function clearChat(){
+      $('body').innerHTML = '';
+      $('empty').style.display = 'none';
+    }
+
+    function appendDivider(ts){
+      const d = document.createElement('div');
+      d.className = 'divider';
+      const s = document.createElement('span');
+      s.textContent = dividerLabel(ts);
+      d.appendChild(s);
+      $('body').appendChild(d);
+    }
+
+    function appendMsg({ role, text, ts_ms, ts }){
+      const isOut = role === 'assistant';
+      const row = document.createElement('div');
+      row.className = 'msgRow ' + (isOut ? 'out' : 'in');
+
+      const bub = document.createElement('div');
+      bub.className = 'bubble';
+      bub.textContent = text || '';
+
+      const foot = document.createElement('div');
+      foot.className = 'mFoot';
+      const t = document.createElement('span');
+      const when = ts_ms || (ts ? Date.parse(ts) : Date.now());
+      t.textContent = fmtTime(when);
+      foot.appendChild(t);
+
+      bub.appendChild(foot);
+      row.appendChild(bub);
+      $('body').appendChild(row);
+    }
+
+    function renderMessages(messages){
+      clearChat();
+      let lastDay = null;
+      for(const m of messages){
+        const when = m.ts_ms || (m.ts ? Date.parse(m.ts) : Date.now());
+        const day = new Date(when).toDateString();
+        if(day !== lastDay){
+          appendDivider(when);
+          lastDay = day;
+        }
+        const txt = (m.audio_text && m.text && m.text.startsWith('[audio]'))
+          ? (m.audio_text)
+          : (m.text || m.audio_text || '');
+        appendMsg({ role:m.role, text:txt, ts_ms: when, ts:m.ts });
+      }
+      scrollToBottom(true);
+    }
+
+    async function openChat(wa_id){
+      state.selected = wa_id;
+      renderList();
+
+      $('hName').textContent = wa_id;
+      $('hSub').textContent = 'Carregando…';
+
+      const r = await fetch('/admin/api/chats/' + encodeURIComponent(wa_id) + '/messages');
+      const j = await r.json();
+      $('hName').textContent = j.title || wa_id;
+      $('hSub').textContent = wa_id;
+
+      state.loaded.add(wa_id);
+      renderMessages(Array.isArray(j.messages) ? j.messages : []);
+    }
+
+    function upsertChatFromEvt(evt){
+      if(!evt || !evt.wa_id) return;
+
+      const prev = state.chats.get(evt.wa_id) || { wa_id: evt.wa_id };
+      const next = { ...prev };
+
+      if(evt.type === 'message'){
+        next.last_ts = evt.ts || Date.now();
+        const text = (evt.text || '').trim() || (evt.kind ? '['+evt.kind+']' : '');
+        next.last_text = text;
+        if(!next.title) next.title = prev.title || evt.wa_id;
+      } else {
+        next.last_ts = Math.max(prev.last_ts || 0, evt.ts || 0);
+      }
+
+      state.chats.set(evt.wa_id, next);
+    }
+
+    function tryAppendLive(evt){
+      if(!state.selected || evt.wa_id !== state.selected) return;
+      if(evt.type !== 'message') return;
+
+      const role = (evt.dir === 'out') ? 'assistant' : 'user';
+      const when = evt.ts || Date.now();
+      const day = new Date(when).toDateString();
+
+      // se o último divider não bate, adiciona
+      const body = $('body');
+      let lastDividerDay = null;
+      for(let i=body.children.length-1;i>=0;i--){
+        const n = body.children[i];
+        if(n.classList && n.classList.contains('divider')){
+          lastDividerDay = new Date(when).toDateString(); // simplificado
+          break;
+        }
+        if(n.classList && n.classList.contains('msgRow')){
+          break;
+        }
+      }
+      // (simplificação: sem “olhar” o dia real do último divider)
+      // se o chat estiver vazio, vai adicionar divider na próxima renderização completa.
+
+      appendMsg({ role, text: evt.text || (evt.kind ? '['+evt.kind+']' : ''), ts_ms: when });
+      scrollToBottom();
+    }
+
+    async function loadChats(){
+      const r = await fetch('/admin/api/chats?limit=2000');
+      const j = await r.json();
+      (j.chats || []).forEach(c => state.chats.set(c.wa_id, c));
+      renderList();
+
+      // auto-seleciona o primeiro chat (se existir)
+      if(!state.selected && j.chats && j.chats.length){
+        openChat(j.chats[0].wa_id);
+      }
+    }
+
+    function connectSSE(){
+      const es = new EventSource('/api/stream');
+
+      es.addEventListener('ready', () => setConn(true));
+      es.addEventListener('ping', () => { /* noop */ });
+
+      const onEvt = (e) => {
+        try {
+          const evt = JSON.parse(e.data);
+          upsertChatFromEvt(evt);
+          renderList();
+          tryAppendLive(evt);
+        } catch {}
+      };
+
+      es.addEventListener('message', onEvt);
+      es.addEventListener('state', onEvt);
+      es.addEventListener('ack', onEvt);
+
+      es.onerror = () => {
+        setConn(false);
+        // EventSource não expõe status direto, então só não "garante" aqui
+      };
+    }
+
+    $('q').addEventListener('input', (e) => {
+      state.filter = String(e.target.value || '').trim();
+      renderList();
+    });
+
+    (async function boot(){
+      setConn(false);
+      await loadChats();
+      connectSSE();
+    })();
+  </script>
+</body>
+</html>

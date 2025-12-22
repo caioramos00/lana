@@ -8,6 +8,7 @@ const db = require('./db.js');
 const { rememberInboundMetaPhoneNumberId, sendMessage } = require('./senders');
 const { sseRouter } = require('./stream/sse-router');
 const { publishMessage, publishAck, publishState } = require('./stream/events-bus');
+const { createChatIndex } = require('./stream/chat-index');
 
 const { createLeadStore } = require('./lead');
 const { createAiEngine } = require('./ai');
@@ -174,6 +175,8 @@ function readLeadFromSettings(settings) {
   lead.__store_id = lead.__store_id || Math.random().toString(16).slice(2);
   console.log('[LEAD][STORE_ID][BOOT]', lead.__store_id);
 
+  const chatIndex = createChatIndex({ lead });
+
   // ✅ payments singleton com leadStore real
   const payments = createPaymentsModule({ db, lead, publishState });
 
@@ -189,6 +192,7 @@ function readLeadFromSettings(settings) {
   registerRoutes(app, {
     db,
     lead,
+    chatIndex,
     payments,
     rememberInboundMetaPhoneNumberId,
     publishMessage,

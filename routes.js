@@ -115,7 +115,8 @@ function extractInboundText(m) {
 function registerRoutes(app, {
   db,
   lead,
-  payments, // ✅ INJETADO PELO index.js (singleton)
+  chatIndex,
+  payments,
   rememberInboundMetaPhoneNumberId,
   publishMessage,
   publishAck,
@@ -660,6 +661,55 @@ function registerRoutes(app, {
       }
     } catch {
       // silencioso
+    }
+  });
+
+  app.get('/admin/chats', checkAuth, (req, res) => {
+    return res.sendFile(path.join(__dirname, 'public', 'chats.html'));
+  });
+
+  app.get('/admin/api/chats', checkAuth, (req, res) => {
+    try {
+      const limit = Math.max(1, Math.min(5000, Number(req.query.limit) || 2000));
+      const chats = (chatIndex && typeof chatIndex.list === 'function')
+        ? chatIndex.list({ limit })
+        : [];
+      return res.json({ ok: true, chats });
+    } catch (e) {
+      return res.status(500).json({ ok: false, error: e?.message || 'err' });
+    }
+  });
+
+  app.get('/admin/api/chats/:wa_id/messages', checkAuth, (req, res) => {
+    try {
+      const wa_id = String(req.params.wa_id || '').trim();
+      if (!wa_id) return res.json({ ok: true, wa_id: '', title: '', messages: [] });
+
+      try { chatIndex?.ensureKnown?.(wa_id); } catch { }
+
+      const st = lead?.getLead?.(wa_id);
+      const contact = st?.first_inbound_payload?.contact || null;
+      const title = (
+        (contact?.profile?.name || '').trim() ||
+        (contact?.name?.formatted_name || '').trim() ||
+        wa_id
+      );
+
+      const hist = Array.isArray(st?.history) ? st.history : [];
+      const messages = hist.map((m) => ({
+        role: String(m?.role || '').trim() || 'system',
+        text: String(m?.text || ''),
+        ts: m?.ts || null,
+        ts_ms: Number.isFinite(m?.ts_ms) ? m.ts_ms : null,
+        kind: String(m?.kind || 'text'),
+        wamid: String(m?.wamid || ''),
+        audio_text: String(m?.audio_text || ''),
+        meta: m?.meta || undefined,
+      }));
+
+      return res.json({ ok: true, wa_id, title, messages });
+    } catch (e) {
+      return res.status(500).json({ ok: false, error: e?.message || 'err' });
     }
   });
 
