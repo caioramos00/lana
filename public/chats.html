@@ -44,7 +44,6 @@
             display: flex
         }
 
-        /* sidebar */
         .side {
             width: 360px;
             min-width: 320px;
@@ -168,7 +167,6 @@
             text-overflow: ellipsis
         }
 
-        /* chat */
         .main {
             flex: 1;
             display: flex;
@@ -206,13 +204,16 @@
             margin-top: 2px
         }
 
-        .body {
+        /* ✅ viewport do chat */
+        .chatBody {
             flex: 1;
             overflow: auto;
             padding: 18px;
-            background: var(--bg)
+            background: var(--bg);
+            position: relative;
         }
 
+        /* ✅ empty-state fica separado e NÃO é removido */
         .empty {
             max-width: 560px;
             margin: 70px auto 0;
@@ -363,11 +364,14 @@
                 <div class="pill" id="statusTxt">Conectando…</div>
             </div>
 
-            <div id="body" class="body">
+            <!-- ✅ chat viewport -->
+            <div id="chatBody" class="chatBody">
                 <div id="empty" class="empty">
                     Abra um chat na lista à esquerda.<br />
                     O painel atualiza em tempo real via <span class="kbd">/api/stream</span>.
                 </div>
+                <!-- ✅ mensagens vão aqui -->
+                <div id="msgs"></div>
             </div>
 
             <div class="foot">
@@ -380,51 +384,92 @@
     <script>
         const $ = (id) => document.getElementById(id);
 
-        const state = {
-            chats: new Map(),
-            selected: null,
-            loaded: new Set(),
-            filter: '',
-            nearBottom: true,
+        const el = {
+            connDot: $('connDot'),
+            statusTxt: $('statusTxt'),
+            q: $('q'),
+            list: $('list'),
+            hName: $('hName'),
+            hSub: $('hSub'),
+            chatBody: $('chatBody'),
+            empty: $('empty'),
+            msgs: $('msgs'),
         };
 
-        // ====== BUFFER (Solução A) ======
-        const MAX_BUFFER_PER_CHAT = 800;
+        const state = {
+            chats: new Map(),          // wa_id -> {wa_id,title,last_ts,last_text}
+            selected: null,
+            filter: '',
+            nearBottom: true,
 
-        // wa_id -> array de msgs normalizadas (somente desde que a página abriu)
-        state.msgBuffer = new Map();
-
-        // wa_id -> Set de chaves para dedupe
-        state.msgSeen = new Map();
+            // Solução A (buffer no front)
+            msgBuffer: new Map(),      // wa_id -> [msg]
+            msgSeen: new Map(),        // wa_id -> Set(key)
+        };
 
         window.__CHATS_STATE = state;
 
+        const MAX_BUFFER_PER_CHAT = 800;
+
+        function fmtTime(ts) {
+            const d = new Date(ts || Date.now());
+            return new Intl.DateTimeFormat('pt-BR', { hour: '2-digit', minute: '2-digit' }).format(d);
+        }
+        function fmtDay(ts) {
+            const d = new Date(ts || Date.now());
+            return new Intl.DateTimeFormat('pt-BR', { day: '2-digit', month: '2-digit', year: 'numeric' }).format(d);
+        }
+        function dividerLabel(ts) {
+            const d = new Date(ts || Date.now());
+            const now = new Date();
+            const a = new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
+            const b = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+            const diff = Math.round((a - b) / (24 * 3600 * 1000));
+            if (diff === 0) return 'hoje';
+            if (diff === -1) return 'ontem';
+            return fmtDay(ts);
+        }
+
+        function setConn(ok) {
+            el.connDot.classList.toggle('ok', !!ok);
+            el.statusTxt.textContent = ok ? 'Online' : 'Reconectando…';
+        }
+
+        function setEmptyVisible(v) {
+            el.empty.style.display = v ? 'block' : 'none';
+        }
+
+        function clearMessages() {
+            el.msgs.innerHTML = '';
+        }
+
+        function onBodyScroll() {
+            state.nearBottom = (el.chatBody.scrollTop + el.chatBody.clientHeight) >= (el.chatBody.scrollHeight - 120);
+        }
+        el.chatBody.addEventListener('scroll', onBodyScroll, { passive: true });
+
+        function scrollToBottom(force = false) {
+            if (force || state.nearBottom) el.chatBody.scrollTop = el.chatBody.scrollHeight;
+        }
+
+        // ---------- BUFFER ----------
         function getSeenSet(wa_id) {
             let s = state.msgSeen.get(wa_id);
-            if (!s) {
-                s = new Set();
-                state.msgSeen.set(wa_id, s);
-            }
+            if (!s) { s = new Set(); state.msgSeen.set(wa_id, s); }
             return s;
         }
 
         function getBufferArr(wa_id) {
             let a = state.msgBuffer.get(wa_id);
-            if (!a) {
-                a = [];
-                state.msgBuffer.set(wa_id, a);
-            }
+            if (!a) { a = []; state.msgBuffer.set(wa_id, a); }
             return a;
         }
 
         function msgKeyFromEvent(evt) {
-            // prioriza id do SSE, depois wamid, depois fallback
             const id = String(evt?.id || '').trim();
             if (id) return `id:${id}`;
-
             const wamid = String(evt?.wamid || '').trim();
             if (wamid) return `wamid:${wamid}`;
-
             const ts = Number(evt?.ts) || 0;
             const dir = evt?.dir === 'out' ? 'out' : 'in';
             const kind = String(evt?.kind || '');
@@ -447,18 +492,16 @@
             }
 
             return {
-                _k: msgKeyFromEvent(evt),        // chave de dedupe
+                _k: msgKeyFromEvent(evt),
                 role: isOut ? 'assistant' : 'user',
                 text,
                 ts_ms: when,
                 kind,
-                dir: isOut ? 'out' : 'in',
             };
         }
 
         function bufferPush(wa_id, msg) {
             if (!wa_id || !msg) return;
-
             const seen = getSeenSet(wa_id);
             if (seen.has(msg._k)) return;
             seen.add(msg._k);
@@ -466,13 +509,8 @@
             const arr = getBufferArr(wa_id);
             arr.push(msg);
 
-            // limita tamanho
             if (arr.length > MAX_BUFFER_PER_CHAT) {
-                const drop = arr.length - MAX_BUFFER_PER_CHAT;
-                arr.splice(0, drop);
-
-                // mantém Set “aproximado” (ok pro caso)
-                // se você quiser 100% limpo, dá pra reconstruir o Set, mas não precisa.
+                arr.splice(0, arr.length - MAX_BUFFER_PER_CHAT);
             }
         }
 
@@ -483,10 +521,8 @@
                 ? String(m.audio_text || '')
                 : String(m?.text || m?.audio_text || '');
 
-            // chave de dedupe: wamid > ts+role+text
             const wamid = String(m?.wamid || '').trim();
             const key = wamid ? `wamid:${wamid}` : `h:${when}|${role}|${text}`;
-
             return { _k: key, role, text, ts_ms: when, kind: String(m?.kind || 'text') };
         }
 
@@ -494,39 +530,15 @@
             const map = new Map();
             for (const x of (histMsgs || [])) map.set(x._k, x);
             for (const x of (liveMsgs || [])) map.set(x._k, x);
-
             const merged = Array.from(map.values());
             merged.sort((a, b) => (a.ts_ms || 0) - (b.ts_ms || 0));
             return merged;
         }
 
-        function fmtTime(ts) {
-            const d = new Date(ts || Date.now());
-            return new Intl.DateTimeFormat('pt-BR', { hour: '2-digit', minute: '2-digit' }).format(d);
-        }
-        function fmtDay(ts) {
-            const d = new Date(ts || Date.now());
-            return new Intl.DateTimeFormat('pt-BR', { day: '2-digit', month: '2-digit', year: 'numeric' }).format(d);
-        }
-        function dividerLabel(ts) {
-            const d = new Date(ts || Date.now());
-            const now = new Date();
-            const a = new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
-            const b = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
-            const diff = Math.round((a - b) / (24 * 3600 * 1000));
-            if (diff === 0) return 'hoje';
-            if (diff === -1) return 'ontem';
-            return fmtDay(ts);
-        }
-
-        function setConn(ok) {
-            $('connDot').classList.toggle('ok', !!ok);
-            $('statusTxt').textContent = ok ? 'Online' : 'Reconectando…';
-        }
-
+        // ---------- RENDER ----------
         function renderList() {
-            const list = $('list');
-            list.innerHTML = '';
+            el.list.innerHTML = '';
+
             const arr = Array.from(state.chats.values())
                 .sort((a, b) => (b.last_ts || 0) - (a.last_ts || 0))
                 .filter(c => {
@@ -540,7 +552,7 @@
                 div.className = 'empty';
                 div.style.margin = '16px';
                 div.textContent = 'Nenhum chat ainda.';
-                list.appendChild(div);
+                el.list.appendChild(div);
                 return;
             }
 
@@ -570,169 +582,151 @@
 
                 const row2 = document.createElement('div');
                 row2.className = 'row2';
+
                 const prev = document.createElement('div');
                 prev.className = 'prev';
                 prev.textContent = c.last_text || '';
+
                 row2.appendChild(prev);
 
-                meta.appendChild(row1); meta.appendChild(row2);
-                it.appendChild(av); it.appendChild(meta);
-                list.appendChild(it);
+                meta.appendChild(row1);
+                meta.appendChild(row2);
+
+                it.appendChild(av);
+                it.appendChild(meta);
+
+                el.list.appendChild(it);
             }
-        }
-
-        function onBodyScroll() {
-            const el = $('body');
-            state.nearBottom = (el.scrollTop + el.clientHeight) >= (el.scrollHeight - 120);
-        }
-        $('body').addEventListener('scroll', onBodyScroll, { passive: true });
-
-        function scrollToBottom(force = false) {
-            const el = $('body');
-            if (force || state.nearBottom) el.scrollTop = el.scrollHeight;
-        }
-
-        function clearChat() {
-            $('body').innerHTML = '';
-            $('empty').style.display = 'none';
         }
 
         function appendDivider(ts) {
             const d = document.createElement('div');
             d.className = 'divider';
+            d.dataset.day = new Date(ts || Date.now()).toDateString();
             const s = document.createElement('span');
             s.textContent = dividerLabel(ts);
             d.appendChild(s);
-            $('body').appendChild(d);
+            el.msgs.appendChild(d);
         }
 
-        function appendMsg({ role, text, ts_ms, ts }) {
-            const isOut = role === 'assistant';
+        function appendMsg(msg) {
+            const isOut = msg.role === 'assistant';
             const row = document.createElement('div');
             row.className = 'msgRow ' + (isOut ? 'out' : 'in');
 
             const bub = document.createElement('div');
             bub.className = 'bubble';
-            bub.textContent = text || '';
+            bub.textContent = msg.text || '';
 
             const foot = document.createElement('div');
             foot.className = 'mFoot';
-            const t = document.createElement('span');
-            const when = ts_ms || (ts ? Date.parse(ts) : Date.now());
-            t.textContent = fmtTime(when);
-            foot.appendChild(t);
 
+            const t = document.createElement('span');
+            t.textContent = fmtTime(msg.ts_ms || Date.now());
+
+            foot.appendChild(t);
             bub.appendChild(foot);
             row.appendChild(bub);
-            $('body').appendChild(row);
+
+            el.msgs.appendChild(row);
+        }
+
+        function ensureDividerIfNeeded(ts_ms) {
+            const day = new Date(ts_ms || Date.now()).toDateString();
+            // acha último divider
+            for (let i = el.msgs.children.length - 1; i >= 0; i--) {
+                const node = el.msgs.children[i];
+                if (node.classList && node.classList.contains('divider')) {
+                    if (node.dataset.day !== day) appendDivider(ts_ms);
+                    return;
+                }
+                if (node.classList && node.classList.contains('msgRow')) {
+                    // se não tem divider no final, cria (caso raro)
+                    break;
+                }
+            }
+            appendDivider(ts_ms);
         }
 
         function renderMessages(messages) {
-            clearChat();
+            clearMessages();
+
+            if (!messages || messages.length === 0) {
+                setEmptyVisible(true);
+                return;
+            }
+
+            setEmptyVisible(false);
+
             let lastDay = null;
             for (const m of messages) {
-                const when = m.ts_ms || (m.ts ? Date.parse(m.ts) : Date.now());
+                const when = Number(m.ts_ms) || Date.now();
                 const day = new Date(when).toDateString();
                 if (day !== lastDay) {
                     appendDivider(when);
                     lastDay = day;
                 }
-                const txt = (m.audio_text && m.text && m.text.startsWith('[audio]'))
-                    ? (m.audio_text)
-                    : (m.text || m.audio_text || '');
-                appendMsg({ role: m.role, text: txt, ts_ms: when, ts: m.ts });
+                appendMsg({ role: m.role, text: m.text, ts_ms: when });
             }
             scrollToBottom(true);
         }
 
+        // ---------- DATA ----------
+        function upsertChatFromEvt(evt) {
+            const wa_id = String(evt?.wa_id || '').trim();
+            if (!wa_id) return;
+
+            const prev = state.chats.get(wa_id) || { wa_id };
+            const next = { ...prev };
+
+            if (String(evt.type) === 'message') {
+                next.last_ts = Number(evt.ts) || Date.now();
+                const txt = String(evt.text || '').trim() || (evt.kind ? `[${evt.kind}]` : '');
+                next.last_text = txt;
+                if (!next.title) next.title = wa_id;
+            } else {
+                next.last_ts = Math.max(Number(prev.last_ts) || 0, Number(evt.ts) || 0);
+            }
+
+            state.chats.set(wa_id, next);
+        }
+
         async function openChat(wa_id) {
-            state.selected = wa_id;
+            const id = String(wa_id || '').trim();
+            if (!id) return;
+
+            state.selected = id;
             renderList();
 
-            $('hName').textContent = wa_id;
-            $('hSub').textContent = 'Carregando…';
+            el.hName.textContent = id;
+            el.hSub.textContent = 'Carregando…';
 
-            // ✅ mostra imediatamente o que já chegou via SSE desde que abriu /admin/chats
-            const liveNow = state.msgBuffer.get(wa_id) || [];
+            // mostra imediatamente o que já chegou via SSE
+            const liveNow = state.msgBuffer.get(id) || [];
             if (liveNow.length) {
                 renderMessages(liveNow);
-                scrollToBottom(true);
             } else {
-                // não deixa “parecer travado”
-                clearChat();
+                renderMessages([]);
             }
 
             let j;
             try {
-                const r = await fetch('/admin/api/chats/' + encodeURIComponent(wa_id) + '/messages');
+                const r = await fetch('/admin/api/chats/' + encodeURIComponent(id) + '/messages');
                 j = await r.json();
             } catch {
-                j = { ok: false, messages: [] };
+                j = { ok: false, messages: [], title: id };
             }
 
-            $('hName').textContent = j.title || wa_id;
-            $('hSub').textContent = wa_id;
+            el.hName.textContent = j.title || id;
+            el.hSub.textContent = id;
 
             const histMsgs = (Array.isArray(j.messages) ? j.messages : []).map(normalizeHistoryToMsg);
-            const liveMsgs = state.msgBuffer.get(wa_id) || [];
-
+            const liveMsgs = state.msgBuffer.get(id) || [];
             const merged = mergeAndDedupeMessages(histMsgs, liveMsgs);
 
             renderMessages(merged);
-            scrollToBottom(true);
 
-            console.debug('[openChat]', wa_id, {
-                hist: histMsgs.length,
-                live: liveMsgs.length,
-                merged: merged.length,
-            });
-        }
-
-        function upsertChatFromEvt(evt) {
-            if (!evt || !evt.wa_id) return;
-
-            const prev = state.chats.get(evt.wa_id) || { wa_id: evt.wa_id };
-            const next = { ...prev };
-
-            if (evt.type === 'message') {
-                next.last_ts = evt.ts || Date.now();
-                const text = (evt.text || '').trim() || (evt.kind ? '[' + evt.kind + ']' : '');
-                next.last_text = text;
-                if (!next.title) next.title = prev.title || evt.wa_id;
-            } else {
-                next.last_ts = Math.max(prev.last_ts || 0, evt.ts || 0);
-            }
-
-            state.chats.set(evt.wa_id, next);
-        }
-
-        function tryAppendLive(evt) {
-            if (!state.selected || evt.wa_id !== state.selected) return;
-            if (evt.type !== 'message') return;
-
-            const role = (evt.dir === 'out') ? 'assistant' : 'user';
-            const when = evt.ts || Date.now();
-            const day = new Date(when).toDateString();
-
-            // se o último divider não bate, adiciona
-            const body = $('body');
-            let lastDividerDay = null;
-            for (let i = body.children.length - 1; i >= 0; i--) {
-                const n = body.children[i];
-                if (n.classList && n.classList.contains('divider')) {
-                    lastDividerDay = new Date(when).toDateString(); // simplificado
-                    break;
-                }
-                if (n.classList && n.classList.contains('msgRow')) {
-                    break;
-                }
-            }
-            // (simplificação: sem “olhar” o dia real do último divider)
-            // se o chat estiver vazio, vai adicionar divider na próxima renderização completa.
-
-            const msg = normalizeEventToMsg(evt);
-            appendMsg({ role: msg.role, text: msg.text, ts_ms: msg.ts_ms });
-            scrollToBottom();
+            console.debug('[openChat]', id, { hist: histMsgs.length, live: liveMsgs.length, merged: merged.length });
         }
 
         async function loadChats() {
@@ -740,52 +734,36 @@
             const j = await r.json();
             (j.chats || []).forEach(c => state.chats.set(c.wa_id, c));
             renderList();
-
-            // auto-seleciona o primeiro chat (se existir)
-            if (!state.selected && j.chats && j.chats.length) {
-                openChat(j.chats[0].wa_id);
-            }
         }
 
+        // ---------- SSE ----------
         function connectSSE() {
             const es = new EventSource('/api/stream');
 
             const handle = (eventName) => (e) => {
                 let evt;
-                try {
-                    evt = JSON.parse(e.data);
-                } catch {
-                    return;
-                }
+                try { evt = JSON.parse(e.data); } catch { return; }
 
                 const wa_id = String(evt?.wa_id || '').trim();
                 if (!wa_id) return;
 
-                // fonte da verdade: nome do evento SSE (message/state/ack)
-                const type = String(evt.type || eventName);
+                evt.type = String(evt.type || eventName);
 
-                // garante consistência para o resto do código
-                evt.type = type;
-
-                // sempre atualiza lista/preview
                 upsertChatFromEvt(evt);
 
-                // ✅ SOLUÇÃO A: guarda TODA mensagem no buffer, mesmo sem abrir chat
-                if (type === 'message') {
+                if (evt.type === 'message') {
                     const msg = normalizeEventToMsg(evt);
                     bufferPush(wa_id, msg);
 
-                    // se o chat estiver aberto, mostra ao vivo também
                     if (state.selected === wa_id) {
-                        appendMsg({ role: msg.role, text: msg.text, ts_ms: msg.ts_ms });
+                        setEmptyVisible(false);
+                        ensureDividerIfNeeded(msg.ts_ms);
+                        appendMsg(msg);
                         scrollToBottom();
                     }
                 }
 
                 renderList();
-
-                // debug rápido: veja no console se o buffer está enchendo
-                // console.debug('[SSE]', type, wa_id, 'buf=', (state.msgBuffer.get(wa_id) || []).length);
             };
 
             es.addEventListener('ready', () => setConn(true));
@@ -795,13 +773,11 @@
             es.addEventListener('state', handle('state'));
             es.addEventListener('ack', handle('ack'));
 
-            // fallback (não atrapalha): alguns setups dependem disso
-            es.onmessage = handle('message');
-
             es.onerror = () => setConn(false);
         }
 
-        $('q').addEventListener('input', (e) => {
+        // ---------- BOOT ----------
+        el.q.addEventListener('input', (e) => {
             state.filter = String(e.target.value || '').trim();
             renderList();
         });
