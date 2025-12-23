@@ -1,10 +1,3 @@
-// actions/handlers/enviar_videos.js
-// Envia 1+ vídeos (URLs públicas) pelo WhatsApp Cloud API.
-//
-// Fontes de mídia (ordem):
-// 1) payload.urls / payload.items
-// 2) CONFIG.media.videos / CONFIG.media.videosUrls / CONFIG.media.videoUrls
-
 const { CONFIG } = require('../config');
 
 function toItems(payload) {

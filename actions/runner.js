@@ -47,8 +47,6 @@ function createActionRunner({ db, senders, publishState, payments, aiLog = () =>
     enviar_link_acesso: require('./handlers/enviar_link_acesso'),
 
     enviar_audio: require('./handlers/enviar_audio'),
-
-    enviar_video: require('./handlers/enviar_video'),
     enviar_videos: require('./handlers/enviar_videos'),
 
     enviar_fotos: require('./handlers/enviar_fotos'),
