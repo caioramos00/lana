@@ -16,10 +16,7 @@ const {
 
 const { humanDelayForOutboundText } = require('./runtime');
 
-// ==== Audio rate limit (global, in-memory) ====
-// Conta "slots" de áudio numa janela de tempo (rolling window).
-// Observação: é global por instância do Node (se você rodar múltiplas réplicas, cada réplica terá seu próprio limite).
-const _globalAudioRate = { ts: [] };
+const _audioRateByUser = new Map();
 
 function _boolLoose(v, def = false) {
   if (v === undefined || v === null) return def;
@@ -63,9 +60,21 @@ function _formatWaitMs(ms) {
   return r ? `${m}m${r}s` : `${m}m`;
 }
 
-function takeGlobalAudioSlot({ max, windowMs, nowMs = Date.now() }) {
+function takeUserAudioSlot({ userKey, max, windowMs, nowMs = Date.now() }) {
+  const key = String(userKey || '').trim();
+  if (!key) {
+    // Sem chave = não limita (ou você pode optar por bloquear). Aqui deixei "passa".
+    return { allowed: true, retryMs: 0, used: 0, max, windowMs };
+  }
+
+  let bucket = _audioRateByUser.get(key);
+  if (!bucket) {
+    bucket = { ts: [] };
+    _audioRateByUser.set(key, bucket);
+  }
+
   const cutoff = nowMs - windowMs;
-  const ts = _globalAudioRate.ts;
+  const ts = bucket.ts;
 
   // purge
   while (ts.length && ts[0] <= cutoff) ts.shift();
@@ -152,7 +161,7 @@ async function dispatchAssistantOutputs({
   if (desiredAudio && settingsNow) {
     const rl = _readAudioRateLimitSettings(settingsNow);
     if (rl.enabled) {
-      audioLimit = takeGlobalAudioSlot({ max: rl.max, windowMs: rl.windowMs });
+      audioLimit = takeUserAudioSlot({ userKey: wa_id, max: rl.max, windowMs: rl.windowMs });
       if (!audioLimit.allowed) {
         shouldSendAudio = false;
         aiLog(`[AI][AUDIO_RL][${wa_id}] BLOCK used=${audioLimit.used}/${audioLimit.max} retry_in=${_formatWaitMs(audioLimit.retryMs)}`);
@@ -170,38 +179,6 @@ async function dispatchAssistantOutputs({
     else if (modelWantsAudio) reason = 'MODEL';
     aiLog(`[AI][AUDIO_ONLY][${wa_id}] reason=${reason} -> suprimindo ${outItems.length} msg(s) de texto`);
   } else {
-    if (desiredAudio && !shouldSendAudio && (askedAudio || modelWantsAudio)) {
-      const rl = settingsNow ? _readAudioRateLimitSettings(settingsNow) : { noticeText: '' };
-      let notice = String(rl.noticeText || '').trim();
-
-      if (!notice && askedAudio) {
-        notice = 'não consigo mandar áudio agora amor, vou responder por texto';
-      }
-
-      if (notice) {
-        // opcional: permite {{WAIT}} no texto do painel
-        if (audioLimit && !audioLimit.allowed) {
-          notice = notice.replaceAll('{{WAIT}}', _formatWaitMs(audioLimit.retryMs));
-        }
-
-        const rNotice = await sendMessage(wa_id, notice, {
-          meta_phone_number_id: inboundPhoneNumberId || null,
-        });
-
-        if (rNotice?.ok) {
-          leadStore.pushHistory(wa_id, 'assistant', notice, {
-            kind: 'text',
-            wamid: rNotice.wamid || '',
-            phone_number_id: rNotice.phone_number_id || inboundPhoneNumberId || null,
-            ts_ms: Date.now(),
-            reply_to_wamid: null,
-            meta: { audio_rate_limited: true },
-          });
-        } else {
-          aiLog(`[AI][AUDIO_RL_NOTICE][${wa_id}] FAIL`, rNotice);
-        }
-      }
-    }
     for (let i = 0; i < outItems.length; i++) {
       const { text: msg, reply_to_wamid } = outItems[i];
       if (i > 0) await humanDelayForOutboundText(msg, cfg.outboundDelay);
