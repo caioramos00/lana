@@ -897,7 +897,7 @@ async function sendPreviewToLead({ wa_id, preview_id, inboundPhoneNumberId, db: 
 
     const offer = cfg.offer;
 
-    const kind = String(offer.kind || '').trim().toLowerCase(); // "foto" ou "video"
+    const kind = String(offer.kind || '').trim().toLowerCase();
     const delayMin = Number.isFinite(Number(offer.delay_between_min_ms)) ? Number(offer.delay_between_min_ms) : 250;
     const delayMax = Number.isFinite(Number(offer.delay_between_max_ms)) ? Number(offer.delay_between_max_ms) : 900;
     const delayBetweenMs = [Math.min(delayMin, delayMax), Math.max(delayMin, delayMax)];
