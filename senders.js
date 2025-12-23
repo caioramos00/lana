@@ -11,7 +11,6 @@ const fs = require('fs');
 const path = require('path');
 const os = require('os');
 const crypto = require('crypto');
-const { URL } = require('url');
 
 const db = require('./db');
 const { publishMessage } = require('./stream/events-bus');
@@ -127,16 +126,18 @@ const OGG_CRC_TABLE = (() => {
   return table;
 })();
 
-function oggCrc32(pageBuf) {
-  // CRC do OGG é calculado com o campo CRC zerado (offset 22..25)
-  const tmp = Buffer.from(pageBuf);
-  if (tmp.length >= 26) tmp.writeUInt32LE(0, 22);
-  let crc = 0 >>> 0;
-  for (let i = 0; i < tmp.length; i++) {
-    const idx = ((crc >>> 24) ^ tmp[i]) & 0xff;
-    crc = (((crc << 8) >>> 0) ^ OGG_CRC_TABLE[idx]) >>> 0;
-  }
-  return crc >>> 0;
+const MEDIA_ROOT = process.env.MEDIA_ROOT
+  ? path.resolve(process.env.MEDIA_ROOT)
+  : path.join(__dirname, 'media');
+
+function resolveLocalMediaPath(ref) {
+  let s = String(ref || '').trim();
+  if (!s) return null;
+
+  if (/^local:/i.test(s)) s = s.replace(/^local:/i, '').trim();
+
+  const abs = path.isAbsolute(s) ? s : path.join(MEDIA_ROOT, s);
+  return abs;
 }
 
 async function metaPostMessage({ phoneNumberId, token, version, payload }) {
@@ -243,9 +244,20 @@ async function downloadMetaMediaToTempFile(contato, mediaId, opts = {}) {
 }
 
 // ======= MEDIA UPLOAD (local file -> media id) =======
-function guessAudioMime(filePath) {
+function guessMime(filePath) {
   const ext = String(path.extname(filePath || '')).toLowerCase();
 
+  // images
+  if (ext === '.jpg' || ext === '.jpeg') return 'image/jpeg';
+  if (ext === '.png') return 'image/png';
+  if (ext === '.webp') return 'image/webp';
+
+  // videos
+  if (ext === '.mp4') return 'video/mp4';
+  if (ext === '.mov') return 'video/quicktime';
+  if (ext === '.3gp') return 'video/3gpp';
+
+  // audios
   if (ext === '.ogg' || ext === '.opus') return 'audio/ogg';
   if (ext === '.mp3') return 'audio/mpeg';
   if (ext === '.m4a') return 'audio/mp4';
@@ -272,8 +284,7 @@ async function metaUploadMediaFromPath({ phoneNumberId, token, version, filePath
   const form = new FormData();
   form.append('messaging_product', 'whatsapp');
 
-  // IMPORTANTE: pra voice note, use "audio/ogg" (sem "; codecs=opus")
-  const mt = String(mimeType || '').trim() || guessAudioMime(abs);
+  const mt = String(mimeType || '').trim() || guessMime(abs);
   form.append('type', mt);
 
   const upName = String(filename || '').trim() || path.basename(abs);
@@ -357,69 +368,124 @@ async function sendMessage(contato, texto, opts = {}) {
   }
 }
 
-// ======= SEND IMAGE (já existia) =======
 async function sendImage(contato, urlOrItems, captionOrOpts, opts = {}) {
-  if (typeof captionOrOpts === 'object' && captionOrOpts) {
+
+  const isPlainObject = (v) =>
+    v && typeof v === "object" && !Array.isArray(v);
+
+  if (isPlainObject(captionOrOpts)) {
     opts = captionOrOpts;
     captionOrOpts = undefined;
   }
+  if (!isPlainObject(opts)) opts = {};
 
-  const to = String(contato || '').trim();
-  if (!to) return { ok: false, reason: 'missing-to' };
+  const to = String(contato || "").trim();
+  if (!to) return { ok: false, reason: "missing-to" };
 
-  const isArray = Array.isArray(urlOrItems);
-  const items = isArray
-    ? urlOrItems
-    : [{ url: urlOrItems, caption: captionOrOpts }];
+  const isArrayInput = Array.isArray(urlOrItems);
 
-  const delayBetweenMs = opts.delayBetweenMs || [250, 900];
+  let items;
+  if (isArrayInput) {
+    items = urlOrItems.map((it) => {
+      if (typeof it === "string") return { url: it, caption: "" };
+      if (isPlainObject(it)) return { url: it.url, caption: it.caption };
+      return { url: it, caption: "" };
+    });
+  } else if (isPlainObject(urlOrItems)) {
+    items = [{
+      url: urlOrItems.url,
+      caption: urlOrItems.caption ?? captionOrOpts,
+    }];
+  } else {
+    items = [{ url: urlOrItems, caption: captionOrOpts }];
+  }
+
+  const delayBetweenMs = (() => {
+    const v = opts.delayBetweenMs ?? [250, 900];
+    if (Array.isArray(v) && v.length >= 2) {
+      const a = Number(v[0]);
+      const b = Number(v[1]);
+      return [
+        Number.isFinite(a) ? a : 250,
+        Number.isFinite(b) ? b : 900,
+      ];
+    }
+    const n = Number(v);
+    return Number.isFinite(n) ? [n, n] : [250, 900];
+  })();
 
   try {
     const settings = await getSettings();
-    const { phoneNumberId, token } = await resolveMetaCredentialsForContato(to, settings, opts);
+    const { phoneNumberId, token } = await resolveMetaCredentialsForContato(
+      to,
+      settings,
+      opts
+    );
 
     if (!phoneNumberId || !token) {
-      return { ok: false, reason: 'missing-meta-credentials', phone_number_id: phoneNumberId || null };
+      return {
+        ok: false,
+        reason: "missing-meta-credentials",
+        phone_number_id: phoneNumberId || null,
+      };
     }
 
     const results = [];
-    for (let i = 0; i < items.length; i++) {
-      const url = String(items[i]?.url || '').trim();
-      const caption = String(items[i]?.caption || '').trim();
 
-      if (!/^https?:\/\//i.test(url)) {
-        results.push({ ok: false, reason: 'invalid-url', url });
+    for (let i = 0; i < items.length; i++) {
+      const rawUrl = items[i]?.url;
+      const url = String(rawUrl || "").trim();
+
+      // keep caption optional; avoid forcing "undefined" to string
+      const rawCaption = items[i]?.caption;
+      const caption =
+        rawCaption === undefined || rawCaption === null
+          ? ""
+          : String(rawCaption).trim();
+
+      if (!url) {
+        results.push({ ok: false, reason: "missing-url" });
+      } else if (!/^https?:\/\//i.test(url)) {
+        results.push({ ok: false, reason: "invalid-url", url });
       } else {
+        const cappedCaption = caption ? caption.slice(0, 1024) : ""; // safe cap
         const payload = {
-          messaging_product: 'whatsapp',
+          messaging_product: "whatsapp",
           to,
-          type: 'image',
-          image: caption ? { link: url, caption } : { link: url },
+          type: "image",
+          image: cappedCaption ? { link: url, caption: cappedCaption } : { link: url },
         };
 
         try {
           const data = await metaPostMessage({
             phoneNumberId,
             token,
-            version: settings?.meta_api_version || 'v24.0',
+            version: settings?.meta_api_version || "v24.0",
             payload,
           });
 
           try {
             publishMessage({
-              dir: 'out',
+              dir: "out",
               wa_id: to,
-              wamid: (data?.messages && data.messages[0]?.id) ? String(data.messages[0].id) : '',
-              kind: 'image',
-              text: caption || '',
-              media: { type: 'image', link: url },
+              wamid:
+                data?.messages && data.messages[0]?.id
+                  ? String(data.messages[0].id)
+                  : "",
+              kind: "image",
+              text: cappedCaption || "",
+              media: { type: "image", link: url },
               ts: Date.now(),
             });
           } catch { }
 
-          results.push({ ok: true, wamid: data?.messages?.[0]?.id || '' });
+          results.push({ ok: true, wamid: data?.messages?.[0]?.id || "" });
         } catch (e) {
-          results.push({ ok: false, reason: 'meta-send-failed', error: e?.message || String(e) });
+          results.push({
+            ok: false,
+            reason: "meta-send-failed",
+            error: e?.message || String(e),
+          });
         }
       }
 
@@ -429,15 +495,14 @@ async function sendImage(contato, urlOrItems, captionOrOpts, opts = {}) {
     }
 
     const okAll = results.every((r) => r?.ok);
-    return isArray ? { ok: okAll, results, provider: 'meta', phone_number_id: phoneNumberId } : results[0];
+    return isArrayInput
+      ? { ok: okAll, results, provider: "meta", phone_number_id: phoneNumberId }
+      : results[0];
   } catch (e) {
     return { ok: false, error: e?.message || String(e) };
   }
 }
 
-// ======= SEND VIDEO =======
-// - aceita URL (string) ou lista [{ url, caption }]
-// - caption é opcional (WhatsApp suporta caption em video)
 async function sendVideo(contato, urlOrItems, captionOrOpts, opts = {}) {
   if (typeof captionOrOpts === 'object' && captionOrOpts) {
     opts = captionOrOpts;
@@ -464,48 +529,67 @@ async function sendVideo(contato, urlOrItems, captionOrOpts, opts = {}) {
 
     const results = [];
     for (let i = 0; i < items.length; i++) {
-      const url = String(items[i]?.url || '').trim();
+      const ref = String(items[i]?.url || '').trim();
       const caption = String(items[i]?.caption || '').trim();
 
-      if (!/^https?:\/\//i.test(url)) {
-        results.push({ ok: false, reason: 'invalid-url', url });
-      } else {
+      const isUrl = /^https?:\/\//i.test(ref);
+
+      try {
+        let videoObj;
+
+        if (isUrl) {
+          videoObj = caption ? { link: ref, caption } : { link: ref };
+        } else {
+          const absPath = resolveLocalMediaPath(ref);
+          if (!absPath || !fs.existsSync(absPath)) {
+            results.push({ ok: false, reason: 'file-not-found', ref, resolved: absPath || null });
+            continue;
+          }
+
+          const up = await metaUploadMediaFromPath({
+            phoneNumberId,
+            token,
+            version: settings?.meta_api_version || 'v24.0',
+            filePath: absPath,
+            mimeType: 'video/mp4', // ou guessMime(absPath) se você quiser suportar outros
+            filename: path.basename(absPath),
+          });
+
+          videoObj = caption ? { id: up.id, caption } : { id: up.id };
+        }
+
         const payload = {
           messaging_product: 'whatsapp',
           to,
           type: 'video',
-          video: caption ? { link: url, caption } : { link: url },
+          video: videoObj,
         };
 
+        const data = await metaPostMessage({
+          phoneNumberId,
+          token,
+          version: settings?.meta_api_version || 'v24.0',
+          payload,
+        });
+
         try {
-          const data = await metaPostMessage({
-            phoneNumberId,
-            token,
-            version: settings?.meta_api_version || 'v24.0',
-            payload,
+          publishMessage({
+            dir: 'out',
+            wa_id: to,
+            wamid: (data?.messages && data.messages[0]?.id) ? String(data.messages[0].id) : '',
+            kind: 'video',
+            text: caption || '',
+            media: isUrl ? { type: 'video', link: ref } : { type: 'video', id: videoObj.id, local_ref: ref },
+            ts: Date.now(),
           });
+        } catch { }
 
-          try {
-            publishMessage({
-              dir: 'out',
-              wa_id: to,
-              wamid: (data?.messages && data.messages[0]?.id) ? String(data.messages[0].id) : '',
-              kind: 'video',
-              text: caption || '',
-              media: { type: 'video', link: url },
-              ts: Date.now(),
-            });
-          } catch { }
-
-          results.push({ ok: true, wamid: data?.messages?.[0]?.id || '' });
-        } catch (e) {
-          results.push({ ok: false, reason: 'meta-send-failed', error: e?.message || String(e) });
-        }
+        results.push({ ok: true, wamid: data?.messages?.[0]?.id || '' });
+      } catch (e) {
+        results.push({ ok: false, reason: 'meta-send-failed', error: e?.message || String(e), ref });
       }
 
-      if (i < items.length - 1) {
-        await delayBetween(delayBetweenMs);
-      }
+      if (i < items.length - 1) await delayBetween(delayBetweenMs);
     }
 
     const okAll = results.every((r) => r?.ok);

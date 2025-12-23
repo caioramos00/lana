@@ -743,9 +743,11 @@ function registerRoutes(app, {
     return v;
   }
 
-  function isProbablyUrl(u) {
+  function isMediaRefOk(u) {
     const s = String(u || '').trim();
-    return /^https?:\/\/\S+/i.test(s);
+    if (/^https?:\/\//i.test(s)) return true;
+    if (/^local:/i.test(s)) return true;
+    return false;
   }
 
   // Lista ofertas
@@ -887,7 +889,7 @@ function registerRoutes(app, {
       const sort_order = toInt(req.body?.sort_order, 0, { min: -999999, max: 999999 });
 
       if (!url) return res.redirect(`/admin/fulfillment/offers/${encodeURIComponent(offerId)}/edit?err=` + encodeURIComponent('URL é obrigatória'));
-      if (!isProbablyUrl(url)) return res.redirect(`/admin/fulfillment/offers/${encodeURIComponent(offerId)}/edit?err=` + encodeURIComponent('URL inválida (use http/https)'));
+      if (!isMediaRefOk(url)) return res.redirect(`/admin/fulfillment/offers/${encodeURIComponent(offerId)}/edit?err=` + encodeURIComponent('URL inválida (use http/https)'));
 
       await db.createFulfillmentMedia({ offer_id: offerId, url, caption, sort_order });
       return res.redirect(`/admin/fulfillment/offers/${encodeURIComponent(offerId)}/edit?ok=1`);
@@ -906,7 +908,7 @@ function registerRoutes(app, {
       const sort_order = toInt(req.body?.sort_order, 0, { min: -999999, max: 999999 });
 
       if (!url) return res.redirect(`/admin/fulfillment/offers/${encodeURIComponent(offerId)}/edit?err=` + encodeURIComponent('URL é obrigatória'));
-      if (!isProbablyUrl(url)) return res.redirect(`/admin/fulfillment/offers/${encodeURIComponent(offerId)}/edit?err=` + encodeURIComponent('URL inválida (use http/https)'));
+      if (!isMediaRefOk(url)) return res.redirect(`/admin/fulfillment/offers/${encodeURIComponent(offerId)}/edit?err=` + encodeURIComponent('URL inválida (use http/https)'));
 
       await db.updateFulfillmentMedia(mid, { offer_id: offerId, url, caption, sort_order });
       return res.redirect(`/admin/fulfillment/offers/${encodeURIComponent(offerId)}/edit?ok=1`);
