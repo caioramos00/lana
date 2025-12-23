@@ -865,58 +865,114 @@ async function sendTtsVoiceNote(contato, text, opts = {}) {
 async function sendPreviewToLead({ wa_id, preview_id, inboundPhoneNumberId, db }) {
   const traceId = `${wa_id}-${Date.now().toString(16)}`;
 
-  console.log(`[PREVIEW][${traceId}] start wa_id=${wa_id} preview_id=${preview_id} inboundPhoneNumberId=${inboundPhoneNumberId}`);
+  const rawId = String(preview_id ?? '').trim();
+  const pid = rawId.toLowerCase();
 
-  const cfg = await db.getPreviewOfferWithMedia(preview_id);
+  console.log(
+    `[PREVIEW][${traceId}] start wa_id=${wa_id} preview_id_raw=${rawId} preview_id_norm=${pid} inboundPhoneNumberId=${inboundPhoneNumberId}`
+  );
 
-  console.log(`[PREVIEW][${traceId}] db.cfg.offer=`, cfg?.offer || null);
-  console.log(`[PREVIEW][${traceId}] db.media.count=`, (cfg?.media || []).length);
-
-  if (!cfg?.offer || !cfg.offer.enabled) {
-    console.log(`[PREVIEW][${traceId}] abort: preview-not-found-or-disabled`);
-    return { ok: false, reason: 'preview-not-found-or-disabled' };
+  if (!pid) {
+    console.log(`[PREVIEW][${traceId}] abort: missing-preview-id`);
+    return { ok: false, reason: 'missing-preview-id' };
   }
 
-  const offer = cfg.offer;
-  const items = (cfg.media || []).filter(x => x?.url);
+  try {
+    const cfg = await db.getPreviewOfferWithMedia(pid);
 
-  console.log(`[PREVIEW][${traceId}] offer.kind=${offer.kind} itemsToSend=${items.length}`);
-  if (!items.length) {
-    console.log(`[PREVIEW][${traceId}] abort: no-media-items`);
-    return { ok: false, reason: 'no-media-items' };
+    console.log(`[PREVIEW][${traceId}] db.cfg?`, !!cfg);
+    console.log(`[PREVIEW][${traceId}] db.cfg.offer=`, cfg?.offer || null);
+    console.log(`[PREVIEW][${traceId}] db.media.count=`, Array.isArray(cfg?.media) ? cfg.media.length : 0);
+
+    if (!cfg?.offer || !cfg.offer.enabled) {
+      console.log(`[PREVIEW][${traceId}] abort: preview-not-found-or-disabled`);
+      return { ok: false, reason: 'preview-not-found-or-disabled', preview_id: pid };
+    }
+
+    const offer = cfg.offer;
+
+    const kind = String(offer.kind || '').trim().toLowerCase(); // "foto" ou "video"
+    const delayMin = Number.isFinite(Number(offer.delay_between_min_ms)) ? Number(offer.delay_between_min_ms) : 250;
+    const delayMax = Number.isFinite(Number(offer.delay_between_max_ms)) ? Number(offer.delay_between_max_ms) : 900;
+    const delayBetweenMs = [Math.min(delayMin, delayMax), Math.max(delayMin, delayMax)];
+
+    const items = (Array.isArray(cfg.media) ? cfg.media : [])
+      .map((x) => ({
+        url: String(x?.url || '').trim(),
+        caption: String(x?.caption || '').trim(),
+      }))
+      .filter((x) => x.url);
+
+    console.log(`[PREVIEW][${traceId}] offer.kind_raw=${offer.kind} kind_norm=${kind} itemsToSend=${items.length}`);
+
+    if (!items.length) {
+      console.log(`[PREVIEW][${traceId}] abort: no-media-items`);
+      return { ok: false, reason: 'no-media-items', preview_id: pid };
+    }
+
+    if (offer.pre_text) {
+      console.log(`[PREVIEW][${traceId}] sending pre_text...`);
+      const r0 = await sendMessage(wa_id, offer.pre_text, { meta_phone_number_id: inboundPhoneNumberId });
+      console.log(`[PREVIEW][${traceId}] pre_text result=`, r0);
+      if (!r0?.ok) {
+        console.log(`[PREVIEW][${traceId}] WARN: pre_text failed`);
+      }
+    }
+
+    let rMedia;
+    if (kind === 'foto' || kind === 'image' || kind === 'imagem') {
+      console.log(`[PREVIEW][${traceId}] sending images...`, items.map((x) => x.url));
+      rMedia = await sendImage(
+        wa_id,
+        items.map((it) => ({ url: it.url, caption: it.caption || '' })),
+        {
+          meta_phone_number_id: inboundPhoneNumberId,
+          delayBetweenMs,
+        }
+      );
+    } else {
+      console.log(`[PREVIEW][${traceId}] sending videos...`, items.map((x) => x.url));
+      rMedia = await sendVideo(
+        wa_id,
+        items.map((it) => ({ url: it.url, caption: it.caption || '' })),
+        {
+          meta_phone_number_id: inboundPhoneNumberId,
+          delayBetweenMs,
+        }
+      );
+    }
+
+    console.log(`[PREVIEW][${traceId}] media result=`, rMedia);
+
+    // Se for array mode, seu sendImage/sendVideo pode retornar {ok, results}
+    // Se qualquer item falhou, devolve ok=false pra você enxergar no log do action runner / ai.js
+    const mediaOk = (() => {
+      if (!rMedia) return false;
+      if (rMedia.ok === true) return true;
+      if (Array.isArray(rMedia.results)) return rMedia.results.every((x) => x?.ok);
+      return !!rMedia.ok;
+    })();
+
+    if (!mediaOk) {
+      console.log(`[PREVIEW][${traceId}] abort: media-send-failed`);
+      return { ok: false, reason: 'media-send-failed', preview_id: pid, media: rMedia };
+    }
+
+    if (offer.post_text) {
+      console.log(`[PREVIEW][${traceId}] sending post_text...`);
+      const r1 = await sendMessage(wa_id, offer.post_text, { meta_phone_number_id: inboundPhoneNumberId });
+      console.log(`[PREVIEW][${traceId}] post_text result=`, r1);
+      if (!r1?.ok) {
+        console.log(`[PREVIEW][${traceId}] WARN: post_text failed`);
+      }
+    }
+
+    console.log(`[PREVIEW][${traceId}] done ok=true count=${items.length}`);
+    return { ok: true, count: items.length, preview_id: pid };
+  } catch (e) {
+    console.log(`[PREVIEW][${traceId}] ERROR`, e?.message || String(e));
+    return { ok: false, reason: 'exception', error: e?.message || String(e), preview_id: pid };
   }
-
-  if (offer.pre_text) {
-    console.log(`[PREVIEW][${traceId}] sending pre_text...`);
-    const r0 = await sendMessage(wa_id, offer.pre_text, { meta_phone_number_id: inboundPhoneNumberId });
-    console.log(`[PREVIEW][${traceId}] pre_text result=`, r0);
-  }
-
-  let rMedia;
-  if (offer.kind === 'foto') {
-    console.log(`[PREVIEW][${traceId}] sending images...`, items.map(x => x.url));
-    rMedia = await sendImage(wa_id, items.map(it => ({ url: it.url, caption: it.caption || '' })), {
-      meta_phone_number_id: inboundPhoneNumberId,
-      delayBetweenMs: [offer.delay_between_min_ms, offer.delay_between_max_ms],
-    });
-  } else {
-    console.log(`[PREVIEW][${traceId}] sending videos...`, items.map(x => x.url));
-    rMedia = await sendVideo(wa_id, items.map(it => ({ url: it.url, caption: it.caption || '' })), {
-      meta_phone_number_id: inboundPhoneNumberId,
-      delayBetweenMs: [offer.delay_between_min_ms, offer.delay_between_max_ms],
-    });
-  }
-
-  console.log(`[PREVIEW][${traceId}] media result=`, rMedia);
-
-  if (offer.post_text) {
-    console.log(`[PREVIEW][${traceId}] sending post_text...`);
-    const r1 = await sendMessage(wa_id, offer.post_text, { meta_phone_number_id: inboundPhoneNumberId });
-    console.log(`[PREVIEW][${traceId}] post_text result=`, r1);
-  }
-
-  console.log(`[PREVIEW][${traceId}] done ok=true count=${items.length}`);
-  return { ok: true, count: items.length };
 }
 
 module.exports = {
