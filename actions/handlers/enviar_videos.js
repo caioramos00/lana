@@ -72,12 +72,10 @@ module.exports = async function enviar_videos(ctx, payload) {
       results.push({ ok: false, reason: 'missing-ref' });
       continue;
     }
-    // deixa o senders resolver (http/https ou local:)
-    const r = await ctx.senders.sendImage(ctx.wa_id, url, {
+    const r = await ctx.senders.sendVideo(ctx.wa_id, url, {
       caption,
       meta_phone_number_id: ctx.inboundPhoneNumberId || null,
     });
-
     results.push(r);
 
     if (r?.ok) {
