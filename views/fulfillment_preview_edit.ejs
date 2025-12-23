@@ -1,0 +1,164 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title><%= isNew ? 'Nova Prévia' : 'Editar Prévia' %></title>
+  <style>
+    body { font-family: Arial, sans-serif; margin: 24px; }
+    input, select, textarea { width: 100%; padding: 8px; box-sizing: border-box; }
+    textarea { height: 90px; }
+    .grid { display:grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+    .row { display:flex; gap:12px; align-items:center; margin: 12px 0; }
+    .btn { padding: 8px 10px; border: 1px solid #333; background: #fff; cursor: pointer; text-decoration:none; color:#000; }
+    .ok { color: green; }
+    .err { color: #b00020; }
+    table { border-collapse: collapse; width:100%; margin-top:12px; }
+    th, td { border: 1px solid #ddd; padding: 8px; vertical-align: top; }
+    th { background: #f4f4f4; text-align:left; }
+    small { color:#555; }
+  </style>
+</head>
+<body>
+  <div class="row">
+    <a class="btn" href="/admin/fulfillment/previews">← Voltar</a>
+    <a class="btn" href="/admin/fulfillment/offers">Ofertas</a>
+  </div>
+
+  <h1><%= isNew ? 'Nova Prévia' : ('Editar Prévia #' + (preview.id || '')) %></h1>
+
+  <% if (ok) { %><p class="ok">Salvo com sucesso.</p><% } %>
+  <% if (err) { %><p class="err"><%= err %></p><% } %>
+
+  <form method="post" action="<%= isNew ? '/admin/fulfillment/previews/new' : ('/admin/fulfillment/previews/' + encodeURIComponent(preview.id) + '/edit') %>">
+    <div class="grid">
+      <div>
+        <label>Título</label>
+        <input name="title" value="<%= preview.title || '' %>" />
+      </div>
+
+      <div>
+        <label>Kind</label>
+        <select name="kind">
+          <option value="foto" <%= (preview.kind === 'foto') ? 'selected' : '' %>>foto</option>
+          <option value="video" <%= (preview.kind === 'video') ? 'selected' : '' %>>video</option>
+        </select>
+      </div>
+
+      <div>
+        <label>Ativo</label>
+        <div class="row" style="margin:6px 0">
+          <input style="width:auto" type="checkbox" name="enabled" <%= preview.enabled ? 'checked' : '' %> />
+          <span>enabled</span>
+        </div>
+      </div>
+
+      <div>
+        <label>preview_id (só na criação)</label>
+        <input name="preview_id" <%= isNew ? '' : 'disabled' %> value="<%= preview.preview_id || '' %>" />
+        <small>Ex: <b>previa-fotos-1</b> (se deixar vazio na criação, gera automático)</small>
+      </div>
+    </div>
+
+    <div class="grid">
+      <div>
+        <label>Delay min (ms)</label>
+        <input name="delay_min_ms" value="<%= preview.delay_min_ms || 30000 %>" />
+      </div>
+      <div>
+        <label>Delay max (ms)</label>
+        <input name="delay_max_ms" value="<%= preview.delay_max_ms || 45000 %>" />
+      </div>
+
+      <div>
+        <label>Delay between min (ms)</label>
+        <input name="delay_between_min_ms" value="<%= preview.delay_between_min_ms || 250 %>" />
+      </div>
+      <div>
+        <label>Delay between max (ms)</label>
+        <input name="delay_between_max_ms" value="<%= preview.delay_between_max_ms || 900 %>" />
+      </div>
+    </div>
+
+    <div class="grid">
+      <div>
+        <label>pre_text</label>
+        <textarea name="pre_text"><%= preview.pre_text || '' %></textarea>
+      </div>
+      <div>
+        <label>post_text</label>
+        <textarea name="post_text"><%= preview.post_text || '' %></textarea>
+      </div>
+    </div>
+
+    <div class="row">
+      <button class="btn" type="submit">Salvar</button>
+    </div>
+  </form>
+
+  <% if (!isNew) { %>
+    <hr />
+
+    <h2>Mídias da prévia</h2>
+    <p><small>
+      Use refs locais:
+      <b>fotos/previas/arquivo.jpg</b> ou <b>videos/previas/arquivo.mp4</b>
+      (também aceita <b>local:...</b> e <b>https://...</b>).
+    </small></p>
+
+    <form method="post" action="/admin/fulfillment/previews/<%= encodeURIComponent(preview.id) %>/media/add">
+      <div class="grid">
+        <div>
+          <label>url/ref</label>
+          <input name="url" placeholder="fotos/previas/exemplo.jpg" />
+        </div>
+        <div>
+          <label>caption</label>
+          <input name="caption" placeholder="opcional" />
+        </div>
+        <div>
+          <label>sort_order</label>
+          <input name="sort_order" value="0" />
+        </div>
+        <div style="display:flex; align-items:flex-end;">
+          <button class="btn" type="submit">+ Adicionar</button>
+        </div>
+      </div>
+    </form>
+
+    <table>
+      <thead>
+        <tr>
+          <th>pos</th>
+          <th>url/ref</th>
+          <th>caption</th>
+          <th>Ações</th>
+        </tr>
+      </thead>
+      <tbody>
+        <% (media || []).forEach(function(m){ %>
+          <tr>
+            <td style="width:90px;">
+              <form method="post" action="/admin/fulfillment/previews/<%= encodeURIComponent(preview.id) %>/media/<%= encodeURIComponent(m.id) %>/save">
+                <input name="sort_order" value="<%= m.sort_order || 0 %>" />
+            </td>
+            <td>
+                <input name="url" value="<%= m.url %>" />
+            </td>
+            <td>
+                <input name="caption" value="<%= m.caption || '' %>" />
+            </td>
+            <td style="white-space:nowrap;">
+                <button class="btn" type="submit">Salvar</button>
+              </form>
+
+              <form style="display:inline" method="post" action="/admin/fulfillment/previews/<%= encodeURIComponent(preview.id) %>/media/<%= encodeURIComponent(m.id) %>/delete" onsubmit="return confirm('Remover esta mídia?');">
+                <button class="btn" type="submit">Remover</button>
+              </form>
+            </td>
+          </tr>
+        <% }) %>
+      </tbody>
+    </table>
+  <% } %>
+</body>
+</html>

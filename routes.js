@@ -745,8 +745,18 @@ function registerRoutes(app, {
 
   function isMediaRefOk(u) {
     const s = String(u || '').trim();
+    if (!s) return false;
+
     if (/^https?:\/\//i.test(s)) return true;
     if (/^local:/i.test(s)) return true;
+
+    // permite refs relativas dentro de media/
+    if (s.includes('..')) return false;
+    if (s.startsWith('/') || s.startsWith('\\')) return false;
+
+    // whitelist simples
+    if (/^(fotos|videos)\/[a-z0-9_\-\/.]+$/i.test(s)) return true;
+
     return false;
   }
 
@@ -926,6 +936,187 @@ function registerRoutes(app, {
       return res.redirect(`/admin/fulfillment/offers/${encodeURIComponent(offerId)}/edit?ok=1`);
     } catch (e) {
       return res.redirect(`/admin/fulfillment/offers/${encodeURIComponent(offerId)}/edit?err=` + encodeURIComponent(e?.message || 'err'));
+    }
+  });
+
+  // ---------- PRÉVIAS (CRUD) ----------
+
+  // Lista prévias
+  app.get('/admin/fulfillment/previews', checkAuth, async (req, res) => {
+    try {
+      const previews = await db.listPreviewOffers();
+      res.render('fulfillment_previews', {
+        previews: Array.isArray(previews) ? previews : [],
+        ok: req.query.ok ? 1 : 0,
+        err: req.query.err ? String(req.query.err) : '',
+      });
+    } catch (e) {
+      res.status(500).send(`Erro ao carregar prévias. ${e?.message || ''}`);
+    }
+  });
+
+  // Nova prévia (form)
+  app.get('/admin/fulfillment/previews/new', checkAuth, async (req, res) => {
+    return res.render('fulfillment_preview_edit', {
+      isNew: true,
+      preview: {
+        id: '',
+        preview_id: '',
+        title: '',
+        kind: 'foto',
+        enabled: 1,
+        pre_text: '',
+        post_text: '',
+        delay_min_ms: 30000,
+        delay_max_ms: 45000,
+        delay_between_min_ms: 250,
+        delay_between_max_ms: 900,
+      },
+      media: [],
+      ok: req.query.ok ? 1 : 0,
+      err: req.query.err ? String(req.query.err) : '',
+    });
+  });
+
+  // Criar prévia
+  app.post('/admin/fulfillment/previews/new', checkAuth, async (req, res) => {
+    try {
+      const title = cleanStr(req.body?.title, 140);
+      const kind = normalizeKind(req.body?.kind);
+
+      if (!title) return res.redirect('/admin/fulfillment/previews/new?err=' + encodeURIComponent('Título é obrigatório'));
+      if (!isValidKind(kind)) return res.redirect('/admin/fulfillment/previews/new?err=' + encodeURIComponent('Kind inválido'));
+
+      const payload = {
+        preview_id: cleanStr(req.body?.preview_id, 80),
+        title,
+        kind,
+        enabled: toBool(req.body?.enabled) ? 1 : 0,
+        pre_text: cleanStr(req.body?.pre_text, 6000),
+        post_text: cleanStr(req.body?.post_text, 6000),
+        delay_min_ms: toInt(req.body?.delay_min_ms, 30000, { min: 0, max: 10 * 60 * 1000 }),
+        delay_max_ms: toInt(req.body?.delay_max_ms, 45000, { min: 0, max: 10 * 60 * 1000 }),
+        delay_between_min_ms: toInt(req.body?.delay_between_min_ms, 250, { min: 0, max: 60 * 1000 }),
+        delay_between_max_ms: toInt(req.body?.delay_between_max_ms, 900, { min: 0, max: 60 * 1000 }),
+      };
+
+      const created = await db.createPreviewOffer(payload);
+      const id = created?.id || created;
+      return res.redirect(`/admin/fulfillment/previews/${encodeURIComponent(id)}/edit?ok=1`);
+    } catch (e) {
+      return res.redirect('/admin/fulfillment/previews/new?err=' + encodeURIComponent(e?.message || 'err'));
+    }
+  });
+
+  // Editar prévia
+  app.get('/admin/fulfillment/previews/:id/edit', checkAuth, async (req, res) => {
+    try {
+      const id = String(req.params.id || '').trim();
+      const cfg = await db.getPreviewOfferWithMedia(id);
+      if (!cfg?.offer) return res.redirect('/admin/fulfillment/previews?err=' + encodeURIComponent('Prévia não encontrada'));
+
+      return res.render('fulfillment_preview_edit', {
+        isNew: false,
+        preview: cfg.offer,
+        media: Array.isArray(cfg.media) ? cfg.media : [],
+        ok: req.query.ok ? 1 : 0,
+        err: req.query.err ? String(req.query.err) : '',
+      });
+    } catch (e) {
+      return res.redirect('/admin/fulfillment/previews?err=' + encodeURIComponent(e?.message || 'err'));
+    }
+  });
+
+  // Salvar prévia
+  app.post('/admin/fulfillment/previews/:id/edit', checkAuth, async (req, res) => {
+    const id = String(req.params.id || '').trim();
+    try {
+      const title = cleanStr(req.body?.title, 140);
+      const kind = normalizeKind(req.body?.kind);
+
+      if (!title) return res.redirect(`/admin/fulfillment/previews/${encodeURIComponent(id)}/edit?err=` + encodeURIComponent('Título é obrigatório'));
+      if (!isValidKind(kind)) return res.redirect(`/admin/fulfillment/previews/${encodeURIComponent(id)}/edit?err=` + encodeURIComponent('Kind inválido'));
+
+      const payload = {
+        title,
+        kind,
+        enabled: toBool(req.body?.enabled) ? 1 : 0,
+        pre_text: cleanStr(req.body?.pre_text, 6000),
+        post_text: cleanStr(req.body?.post_text, 6000),
+        delay_min_ms: toInt(req.body?.delay_min_ms, 30000, { min: 0, max: 10 * 60 * 1000 }),
+        delay_max_ms: toInt(req.body?.delay_max_ms, 45000, { min: 0, max: 10 * 60 * 1000 }),
+        delay_between_min_ms: toInt(req.body?.delay_between_min_ms, 250, { min: 0, max: 60 * 1000 }),
+        delay_between_max_ms: toInt(req.body?.delay_between_max_ms, 900, { min: 0, max: 60 * 1000 }),
+      };
+
+      await db.updatePreviewOffer(id, payload);
+      return res.redirect(`/admin/fulfillment/previews/${encodeURIComponent(id)}/edit?ok=1`);
+    } catch (e) {
+      return res.redirect(`/admin/fulfillment/previews/${encodeURIComponent(id)}/edit?err=` + encodeURIComponent(e?.message || 'err'));
+    }
+  });
+
+  // Remover prévia
+  app.post('/admin/fulfillment/previews/:id/delete', checkAuth, async (req, res) => {
+    try {
+      const id = String(req.params.id || '').trim();
+      await db.deletePreviewOffer(id);
+      return res.redirect('/admin/fulfillment/previews?ok=1');
+    } catch (e) {
+      return res.redirect('/admin/fulfillment/previews?err=' + encodeURIComponent(e?.message || 'err'));
+    }
+  });
+
+  // ---------- MÍDIAS DA PRÉVIA ----------
+  app.post('/admin/fulfillment/previews/:id/media/add', checkAuth, async (req, res) => {
+    const id = String(req.params.id || '').trim();
+    try {
+      const cfg = await db.getPreviewOfferWithMedia(id);
+      if (!cfg?.offer) return res.redirect('/admin/fulfillment/previews?err=' + encodeURIComponent('Prévia não encontrada'));
+
+      const url = cleanStr(req.body?.url, 2000);
+      const caption = cleanStr(req.body?.caption, 2000);
+      const sort_order = toInt(req.body?.sort_order, 0, { min: -999999, max: 999999 });
+
+      if (!url) return res.redirect(`/admin/fulfillment/previews/${encodeURIComponent(id)}/edit?err=` + encodeURIComponent('URL/ref é obrigatória'));
+      if (!isMediaRefOk(url)) return res.redirect(`/admin/fulfillment/previews/${encodeURIComponent(id)}/edit?err=` + encodeURIComponent('Ref inválida (use http/https, local:..., ou fotos/... / videos/...)'));
+
+      await db.createPreviewMedia({ preview_id: cfg.offer.preview_id, url, caption, sort_order });
+      return res.redirect(`/admin/fulfillment/previews/${encodeURIComponent(id)}/edit?ok=1`);
+    } catch (e) {
+      return res.redirect(`/admin/fulfillment/previews/${encodeURIComponent(id)}/edit?err=` + encodeURIComponent(e?.message || 'err'));
+    }
+  });
+
+  app.post('/admin/fulfillment/previews/:id/media/:mid/save', checkAuth, async (req, res) => {
+    const id = String(req.params.id || '').trim();
+    const mid = String(req.params.mid || '').trim();
+    try {
+      const cfg = await db.getPreviewOfferWithMedia(id);
+      if (!cfg?.offer) return res.redirect('/admin/fulfillment/previews?err=' + encodeURIComponent('Prévia não encontrada'));
+
+      const url = cleanStr(req.body?.url, 2000);
+      const caption = cleanStr(req.body?.caption, 2000);
+      const sort_order = toInt(req.body?.sort_order, 0, { min: -999999, max: 999999 });
+
+      if (!url) return res.redirect(`/admin/fulfillment/previews/${encodeURIComponent(id)}/edit?err=` + encodeURIComponent('URL/ref é obrigatória'));
+      if (!isMediaRefOk(url)) return res.redirect(`/admin/fulfillment/previews/${encodeURIComponent(id)}/edit?err=` + encodeURIComponent('Ref inválida'));
+
+      await db.updatePreviewMedia(mid, { preview_id: cfg.offer.preview_id, url, caption, sort_order });
+      return res.redirect(`/admin/fulfillment/previews/${encodeURIComponent(id)}/edit?ok=1`);
+    } catch (e) {
+      return res.redirect(`/admin/fulfillment/previews/${encodeURIComponent(id)}/edit?err=` + encodeURIComponent(e?.message || 'err'));
+    }
+  });
+
+  app.post('/admin/fulfillment/previews/:id/media/:mid/delete', checkAuth, async (req, res) => {
+    const id = String(req.params.id || '').trim();
+    const mid = String(req.params.mid || '').trim();
+    try {
+      await db.deletePreviewMedia(mid);
+      return res.redirect(`/admin/fulfillment/previews/${encodeURIComponent(id)}/edit?ok=1`);
+    } catch (e) {
+      return res.redirect(`/admin/fulfillment/previews/${encodeURIComponent(id)}/edit?err=` + encodeURIComponent(e?.message || 'err'));
     }
   });
 

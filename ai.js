@@ -1062,6 +1062,42 @@ function createAiEngine({ db = dbModule, sendMessage, aiLog = () => { }, payment
       maxOutMessages: cfg.max_out_messages,
     });
 
+    // ===== PRÉVIA (foto/vídeo) =====
+    const wantsPreviewFoto =
+      agent?.intent_detectada === 'PEDIDO_PREVIA_FOTO' || !!agent?.acoes?.enviar_imagem;
+
+    const wantsPreviewVideo =
+      agent?.intent_detectada === 'PEDIDO_PREVIA_VIDEO' || !!agent?.acoes?.enviar_video;
+
+    const wantsAnyPreview = wantsPreviewFoto || wantsPreviewVideo;
+
+    // 1 por conversa (memória do lead)
+    if (!st.preview_state || typeof st.preview_state !== 'object') {
+      st.preview_state = { sent: false, kind: null, ts_ms: null };
+    }
+
+    const previewAlreadySent = !!st.preview_state.sent;
+
+    // resolve preview_id (você precisa de um id fixo por tipo)
+    const previewId =
+      wantsPreviewFoto
+        ? String(settings?.preview_foto_id || 'PREVIA_FOTO').trim()
+        : wantsPreviewVideo
+          ? String(settings?.preview_video_id || 'PREVIA_VIDEO').trim()
+          : null;
+
+    // se você ainda NÃO tem preview_foto_id / preview_video_id no bot_settings,
+    // deixe hardcoded por enquanto: 'PREVIA_FOTO' e 'PREVIA_VIDEO'
+    // (e crie essas offers no DB com esses ids)
+
+    const shouldSendPreviewNow = wantsAnyPreview && !previewAlreadySent && !!previewId;
+
+    // evita reprocessar em outros lugares (runner/actions etc.)
+    if (agent?.acoes && typeof agent.acoes === 'object') {
+      agent.acoes.enviar_imagem = false;
+      agent.acoes.enviar_video = false;
+    }
+
     const modelWantsAudio = !!agent?.acoes?.enviar_audio;
 
     const autoDue = cfg.autoAudioEnabled && audioState && Number.isFinite(audioState.text_streak_count) && ((audioState.text_streak_count + outItems.length) >= cfg.autoAudioAfterMsgs);
@@ -1094,6 +1130,26 @@ function createAiEngine({ db = dbModule, sendMessage, aiLog = () => { }, payment
             ts_ms: Date.now(),
             reply_to_wamid: reply_to_wamid || null,
           });
+        }
+
+        if (i === 0 && shouldSendPreviewNow) {
+          const rPrev = await senders.sendPreviewToLead({
+            wa_id,
+            preview_id: previewId,
+            inboundPhoneNumberId,
+          });
+
+          if (!rPrev?.ok) {
+            aiLog(`[AI][PREVIEW][${wa_id}] FAIL`, rPrev);
+          } else {
+            st.preview_state = { sent: true, kind: wantsPreviewFoto ? 'foto' : 'video', ts_ms: Date.now() };
+
+            leadStore.pushHistory(wa_id, 'assistant', `[PREVIEW:${wantsPreviewFoto ? 'foto' : 'video'}]`, {
+              kind: 'preview',
+              preview_id: previewId,
+              ts_ms: Date.now(),
+            });
+          }
         }
       }
     }

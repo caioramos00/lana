@@ -134,8 +134,18 @@ function resolveLocalMediaPath(ref) {
 
   if (/^local:/i.test(s)) s = s.replace(/^local:/i, '').trim();
 
+  // bloqueia absolutos e traversal
+  if (s.includes('..')) return null;
+
   const abs = path.isAbsolute(s) ? s : path.join(MEDIA_ROOT, s);
-  return abs;
+
+  const normAbs = path.normalize(abs);
+  const normRoot = path.normalize(MEDIA_ROOT + path.sep);
+
+  // garante que está dentro de /media/
+  if (!normAbs.startsWith(normRoot)) return null;
+
+  return normAbs;
 }
 
 async function metaPostMessage({ phoneNumberId, token, version, payload }) {
@@ -493,7 +503,7 @@ async function sendVideo(contato, urlOrItems, captionOrOpts, opts = {}) {
             token,
             version: settings?.meta_api_version || 'v24.0',
             filePath: absPath,
-            mimeType: 'video/mp4', // ou guessMime(absPath) se você quiser suportar outros
+            mimeType: guessMime(absPath),
             filename: path.basename(absPath),
           });
 
@@ -606,7 +616,6 @@ async function sendAudio(contato, urlOrMediaId, opts = {}) {
     return { ok: false, error: e?.message || String(e) };
   }
 }
-
 
 // ======= SEND DOCUMENT =======
 // útil pra VIP/assinatura/etc (PDF, ZIP, etc) se você for usar depois.
@@ -852,6 +861,65 @@ async function sendTtsVoiceNote(contato, text, opts = {}) {
   }
 }
 
+// ======= SEND PREVIEW (foto/vídeo) =======
+async function sendPreviewToLead({ wa_id, preview_id, inboundPhoneNumberId, dbOverride } = {}) {
+  const to = String(wa_id || '').trim();
+  const pid = String(preview_id || '').trim();
+
+  if (!to) return { ok: false, reason: 'missing-wa_id' };
+  if (!pid) return { ok: false, reason: 'missing-preview_id' };
+
+  try {
+    const dbx = dbOverride || db;
+
+    const cfg = await dbx.getPreviewOfferWithMedia(pid);
+    if (!cfg?.offer || !cfg.offer.enabled) {
+      return { ok: false, reason: 'preview-not-found-or-disabled' };
+    }
+
+    const offer = cfg.offer;
+    const items = (cfg.media || []).filter(x => x?.url);
+
+    const metaOpts = inboundPhoneNumberId
+      ? { meta_phone_number_id: inboundPhoneNumberId }
+      : {};
+
+    if (offer.pre_text) {
+      await sendMessage(to, offer.pre_text, metaOpts);
+    }
+
+    const delayBetweenMs = [offer.delay_between_min_ms, offer.delay_between_max_ms];
+
+    if (offer.kind === 'foto') {
+      await sendImage(
+        to,
+        items.map(it => ({ url: it.url, caption: it.caption || '' })),
+        {
+          ...metaOpts,
+          delayBetweenMs,
+        }
+      );
+    } else {
+      await sendVideo(
+        to,
+        items.map(it => ({ url: it.url, caption: it.caption || '' })),
+        {
+          ...metaOpts,
+          delayBetweenMs,
+        }
+      );
+    }
+
+    if (offer.post_text) {
+      await sendMessage(to, offer.post_text, metaOpts);
+    }
+
+    return { ok: true, count: items.length };
+  } catch (e) {
+    return { ok: false, error: e?.message || String(e) };
+  }
+}
+
 module.exports = {
   rememberInboundMetaPhoneNumberId,
   resolveMetaCredentialsForContato,
@@ -861,5 +929,6 @@ module.exports = {
   sendAudio,
   sendDocument,
   sendTtsVoiceNote,
-  downloadMetaMediaToTempFile
+  downloadMetaMediaToTempFile,
+  sendPreviewToLead
 };

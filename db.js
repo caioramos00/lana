@@ -406,6 +406,45 @@ async function initDatabase() {
     await client.query(`CREATE INDEX IF NOT EXISTS idx_fulfillment_media_offer_pos ON fulfillment_media (offer_id, pos);`);
     await client.query(`CREATE INDEX IF NOT EXISTS idx_fulfillment_media_offer_active ON fulfillment_media (offer_id, active);`);
 
+    await client.query(`
+  CREATE TABLE IF NOT EXISTS preview_offers (
+    id SERIAL PRIMARY KEY,
+    preview_id TEXT NOT NULL UNIQUE,
+
+    title TEXT,
+    kind TEXT NOT NULL, -- 'foto'|'video'
+    enabled BOOLEAN DEFAULT TRUE,
+
+    pre_text TEXT,
+    post_text TEXT,
+
+    delay_min_ms INTEGER DEFAULT 30000,
+    delay_max_ms INTEGER DEFAULT 45000,
+
+    delay_between_min_ms INTEGER DEFAULT 250,
+    delay_between_max_ms INTEGER DEFAULT 900,
+
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+  );
+`);
+
+    await client.query(`
+  CREATE TABLE IF NOT EXISTS preview_media (
+    id SERIAL PRIMARY KEY,
+    preview_id TEXT NOT NULL REFERENCES preview_offers(preview_id) ON DELETE CASCADE,
+    pos INTEGER NOT NULL DEFAULT 0,
+    url TEXT NOT NULL,
+    caption TEXT,
+    active BOOLEAN DEFAULT TRUE,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+  );
+`);
+
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_preview_media_preview_pos ON preview_media (preview_id, pos);`);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_preview_media_preview_active ON preview_media (preview_id, active);`);
+
     // fulfillment_deliveries (corrigido: provider + external_id)
     await client.query(`
       CREATE TABLE IF NOT EXISTS fulfillment_deliveries (
@@ -1891,7 +1930,7 @@ async function updateFulfillmentOffer(idOrOfferId, payload) {
     await client.query('COMMIT');
     return rows[0] || null;
   } catch (e) {
-    await client.query('ROLLBACK').catch(() => {});
+    await client.query('ROLLBACK').catch(() => { });
     if (e?.code === '23505') {
       throw new Error('offer_id já existe. Escolha outro.');
     }
@@ -1996,6 +2035,255 @@ async function deleteFulfillmentMedia(mid, { offer_id } = {}) {
   return rows[0] || null;
 }
 
+async function listPreviewOffers() {
+  const { rows } = await pool.query(`
+    SELECT
+      p.id,
+      p.preview_id,
+      COALESCE(p.title, p.preview_id) AS title,
+      p.kind,
+      p.enabled,
+      p.pre_text,
+      p.post_text,
+      p.delay_min_ms,
+      p.delay_max_ms,
+      p.delay_between_min_ms,
+      p.delay_between_max_ms,
+      p.created_at,
+      p.updated_at,
+      COUNT(m.id)::int AS media_count
+    FROM preview_offers p
+    LEFT JOIN preview_media m
+      ON m.preview_id = p.preview_id
+     AND m.active = TRUE
+    GROUP BY p.id
+    ORDER BY p.id DESC
+  `);
+  return rows || [];
+}
+
+async function getPreviewOfferWithMedia(idOrPreviewId) {
+  const raw = String(idOrPreviewId || '').trim();
+  if (!raw) return null;
+
+  let offer = null;
+
+  if (/^\d+$/.test(raw)) {
+    const { rows } = await pool.query(`SELECT * FROM preview_offers WHERE id = $1 LIMIT 1`, [Number(raw)]);
+    offer = rows[0] || null;
+  }
+
+  if (!offer) {
+    const { rows } = await pool.query(`SELECT * FROM preview_offers WHERE preview_id = $1 LIMIT 1`, [raw]);
+    offer = rows[0] || null;
+  }
+
+  if (!offer) return null;
+
+  const { rows: mediaRows } = await pool.query(
+    `
+    SELECT
+      id,
+      preview_id,
+      pos AS sort_order,
+      url,
+      caption,
+      active,
+      created_at,
+      updated_at
+    FROM preview_media
+    WHERE preview_id = $1
+      AND active = TRUE
+    ORDER BY pos ASC, id ASC
+    `,
+    [offer.preview_id]
+  );
+
+  return { offer, media: mediaRows || [] };
+}
+
+function normalizeKindPreview(k) {
+  const v = String(k || '').trim().toLowerCase();
+  if (v === 'fotos') return 'foto';
+  if (v === 'videos') return 'video';
+  return v;
+}
+function isValidKindPreview(k) {
+  const v = normalizeKindPreview(k);
+  return v === 'foto' || v === 'video';
+}
+function ensureValidPreviewId(s) {
+  const v = String(s || '').trim().toLowerCase();
+  if (!v) throw new Error('preview_id é obrigatório');
+  if (!/^[a-z0-9][a-z0-9_-]{0,79}$/i.test(v)) {
+    throw new Error('preview_id inválido. Use letras/números/_/-, até 80 chars (ex: previa-pack-1).');
+  }
+  return v;
+}
+function slugifyPreviewBase(s) {
+  const out = String(s || '')
+    .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 42);
+  return out || 'previa';
+}
+
+async function createPreviewOffer(payload) {
+  const title = String(payload?.title || '').trim();
+  if (!title) throw new Error('Título é obrigatório');
+
+  const kind = normalizeKindPreview(payload?.kind);
+  if (!isValidKindPreview(kind)) throw new Error('Kind inválido (use foto|video)');
+
+  const enabled = payload?.enabled === false ? false : !!payload?.enabled;
+
+  const pre_text = String(payload?.pre_text ?? '').trim() || null;
+  const post_text = String(payload?.post_text ?? '').trim() || null;
+
+  let delayMin = Number(payload?.delay_min_ms) || 30000;
+  let delayMax = Number(payload?.delay_max_ms) || 45000;
+  if (delayMin > delayMax) [delayMin, delayMax] = [delayMax, delayMin];
+
+  let betweenMin = Number(payload?.delay_between_min_ms) || 250;
+  let betweenMax = Number(payload?.delay_between_max_ms) || 900;
+  if (betweenMin > betweenMax) [betweenMin, betweenMax] = [betweenMax, betweenMin];
+
+  const base = slugifyPreviewBase(title);
+
+  const userPreviewIdRaw = String(payload?.preview_id || '').trim();
+  const userProvided = !!userPreviewIdRaw;
+  let preview_id = userProvided ? ensureValidPreviewId(userPreviewIdRaw) : `${base}-${Date.now().toString(36)}`;
+
+  for (let i = 0; i < 5; i++) {
+    try {
+      const { rows } = await pool.query(
+        `
+        INSERT INTO preview_offers
+          (preview_id, title, kind, enabled, pre_text, post_text,
+           delay_min_ms, delay_max_ms, delay_between_min_ms, delay_between_max_ms,
+           updated_at)
+        VALUES
+          ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10, NOW())
+        RETURNING *
+        `,
+        [preview_id, title, kind, !!enabled, pre_text, post_text, delayMin, delayMax, betweenMin, betweenMax]
+      );
+      return rows[0] || null;
+    } catch (e) {
+      if (e?.code === '23505') {
+        if (userProvided) throw new Error('preview_id já existe. Escolha outro.');
+        preview_id = `${base}-${Math.random().toString(16).slice(2, 6)}`;
+        continue;
+      }
+      throw e;
+    }
+  }
+
+  throw new Error('Não foi possível criar preview_id único.');
+}
+
+async function updatePreviewOffer(idOrPreviewId, payload) {
+  const raw = String(idOrPreviewId || '').trim();
+  if (!raw) throw new Error('missing id');
+
+  // resolve id
+  let ref = null;
+  if (/^\d+$/.test(raw)) {
+    const { rows } = await pool.query(`SELECT id, preview_id FROM preview_offers WHERE id = $1 LIMIT 1`, [Number(raw)]);
+    ref = rows[0] || null;
+  } else {
+    const { rows } = await pool.query(`SELECT id, preview_id FROM preview_offers WHERE preview_id = $1 LIMIT 1`, [raw]);
+    ref = rows[0] || null;
+  }
+  if (!ref) throw new Error('Prévia não encontrada');
+
+  const title = String(payload?.title || '').trim();
+  if (!title) throw new Error('Título é obrigatório');
+
+  const kind = normalizeKindPreview(payload?.kind);
+  if (!isValidKindPreview(kind)) throw new Error('Kind inválido (use foto|video)');
+
+  const enabled = payload?.enabled === false ? false : !!payload?.enabled;
+
+  const pre_text = String(payload?.pre_text ?? '').trim() || null;
+  const post_text = String(payload?.post_text ?? '').trim() || null;
+
+  let delayMin = Number(payload?.delay_min_ms) || 30000;
+  let delayMax = Number(payload?.delay_max_ms) || 45000;
+  if (delayMin > delayMax) [delayMin, delayMax] = [delayMax, delayMin];
+
+  let betweenMin = Number(payload?.delay_between_min_ms) || 250;
+  let betweenMax = Number(payload?.delay_between_max_ms) || 900;
+  if (betweenMin > betweenMax) [betweenMin, betweenMax] = [betweenMax, betweenMin];
+
+  const { rows } = await pool.query(
+    `
+    UPDATE preview_offers
+       SET title = $2,
+           kind = $3,
+           enabled = $4,
+           pre_text = $5,
+           post_text = $6,
+           delay_min_ms = $7,
+           delay_max_ms = $8,
+           delay_between_min_ms = $9,
+           delay_between_max_ms = $10,
+           updated_at = NOW()
+     WHERE id = $1
+     RETURNING *
+    `,
+    [ref.id, title, kind, !!enabled, pre_text, post_text, delayMin, delayMax, betweenMin, betweenMax]
+  );
+
+  return rows[0] || null;
+}
+
+async function deletePreviewOffer(idOrPreviewId) {
+  const raw = String(idOrPreviewId || '').trim();
+  if (!raw) return;
+
+  if (/^\d+$/.test(raw)) {
+    await pool.query(`DELETE FROM preview_offers WHERE id = $1`, [Number(raw)]);
+  } else {
+    await pool.query(`DELETE FROM preview_offers WHERE preview_id = $1`, [raw]);
+  }
+}
+
+async function createPreviewMedia({ preview_id, url, caption, sort_order }) {
+  const { rows } = await pool.query(
+    `
+    INSERT INTO preview_media (preview_id, pos, url, caption, active, updated_at)
+    VALUES ($1,$2,$3,$4, TRUE, NOW())
+    RETURNING *
+    `,
+    [String(preview_id).trim(), Number(sort_order) || 0, String(url).trim(), (caption ? String(caption).trim() : null)]
+  );
+  return rows[0] || null;
+}
+
+async function updatePreviewMedia(id, { preview_id, url, caption, sort_order }) {
+  const { rows } = await pool.query(
+    `
+    UPDATE preview_media
+       SET preview_id = $2,
+           pos = $3,
+           url = $4,
+           caption = $5,
+           updated_at = NOW()
+     WHERE id = $1
+     RETURNING *
+    `,
+    [Number(id), String(preview_id).trim(), Number(sort_order) || 0, String(url).trim(), (caption ? String(caption).trim() : null)]
+  );
+  return rows[0] || null;
+}
+
+async function deletePreviewMedia(id) {
+  await pool.query(`UPDATE preview_media SET active = FALSE, updated_at = NOW() WHERE id = $1`, [Number(id)]);
+}
+
 module.exports = {
   pool,
   initDatabase,
@@ -2027,4 +2315,12 @@ module.exports = {
   createFulfillmentMedia,
   updateFulfillmentMedia,
   deleteFulfillmentMedia,
+  listPreviewOffers,
+  getPreviewOfferWithMedia,
+  createPreviewOffer,
+  updatePreviewOffer,
+  deletePreviewOffer,
+  createPreviewMedia,
+  updatePreviewMedia,
+  deletePreviewMedia,
 };

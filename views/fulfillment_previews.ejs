@@ -1,0 +1,60 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>Prévias</title>
+  <style>
+    body { font-family: Arial, sans-serif; margin: 24px; }
+    table { border-collapse: collapse; width: 100%; }
+    th, td { border: 1px solid #ddd; padding: 8px; }
+    th { background: #f4f4f4; text-align: left; }
+    .row { display:flex; gap:12px; align-items:center; margin: 12px 0; }
+    .btn { padding: 8px 10px; border: 1px solid #333; background: #fff; cursor: pointer; text-decoration:none; color:#000; }
+    .ok { color: green; }
+    .err { color: #b00020; }
+  </style>
+</head>
+<body>
+  <h1>Prévias</h1>
+
+  <div class="row">
+    <a class="btn" href="/admin/fulfillment/previews/new">+ Nova prévia</a>
+    <a class="btn" href="/admin/fulfillment/offers">Ir para Ofertas</a>
+  </div>
+
+  <% if (ok) { %><p class="ok">Salvo com sucesso.</p><% } %>
+  <% if (err) { %><p class="err"><%= err %></p><% } %>
+
+  <table>
+    <thead>
+      <tr>
+        <th>ID</th>
+        <th>preview_id</th>
+        <th>Título</th>
+        <th>Kind</th>
+        <th>Ativo</th>
+        <th># Mídias</th>
+        <th>Ações</th>
+      </tr>
+    </thead>
+    <tbody>
+      <% (previews || []).forEach(function(p){ %>
+        <tr>
+          <td><%= p.id %></td>
+          <td><%= p.preview_id %></td>
+          <td><%= p.title %></td>
+          <td><%= p.kind %></td>
+          <td><%= p.enabled ? 'sim' : 'não' %></td>
+          <td><%= p.media_count || 0 %></td>
+          <td>
+            <a class="btn" href="/admin/fulfillment/previews/<%= encodeURIComponent(p.id) %>/edit">Editar</a>
+            <form style="display:inline" method="post" action="/admin/fulfillment/previews/<%= encodeURIComponent(p.id) %>/delete" onsubmit="return confirm('Remover esta prévia?');">
+              <button class="btn" type="submit">Remover</button>
+            </form>
+          </td>
+        </tr>
+      <% }) %>
+    </tbody>
+  </table>
+</body>
+</html>
