@@ -81,6 +81,7 @@ module.exports = async function enviar_fotos(ctx, payload) {
     const caption = (String(list[i]?.caption || '').trim() || defaultCaption || '');
 
     if (!url) {
+      console.log(`[META][SEND_FAIL] to=${to} type=image ref=${ref} err=${e?.message || e}`);
       results.push({ ok: false, reason: 'missing-ref' });
       continue;
     }

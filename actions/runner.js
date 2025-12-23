@@ -51,6 +51,9 @@ function createActionRunner({ db, senders, publishState, payments, aiLog = () =>
 
     enviar_fotos: require('./handlers/enviar_fotos'),
     enviar_audios: require('./handlers/enviar_audios'),
+
+    enviar_imagem: require('./handlers/enviar_previa_foto'),
+    enviar_video: require('./handlers/enviar_previa_video'),
   };
 
   // Anti-spam: impede executar a MESMA action repetidamente num curto período
@@ -59,6 +62,11 @@ function createActionRunner({ db, senders, publishState, payments, aiLog = () =>
   async function run({ agent, wa_id, inboundPhoneNumberId, lead, replyToWamid, settings }) {
     const acoes = agent?.acoes && typeof agent.acoes === 'object' ? agent.acoes : {};
     const keys = Object.keys(acoes);
+    const traceId = `${wa_id}-${Date.now().toString(16)}`;
+
+    console.log(`[ACTIONS][${traceId}] keys=`, keys);
+    console.log(`[ACTIONS][${traceId}] acoes=`, JSON.stringify(acoes, null, 2));
+
     if (!keys.length) return;
 
     const stActions = ensureActionState(lead, wa_id);
@@ -114,7 +122,7 @@ function createActionRunner({ db, senders, publishState, payments, aiLog = () =>
 
       const handler = handlers[name];
       if (!handler) {
-        aiLog(`[ACTIONS] ignorada (não-whitelisted): ${name}`);
+        console.log(`[ACTIONS][${traceId}] IGNORADA não-whitelisted: ${name}`);
         continue;
       }
 

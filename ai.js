@@ -1038,6 +1038,11 @@ function createAiEngine({ db = dbModule, sendMessage, aiLog = () => { }, payment
 
     const agent = parsed.data;
 
+    const traceId = `${wa_id}-${Date.now().toString(16)}`;
+
+    aiLog(`[PREVIEW][${traceId}] agent.intent=${agent.intent_detectada || ''} fase=${agent.proxima_fase || ''}`);
+    aiLog(`[PREVIEW][${traceId}] acoes= ${JSON.stringify(agent.acoes || {}, null, 2)}`);
+
     if (!agent.acoes || typeof agent.acoes !== 'object') agent.acoes = {};
     agent.acoes.mostrar_ofertas = false;
 
@@ -1309,6 +1314,8 @@ function createAiEngine({ db = dbModule, sendMessage, aiLog = () => { }, payment
       }
     }
 
+    aiLog(`[PREVIEW][${traceId}] calling actionRunner.run...`);
+
     await actionRunner.run({
       agent,
       wa_id,
@@ -1318,6 +1325,8 @@ function createAiEngine({ db = dbModule, sendMessage, aiLog = () => { }, payment
       batch_items,
       settings,
     });
+
+    aiLog(`[PREVIEW][${traceId}] actionRunner.run finished`);
   }
 
   return { handleInboundBlock };

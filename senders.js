@@ -862,62 +862,61 @@ async function sendTtsVoiceNote(contato, text, opts = {}) {
 }
 
 // ======= SEND PREVIEW (foto/vídeo) =======
-async function sendPreviewToLead({ wa_id, preview_id, inboundPhoneNumberId, dbOverride } = {}) {
-  const to = String(wa_id || '').trim();
-  const pid = String(preview_id || '').trim();
+async function sendPreviewToLead({ wa_id, preview_id, inboundPhoneNumberId, db }) {
+  const traceId = `${wa_id}-${Date.now().toString(16)}`;
 
-  if (!to) return { ok: false, reason: 'missing-wa_id' };
-  if (!pid) return { ok: false, reason: 'missing-preview_id' };
+  console.log(`[PREVIEW][${traceId}] start wa_id=${wa_id} preview_id=${preview_id} inboundPhoneNumberId=${inboundPhoneNumberId}`);
 
-  try {
-    const dbx = dbOverride || db;
+  const cfg = await db.getPreviewOfferWithMedia(preview_id);
 
-    const cfg = await dbx.getPreviewOfferWithMedia(pid);
-    if (!cfg?.offer || !cfg.offer.enabled) {
-      return { ok: false, reason: 'preview-not-found-or-disabled' };
-    }
+  console.log(`[PREVIEW][${traceId}] db.cfg.offer=`, cfg?.offer || null);
+  console.log(`[PREVIEW][${traceId}] db.media.count=`, (cfg?.media || []).length);
 
-    const offer = cfg.offer;
-    const items = (cfg.media || []).filter(x => x?.url);
-
-    const metaOpts = inboundPhoneNumberId
-      ? { meta_phone_number_id: inboundPhoneNumberId }
-      : {};
-
-    if (offer.pre_text) {
-      await sendMessage(to, offer.pre_text, metaOpts);
-    }
-
-    const delayBetweenMs = [offer.delay_between_min_ms, offer.delay_between_max_ms];
-
-    if (offer.kind === 'foto') {
-      await sendImage(
-        to,
-        items.map(it => ({ url: it.url, caption: it.caption || '' })),
-        {
-          ...metaOpts,
-          delayBetweenMs,
-        }
-      );
-    } else {
-      await sendVideo(
-        to,
-        items.map(it => ({ url: it.url, caption: it.caption || '' })),
-        {
-          ...metaOpts,
-          delayBetweenMs,
-        }
-      );
-    }
-
-    if (offer.post_text) {
-      await sendMessage(to, offer.post_text, metaOpts);
-    }
-
-    return { ok: true, count: items.length };
-  } catch (e) {
-    return { ok: false, error: e?.message || String(e) };
+  if (!cfg?.offer || !cfg.offer.enabled) {
+    console.log(`[PREVIEW][${traceId}] abort: preview-not-found-or-disabled`);
+    return { ok: false, reason: 'preview-not-found-or-disabled' };
   }
+
+  const offer = cfg.offer;
+  const items = (cfg.media || []).filter(x => x?.url);
+
+  console.log(`[PREVIEW][${traceId}] offer.kind=${offer.kind} itemsToSend=${items.length}`);
+  if (!items.length) {
+    console.log(`[PREVIEW][${traceId}] abort: no-media-items`);
+    return { ok: false, reason: 'no-media-items' };
+  }
+
+  if (offer.pre_text) {
+    console.log(`[PREVIEW][${traceId}] sending pre_text...`);
+    const r0 = await sendMessage(wa_id, offer.pre_text, { meta_phone_number_id: inboundPhoneNumberId });
+    console.log(`[PREVIEW][${traceId}] pre_text result=`, r0);
+  }
+
+  let rMedia;
+  if (offer.kind === 'foto') {
+    console.log(`[PREVIEW][${traceId}] sending images...`, items.map(x => x.url));
+    rMedia = await sendImage(wa_id, items.map(it => ({ url: it.url, caption: it.caption || '' })), {
+      meta_phone_number_id: inboundPhoneNumberId,
+      delayBetweenMs: [offer.delay_between_min_ms, offer.delay_between_max_ms],
+    });
+  } else {
+    console.log(`[PREVIEW][${traceId}] sending videos...`, items.map(x => x.url));
+    rMedia = await sendVideo(wa_id, items.map(it => ({ url: it.url, caption: it.caption || '' })), {
+      meta_phone_number_id: inboundPhoneNumberId,
+      delayBetweenMs: [offer.delay_between_min_ms, offer.delay_between_max_ms],
+    });
+  }
+
+  console.log(`[PREVIEW][${traceId}] media result=`, rMedia);
+
+  if (offer.post_text) {
+    console.log(`[PREVIEW][${traceId}] sending post_text...`);
+    const r1 = await sendMessage(wa_id, offer.post_text, { meta_phone_number_id: inboundPhoneNumberId });
+    console.log(`[PREVIEW][${traceId}] post_text result=`, r1);
+  }
+
+  console.log(`[PREVIEW][${traceId}] done ok=true count=${items.length}`);
+  return { ok: true, count: items.length };
 }
 
 module.exports = {
