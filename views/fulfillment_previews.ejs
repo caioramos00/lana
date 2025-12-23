@@ -1,60 +1,103 @@
-<!doctype html>
-<html>
+<!DOCTYPE html>
+<html lang="pt-BR">
+
 <head>
   <meta charset="utf-8" />
-  <title>Prévias</title>
-  <style>
-    body { font-family: Arial, sans-serif; margin: 24px; }
-    table { border-collapse: collapse; width: 100%; }
-    th, td { border: 1px solid #ddd; padding: 8px; }
-    th { background: #f4f4f4; text-align: left; }
-    .row { display:flex; gap:12px; align-items:center; margin: 12px 0; }
-    .btn { padding: 8px 10px; border: 1px solid #333; background: #fff; cursor: pointer; text-decoration:none; color:#000; }
-    .ok { color: green; }
-    .err { color: #b00020; }
-  </style>
+  <title>Admin • Prévias e Mídias</title>
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet" />
 </head>
-<body>
-  <h1>Prévias</h1>
 
-  <div class="row">
-    <a class="btn" href="/admin/fulfillment/previews/new">+ Nova prévia</a>
-    <a class="btn" href="/admin/fulfillment/offers">Ir para Ofertas</a>
+<body class="container py-4">
+
+  <div class="d-flex align-items-center justify-content-between mb-3">
+    <div>
+      <h1 class="mb-0">Prévias (Fulfillment)</h1>
+      <div class="text-muted">Crie/edite/remova prévias e as mídias (foto/vídeo) associadas.</div>
+    </div>
+    <div class="d-flex gap-2">
+      <a class="btn btn-outline-secondary" href="/admin/settings">Configurações</a>
+      <a class="btn btn-primary" href="/admin/fulfillment/previews/new">+ Nova prévia</a>
+    </div>
   </div>
 
-  <% if (ok) { %><p class="ok">Salvo com sucesso.</p><% } %>
-  <% if (err) { %><p class="err"><%= err %></p><% } %>
+  <% if (ok) { %>
+    <div class="alert alert-success">Salvo com sucesso.</div>
+  <% } %>
 
-  <table>
-    <thead>
-      <tr>
-        <th>ID</th>
-        <th>preview_id</th>
-        <th>Título</th>
-        <th>Kind</th>
-        <th>Ativo</th>
-        <th># Mídias</th>
-        <th>Ações</th>
-      </tr>
-    </thead>
-    <tbody>
-      <% (previews || []).forEach(function(p){ %>
-        <tr>
-          <td><%= p.id %></td>
-          <td><%= p.preview_id %></td>
-          <td><%= p.title %></td>
-          <td><%= p.kind %></td>
-          <td><%= p.enabled ? 'sim' : 'não' %></td>
-          <td><%= p.media_count || 0 %></td>
-          <td>
-            <a class="btn" href="/admin/fulfillment/previews/<%= encodeURIComponent(p.id) %>/edit">Editar</a>
-            <form style="display:inline" method="post" action="/admin/fulfillment/previews/<%= encodeURIComponent(p.id) %>/delete" onsubmit="return confirm('Remover esta prévia?');">
-              <button class="btn" type="submit">Remover</button>
-            </form>
-          </td>
-        </tr>
-      <% }) %>
-    </tbody>
-  </table>
+  <% if (err) { %>
+    <div class="alert alert-danger"><%= err %></div>
+  <% } %>
+
+  <div class="card">
+    <div class="card-body">
+      <div class="table-responsive">
+        <table class="table align-middle mb-0">
+          <thead>
+            <tr>
+              <th>Título</th>
+              <th style="width:120px;">Tipo</th>
+              <th style="width:110px;">Ativa?</th>
+              <th style="width:140px;">Mídias</th>
+              <th style="width:220px;"></th>
+            </tr>
+          </thead>
+          <tbody>
+            <% const list = Array.isArray(previews) ? previews : []; %>
+
+            <% if (!list.length) { %>
+              <tr>
+                <td colspan="5" class="text-muted">Nenhuma prévia cadastrada.</td>
+              </tr>
+            <% } %>
+
+            <% list.forEach(function(p){ %>
+              <tr>
+                <td>
+                  <div class="fw-semibold"><%= p.title || '(sem título)' %></div>
+                  <div class="text-muted small">
+                    Preview ID: <code><%= p.preview_id %></code>
+                    <span class="ms-2">DB ID: <code><%= p.id %></code></span>
+                  </div>
+                </td>
+
+                <td>
+                  <span class="badge text-bg-secondary"><%= (p.kind || '').toUpperCase() %></span>
+                </td>
+
+                <td>
+                  <% if (p.enabled) { %>
+                    <span class="badge text-bg-success">Sim</span>
+                  <% } else { %>
+                    <span class="badge text-bg-danger">Não</span>
+                  <% } %>
+                </td>
+
+                <td>
+                  <span class="badge text-bg-light">
+                    <%= (p.media_count !== undefined && p.media_count !== null) ? p.media_count : '-' %>
+                  </span>
+                </td>
+
+                <td class="text-end">
+                  <a class="btn btn-sm btn-outline-primary"
+                    href="/admin/fulfillment/previews/<%= encodeURIComponent(p.id) %>/edit">Editar</a>
+
+                  <form method="post"
+                    action="/admin/fulfillment/previews/<%= encodeURIComponent(p.id) %>/delete"
+                    class="d-inline">
+                    <button class="btn btn-sm btn-outline-danger"
+                      onclick="return confirm('Remover esta prévia?');">
+                      Remover
+                    </button>
+                  </form>
+                </td>
+              </tr>
+            <% }) %>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
 </body>
 </html>
