@@ -715,8 +715,8 @@ function registerRoutes(app, {
 
   // ---------- FULFILLMENT (OFERTAS + MÍDIAS) CRUD ----------
   function toBool(v) {
-    // checkbox do form: quando marcado vem "on" (ou "1" dependendo), quando desmarcado não vem
-    return v === true || v === 'true' || v === '1' || v === 'on';
+    if (Array.isArray(v)) v = v[v.length - 1];
+    return v === true || v === 'true' || v === '1' || v === 'on' || v === 1;
   }
 
   function toInt(v, def, { min = -Infinity, max = Infinity } = {}) {
