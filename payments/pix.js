@@ -220,7 +220,10 @@ async function enviar_pix(ctx, _payload) {
     await ctx.delay();
   }
 
-  await ctx.sendText('Copia e cola:', { reply_to_wamid: ctx.replyToWamid });
+  await ctx.sendText('tô mandando a chave aqui amor, é só copiar e colar. não é pra transferir tá?', { reply_to_wamid: ctx.replyToWamid });
+  await ctx.delay();
+
+  await ctx.sendText('é na área do pix, na aba "copia e cola". não é transferência! tem que ser na parte copia e cola do pix pra dar certo:', { reply_to_wamid: ctx.replyToWamid });
   await ctx.delay();
 
   if (qrcode) {

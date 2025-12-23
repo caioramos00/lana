@@ -34,7 +34,7 @@ const CONFIG = {
     // fallback se não vier offer/valor do agent
     valorDefault: 3.90,
 
-    mensagemExtra: 'Assim que confirmar, eu já libero o acesso aqui.',
+    mensagemExtra: 'assim que confirmar, eu já libero o seu acesso aqui. se der algum problema aí, você me fala amor',
   },
 
   links: { acesso: 'https://seu-link-de-acesso-aqui' },
