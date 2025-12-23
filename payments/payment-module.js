@@ -43,16 +43,24 @@ function sleep(ms) {
 }
 
 const PAYMENT_CONFIRMED_MESSAGES = [
-  "acabou de cair o pix aqui amor",
-  "o pix acabou de cair aqui amor",
-  "o pix caiu aqui amor",
-  "acabou de cair o pagamento aqui amor",
+  "acabou de cair o pix aqui amor ❤️❤️❤️",
+  "o pix acabou de cair aqui amor ❤️❤️❤️",
+  "o pix caiu aqui amor ❤️❤️❤️",
+  "acabou de cair o pagamento aqui amor ❤️❤️❤️",
 ];
 
 function pickRandomMessage(list) {
   const arr = Array.isArray(list) ? list : [];
   if (!arr.length) return "o pix caiu aqui amor";
   return arr[Math.floor(Math.random() * arr.length)];
+}
+
+function randInt(min, max) {
+  const a = Number(min || 0);
+  const b = Number(max || 0);
+  const lo = Math.min(a, b);
+  const hi = Math.max(a, b);
+  return Math.floor(lo + Math.random() * (hi - lo + 1));
 }
 
 function createPaymentsModule({
@@ -62,6 +70,7 @@ function createPaymentsModule({
   logger = console,
   axiosInstance,
   sendMessage,
+  senders,
 } = {}) {
   if (!db) throw new Error('[payments] db is required');
 
@@ -81,6 +90,109 @@ function createPaymentsModule({
       return String(settings?.utmify_api_token || '').trim();
     },
   });
+
+  const enviar_fotos = require('../actions/handlers/enviar_fotos');
+  const enviar_videos = require('../actions/handlers/enviar_videos');
+
+  function pickFulfillmentHandler(kind) {
+    const k = String(kind || '').trim().toLowerCase();
+    if (k === 'foto' || k === 'fotos') return enviar_fotos;
+    if (k === 'video' || k === 'videos') return enviar_videos;
+    return null;
+  }
+
+  async function fulfillPaidOrder({ wa_id, provider, external_id, transaction_id, offer_id }) {
+    try {
+      const oid = String(offer_id || '').trim();
+      if (!oid) return { ok: false, reason: 'missing-offer_id' };
+
+      // (1) busca config da oferta + mídias
+      const cfg = await db.getFulfillmentOfferWithMedia(oid);
+      if (!cfg?.offer) return { ok: false, reason: 'no-fulfillment-config' };
+      if (cfg.offer.enabled === false) return { ok: false, reason: 'fulfillment-disabled' };
+
+      // neste rollout, você pediu só foto/vídeo (não videochamada)
+      const kind = String(cfg.offer.kind || '').toLowerCase();
+      if (!['foto', 'fotos', 'video', 'videos'].includes(kind)) return { ok: false, reason: 'unsupported-kind', kind };
+
+      // exige mídia cadastrada
+      const media = Array.isArray(cfg.media) ? cfg.media : [];
+      if (!media.length) return { ok: false, reason: 'no-media-items' };
+
+      // (2) idempotência: tenta “reservar” a entrega (unique por external_id)
+      const lock = await db.tryStartFulfillmentDelivery({
+        provider,
+        external_id,
+        transaction_id,
+        wa_id,
+        offer_id: oid,
+      });
+
+      if (!lock?.ok) {
+        return { ok: false, reason: lock?.reason || 'already-exists', existing: lock?.row || null };
+      }
+
+      // (3) contexto de envio (reutiliza handlers)
+      const st = lead?.getLead?.(wa_id) || null;
+      const metaPhoneId = st?.meta_phone_number_id || null;
+
+      const handler = pickFulfillmentHandler(kind);
+      if (!handler) return { ok: false, reason: 'missing-handler', kind };
+
+      // texto opcional antes
+      const preText = String(cfg.offer.pre_text || '').trim();
+      if (preText && typeof sendMessage === 'function') {
+        await sendMessage(wa_id, preText, { meta_phone_number_id: metaPhoneId });
+      }
+
+      // (4) delay humano 30–45s (ou override por offer)
+      const dMin = Number(cfg.offer.delay_min_ms || 30000);
+      const dMax = Number(cfg.offer.delay_max_ms || 45000);
+      await sleep(randInt(dMin, dMax));
+
+      // (5) monta payload pro handler
+      const betweenMin = Number(cfg.offer.delay_between_min_ms || 250);
+      const betweenMax = Number(cfg.offer.delay_between_max_ms || 900);
+
+      const payload = {
+        items: media.map((m) => ({
+          url: String(m.url || '').trim(),
+          caption: String(m.caption || '').trim(),
+        })),
+        delayBetweenMs: [betweenMin, betweenMax],
+      };
+
+      const ctx = {
+        senders: senders || require('../senders'),
+        lead,
+        wa_id,
+        inboundPhoneNumberId: metaPhoneId || null,
+        replyToWamid: null,
+        delay: async (minMs = 250, maxMs = 900) => {
+          await sleep(randInt(minMs, maxMs));
+        },
+      };
+
+      const out = await handler(ctx, payload);
+
+      if (out?.ok) {
+        await db.markFulfillmentDeliverySent(external_id);
+
+        const postText = String(cfg.offer.post_text || '').trim();
+        if (postText && typeof sendMessage === 'function') {
+          await sendMessage(wa_id, postText, { meta_phone_number_id: metaPhoneId });
+        }
+
+        return { ok: true };
+      }
+
+      await db.markFulfillmentDeliveryFailed(external_id, `handler-failed: ${JSON.stringify(out || {}).slice(0, 600)}`);
+      return { ok: false, reason: 'handler-failed', out };
+    } catch (e) {
+      try { await db.markFulfillmentDeliveryFailed(external_id, e?.message || String(e)); } catch { }
+      return { ok: false, error: e?.message || String(e) };
+    }
+  }
 
   function normalizeProvider(id) {
     const p = String(id || '').trim().toLowerCase();
@@ -530,6 +642,31 @@ function createPaymentsModule({
                   source: 'payment_confirmed',
                 });
               } catch { /* noop */ }
+            }
+            // ✅ Fulfillment: entrega automática de mídia após PAID (com delay humano)
+            try {
+              const oid = row?.offer_id || null;
+              const ext = norm?.external_id || row?.external_id || null;
+              const tx = norm?.transaction_id || row?.transaction_id || null;
+
+              // só roda se tiver offer_id e external_id
+              if (oid && ext) {
+                const r = await fulfillPaidOrder({
+                  wa_id,
+                  provider: p,
+                  external_id: ext,
+                  transaction_id: tx,
+                  offer_id: oid,
+                });
+
+                if (!r?.ok) {
+                  logger.log('[FULFILLMENT][SKIP_OR_FAIL]', { wa_id, offer_id: oid, external_id: ext, reason: r?.reason, error: r?.error });
+                } else {
+                  logger.log('[FULFILLMENT][OK]', { wa_id, offer_id: oid, external_id: ext });
+                }
+              }
+            } catch (e) {
+              logger.warn('[FULFILLMENT][ERR]', { wa_id, message: e?.message || String(e) });
             }
           }
         }

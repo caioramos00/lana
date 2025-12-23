@@ -1,3 +1,5 @@
+// db.js (corrigido)
+
 const { Pool } = require('pg');
 
 let _settingsCache = null;
@@ -17,16 +19,30 @@ pool.on('error', (err) => {
   console.error('[PG][POOL][ERROR]', { code: err?.code, message: err?.message });
 });
 
+// -------------------------
+// helpers (CORRIGIDOS)
+// - agora '' => null (evita form vazio virar 0)
+// -------------------------
+function strOrNull(v) {
+  if (v === undefined || v === null) return null;
+  const s = String(v).trim();
+  return s ? s : null;
+}
+
 function toIntOrNull(v) {
   if (v === undefined || v === null) return null;
-  const n = Number(String(v).trim());
+  const s = String(v).trim();
+  if (!s) return null; // <-- correção: '' não vira 0
+  const n = Number(s);
   if (!Number.isFinite(n)) return null;
   return Math.trunc(n);
 }
 
 function toFloatOrNull(v) {
   if (v === undefined || v === null) return null;
-  const n = Number(String(v).trim());
+  const s = String(v).trim();
+  if (!s) return null; // <-- correção: '' não vira 0
+  const n = Number(s);
   if (!Number.isFinite(n)) return null;
   return n;
 }
@@ -55,13 +71,17 @@ function clampFloat(n, { min, max } = {}) {
   return x;
 }
 
+// -------------------------
+// initDatabase (CORRIGIDO)
+// - pix_deposits: UNIQUE (provider, external_id) + migração que remove UNIQUE antigo por external_id
+// - fulfillment_deliveries: UNIQUE (provider, external_id) + migração que remove índice antigo por external_id
+// -------------------------
 async function initDatabase() {
   const client = await pool.connect();
 
   try {
     await client.query('BEGIN');
 
-    // 1) garante tabela principal (mesmo que mínima)
     await client.query(`
       CREATE TABLE IF NOT EXISTS bot_settings (
         id INTEGER PRIMARY KEY,
@@ -74,7 +94,6 @@ async function initDatabase() {
       );
     `);
 
-    // 2) garante colunas em bancos antigos (NÃO engole silenciosamente: loga aviso)
     const alter = async (sql) =>
       client.query(sql).catch((e) => {
         console.warn('[DB][ALTER][SKIP]', { sql, code: e?.code, message: e?.message });
@@ -197,14 +216,12 @@ async function initDatabase() {
       await alter(`ALTER TABLE bot_settings ADD COLUMN IF NOT EXISTS ${c} INTEGER;`);
     }
 
-    // 3) garante singleton id=1
     await client.query(`
       INSERT INTO bot_settings (id)
       VALUES (1)
       ON CONFLICT (id) DO NOTHING;
     `);
 
-    // 4) defaults (APENAS UMA VEZ, e com vírgulas corretas)
     await client.query(`
       UPDATE bot_settings
          SET inbound_debounce_min_ms = COALESCE(inbound_debounce_min_ms, 1800),
@@ -275,6 +292,7 @@ async function initDatabase() {
              voice_note_temperature = COALESCE(voice_note_temperature, 0.85),
              voice_note_max_tokens = COALESCE(voice_note_max_tokens, 220),
              voice_note_timeout_ms = COALESCE(voice_note_timeout_ms, 45000),
+             voice_note_history_max_items = COALESCE(voice_note_history_max_items, 10),
              voice_note_history_max_chars = COALESCE(voice_note_history_max_chars, 1600),
              voice_note_script_max_chars = COALESCE(voice_note_script_max_chars, 650),
 
@@ -311,7 +329,6 @@ async function initDatabase() {
        WHERE id = 1;
     `);
 
-    // 5) meta numbers
     await client.query(`
       CREATE TABLE IF NOT EXISTS bot_meta_numbers (
         id SERIAL PRIMARY KEY,
@@ -325,70 +342,140 @@ async function initDatabase() {
       );
     `);
 
-    // 6) veltrax deposits
     await client.query(`
-  CREATE TABLE IF NOT EXISTS veltrax_deposits (
-    id SERIAL PRIMARY KEY,
-    wa_id VARCHAR(32) NOT NULL,
-    offer_id TEXT,
-    amount NUMERIC(12,2) NOT NULL,
-    external_id TEXT NOT NULL UNIQUE,
-    transaction_id TEXT UNIQUE,
-    status TEXT DEFAULT 'PENDING',
+      CREATE TABLE IF NOT EXISTS veltrax_deposits (
+        id SERIAL PRIMARY KEY,
+        wa_id VARCHAR(32) NOT NULL,
+        offer_id TEXT,
+        amount NUMERIC(12,2) NOT NULL,
+        external_id TEXT NOT NULL UNIQUE,
+        transaction_id TEXT UNIQUE,
+        status TEXT DEFAULT 'PENDING',
 
-    payer_name TEXT,
-    payer_email TEXT,
-    payer_document TEXT,
-    payer_phone TEXT,
+        payer_name TEXT,
+        payer_email TEXT,
+        payer_document TEXT,
+        payer_phone TEXT,
 
-    fee NUMERIC(12,2),
-    net_amount NUMERIC(12,2),
-    end_to_end TEXT,
+        fee NUMERIC(12,2),
+        net_amount NUMERIC(12,2),
+        end_to_end TEXT,
 
-    raw_webhook JSONB,
+        raw_webhook JSONB,
 
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-  );
-`);
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      );
+    `);
 
     await client.query(`
-  CREATE TABLE IF NOT EXISTS pix_deposits (
-    id SERIAL PRIMARY KEY,
-    provider TEXT NOT NULL,
-    wa_id VARCHAR(32) NOT NULL,
-    offer_id TEXT,
-    amount NUMERIC(12,2) NOT NULL,
-    external_id TEXT NOT NULL UNIQUE,
-    transaction_id TEXT,
-    status TEXT DEFAULT 'PENDING',
-    payer_name TEXT,
-    payer_email TEXT,
-    payer_document TEXT,
-    payer_phone TEXT,
-    fee NUMERIC(12,2),
-    net_amount NUMERIC(12,2),
-    end_to_end TEXT,
-    qrcode TEXT,
-    raw_create_response JSONB,
-    raw_webhook JSONB,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-  );
-`);
+      CREATE TABLE IF NOT EXISTS fulfillment_offers (
+        id SERIAL PRIMARY KEY,
+        offer_id TEXT NOT NULL UNIQUE,
+        kind TEXT NOT NULL, -- 'foto'|'fotos'|'video'|'videos'
+        enabled BOOLEAN DEFAULT TRUE,
+
+        pre_text TEXT,
+        post_text TEXT,
+
+        delay_min_ms INTEGER DEFAULT 30000,
+        delay_max_ms INTEGER DEFAULT 45000,
+
+        delay_between_min_ms INTEGER DEFAULT 250,
+        delay_between_max_ms INTEGER DEFAULT 900,
+
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      );
+    `);
+
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS fulfillment_media (
+        id SERIAL PRIMARY KEY,
+        offer_id TEXT NOT NULL REFERENCES fulfillment_offers(offer_id) ON DELETE CASCADE,
+        pos INTEGER NOT NULL DEFAULT 0,
+        url TEXT NOT NULL,
+        caption TEXT,
+        active BOOLEAN DEFAULT TRUE,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      );
+    `);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_fulfillment_media_offer_pos ON fulfillment_media (offer_id, pos);`);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_fulfillment_media_offer_active ON fulfillment_media (offer_id, active);`);
+
+    // fulfillment_deliveries (corrigido: provider + external_id)
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS fulfillment_deliveries (
+        id SERIAL PRIMARY KEY,
+
+        provider TEXT,
+        external_id TEXT NOT NULL,
+        transaction_id TEXT,
+        wa_id VARCHAR(32) NOT NULL,
+        offer_id TEXT,
+
+        status TEXT DEFAULT 'STARTED', -- STARTED|SENT|FAILED|SKIPPED
+        attempts INTEGER DEFAULT 0,
+        last_error TEXT,
+
+        started_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        delivered_at TIMESTAMP,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      );
+    `);
+
+    // migração: remove índice antigo por external_id e cria novo por (provider, external_id)
+    await alter(`DROP INDEX IF EXISTS ux_fulfillment_deliveries_external_id;`);
+    await alter(`CREATE UNIQUE INDEX IF NOT EXISTS ux_fulfillment_deliveries_provider_external_id ON fulfillment_deliveries (provider, external_id);`);
+
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_fulfillment_deliveries_wa_offer ON fulfillment_deliveries (wa_id, offer_id);`);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_fulfillment_deliveries_status ON fulfillment_deliveries (status);`);
+
+    // pix_deposits (corrigido: UNIQUE (provider, external_id))
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS pix_deposits (
+        id SERIAL PRIMARY KEY,
+        provider TEXT NOT NULL,
+        wa_id VARCHAR(32) NOT NULL,
+        offer_id TEXT,
+        amount NUMERIC(12,2) NOT NULL,
+        external_id TEXT NOT NULL,
+        transaction_id TEXT,
+        status TEXT DEFAULT 'PENDING',
+        payer_name TEXT,
+        payer_email TEXT,
+        payer_document TEXT,
+        payer_phone TEXT,
+        fee NUMERIC(12,2),
+        net_amount NUMERIC(12,2),
+        end_to_end TEXT,
+        qrcode TEXT,
+        raw_create_response JSONB,
+        raw_webhook JSONB,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE (provider, external_id)
+      );
+    `);
+
+    // migração: remove UNIQUE antigo em external_id (se existir) e garante índices corretos
+    await alter(`ALTER TABLE pix_deposits DROP CONSTRAINT IF EXISTS pix_deposits_external_id_key;`);
+    await alter(`CREATE UNIQUE INDEX IF NOT EXISTS ux_pix_deposits_provider_external_id ON pix_deposits (provider, external_id);`);
+    await alter(`CREATE UNIQUE INDEX IF NOT EXISTS ux_pix_deposits_provider_transaction_id ON pix_deposits (provider, transaction_id) WHERE transaction_id IS NOT NULL;`);
+
     await client.query(`CREATE INDEX IF NOT EXISTS idx_pix_deposits_wa_offer ON pix_deposits (wa_id, offer_id);`);
     await client.query(`CREATE INDEX IF NOT EXISTS idx_pix_deposits_status ON pix_deposits (status);`);
     await client.query(`CREATE INDEX IF NOT EXISTS idx_pix_deposits_provider ON pix_deposits (provider);`);
     await client.query(`CREATE INDEX IF NOT EXISTS idx_pix_deposits_transaction_id ON pix_deposits (transaction_id);`);
 
-
     await client.query(`CREATE INDEX IF NOT EXISTS idx_veltrax_deposits_wa_offer ON veltrax_deposits (wa_id, offer_id);`);
     await client.query(`CREATE INDEX IF NOT EXISTS idx_veltrax_deposits_status ON veltrax_deposits (status);`);
 
     await client.query('COMMIT');
-    console.log('[DB] Tabelas (bot_settings, bot_meta_numbers) OK.');
+    console.log('[DB] Tabelas OK.');
   } catch (err) {
-    await client.query('ROLLBACK').catch(() => { });
+    await client.query('ROLLBACK').catch(() => {});
     console.error('[DB][INIT][ERROR]', {
       code: err?.code,
       message: err?.message,
@@ -689,13 +776,11 @@ async function updateBotSettings(payload) {
       meta_ads_api_version,
       meta_ads_timeout_ms,
       meta_ads_cache_ttl_ms,
-
     } = payload;
 
     let dMin = clampInt(toIntOrNull(inbound_debounce_min_ms), { min: 200, max: 15000 });
     let dMax = clampInt(toIntOrNull(inbound_debounce_max_ms), { min: 200, max: 20000 });
     let maxW = clampInt(toIntOrNull(inbound_max_wait_ms), { min: 500, max: 60000 });
-
     if (Number.isFinite(dMin) && Number.isFinite(dMax) && dMin > dMax) {
       const tmp = dMin; dMin = dMax; dMax = tmp;
     }
@@ -713,10 +798,7 @@ async function updateBotSettings(payload) {
     const vTimeout = clampInt(toIntOrNull(venice_timeout_ms), { min: 1000, max: 180000 });
     const vStream = toBoolOrNull(venice_stream);
 
-    const webSearch = (venice_enable_web_search !== undefined && venice_enable_web_search !== null)
-      ? (String(venice_enable_web_search).trim() || null)
-      : null;
-
+    const webSearch = strOrNull(venice_enable_web_search);
     const vIncSys = toBoolOrNull(venice_include_venice_system_prompt);
     const vCitations = toBoolOrNull(venice_enable_web_citations);
     const vScraping = toBoolOrNull(venice_enable_web_scraping);
@@ -725,15 +807,6 @@ async function updateBotSettings(payload) {
 
     function cDelay(v, min, max) {
       return clampInt(toIntOrNull(v), { min, max });
-    }
-
-    function toFloatOpt(v) {
-      if (v === undefined || v === null) return null;
-      const s = String(v).trim();
-      if (!s) return null; // <-- evita '' virar 0
-      const n = Number(s);
-      if (!Number.isFinite(n)) return null;
-      return n;
     }
 
     const inBaseMin = cDelay(ai_in_delay_base_min_ms, 0, 20000);
@@ -756,15 +829,14 @@ async function updateBotSettings(payload) {
     const outTMin = cDelay(ai_out_delay_total_min_ms, 0, 60000);
     const outTMax = cDelay(ai_out_delay_total_max_ms, 0, 60000);
 
-    const elevenApiKey = (elevenlabs_api_key || '').trim() || null;
-    const elevenVoiceId = (eleven_voice_id || '').trim() || null;
-    const elevenModelId = (eleven_model_id || '').trim() || null;
-    const elevenOutputFormat = (eleven_output_format || '').trim() || null;
+    const elevenApiKey = strOrNull(elevenlabs_api_key);
+    const elevenVoiceId = strOrNull(eleven_voice_id);
+    const elevenModelId = strOrNull(eleven_model_id);
+    const elevenOutputFormat = strOrNull(eleven_output_format);
 
-    const elevenStability = clampFloat(toFloatOpt(eleven_stability), { min: 0, max: 1 });
-    const elevenSimilarity = clampFloat(toFloatOpt(eleven_similarity_boost), { min: 0, max: 1 });
-    const elevenStyle = clampFloat(toFloatOpt(eleven_style), { min: 0, max: 1 });
-
+    const elevenStability = clampFloat(toFloatOrNull(eleven_stability), { min: 0, max: 1 });
+    const elevenSimilarity = clampFloat(toFloatOrNull(eleven_similarity_boost), { min: 0, max: 1 });
+    const elevenStyle = clampFloat(toFloatOrNull(eleven_style), { min: 0, max: 1 });
     const elevenSpeakerBoost = toBoolOrNull(eleven_use_speaker_boost);
 
     const vnTemp = clampFloat(toFloatOrNull(voice_note_temperature), { min: 0, max: 2 });
@@ -776,87 +848,75 @@ async function updateBotSettings(payload) {
     const vnScriptMaxChars = clampInt(toIntOrNull(voice_note_script_max_chars), { min: 200, max: 4000 });
 
     const pixGatewayDefaultRaw = String(pix_gateway_default || '').trim().toLowerCase();
-    const pixGatewayDefault = (pixGatewayDefaultRaw === 'veltrax' || pixGatewayDefaultRaw === 'rapdyn' || pixGatewayDefaultRaw === 'zoompag') ? pixGatewayDefaultRaw : null;
+    const pixGatewayDefault =
+      (pixGatewayDefaultRaw === 'veltrax' || pixGatewayDefaultRaw === 'rapdyn' || pixGatewayDefaultRaw === 'zoompag')
+        ? pixGatewayDefaultRaw
+        : null;
 
-    const rApiBase = (rapdyn_api_base_url || '').trim() || null;
-    const rKey = (rapdyn_api_key || '').trim() || null;
-    const rSecret = (rapdyn_api_secret || '').trim() || null;
-    const rCreatePath = (rapdyn_create_path || '').trim() || null;
-    const rCbBase = (rapdyn_callback_base_url || '').trim() || null;
-    const rWebhookPath = (rapdyn_webhook_path || '').trim() || null;
+    const rApiBase = strOrNull(rapdyn_api_base_url);
+    const rKey = strOrNull(rapdyn_api_key);
+    const rSecret = strOrNull(rapdyn_api_secret);
+    const rCreatePath = strOrNull(rapdyn_create_path);
+    const rCbBase = strOrNull(rapdyn_callback_base_url);
+    const rWebhookPath = strOrNull(rapdyn_webhook_path);
 
-    const vtxApiBase = (veltrax_api_base_url || '').trim() || null;
-    const vtxClientId = (veltrax_client_id || '').trim() || null;
-    const vtxClientSecret = (veltrax_client_secret || '').trim() || null;
-    const vtxCbBase = (veltrax_callback_base_url || '').trim() || null;
-    const vtxWebhookPath = (veltrax_webhook_path || '').trim() || null;
+    const vtxApiBase = strOrNull(veltrax_api_base_url);
+    const vtxClientId = strOrNull(veltrax_client_id);
+    const vtxClientSecret = strOrNull(veltrax_client_secret);
+    const vtxCbBase = strOrNull(veltrax_callback_base_url);
+    const vtxWebhookPath = strOrNull(veltrax_webhook_path);
 
-    const zApiBase = (zoompag_api_base_url || '').trim() || null;
-    const zKey = (zoompag_api_key || '').trim() || null;
-    const zCreatePath = (zoompag_create_path || '').trim() || null;
-    const zCbBase = (zoompag_callback_base_url || '').trim() || null;
-    const zWebhookPath = (zoompag_webhook_path || '').trim() || null;
+    const zApiBase = strOrNull(zoompag_api_base_url);
+    const zKey = strOrNull(zoompag_api_key);
+    const zCreatePath = strOrNull(zoompag_create_path);
+    const zCbBase = strOrNull(zoompag_callback_base_url);
+    const zWebhookPath = strOrNull(zoompag_webhook_path);
 
-    const aiProviderRaw = (ai_provider || '').trim().toLowerCase();
+    const aiProviderRaw = String(ai_provider || '').trim().toLowerCase();
     const aiProvider = (aiProviderRaw === 'venice' || aiProviderRaw === 'openai' || aiProviderRaw === 'grok') ? aiProviderRaw : null;
 
-    const openaiApiKey = (openai_api_key || '').trim() || null;
-    const openaiModel = (openai_model || '').trim() || null;
-
+    const openaiApiKey = strOrNull(openai_api_key);
+    const openaiModel = strOrNull(openai_model);
     const openaiMaxOut = clampInt(toIntOrNull(openai_max_output_tokens), { min: 16, max: 8192 });
-
-    const effortRaw = (openai_reasoning_effort || '').trim().toLowerCase();
+    const effortRaw = String(openai_reasoning_effort || '').trim().toLowerCase();
     const openaiEffort = (effortRaw === 'low' || effortRaw === 'medium' || effortRaw === 'high') ? effortRaw : null;
+    const openaiApiUrl = strOrNull(openai_api_url);
 
-    const openaiApiUrl = (openai_api_url || '').trim() || null;
-
-    const vnProvRaw = (voice_note_ai_provider || '').trim().toLowerCase();
+    const vnProvRaw = String(voice_note_ai_provider || '').trim().toLowerCase();
     const voiceNoteProvider =
-      (vnProvRaw === 'inherit' || vnProvRaw === 'venice' || vnProvRaw === 'openai' || vnProvRaw === 'grok') ? vnProvRaw : null;
+      (vnProvRaw === 'inherit' || vnProvRaw === 'venice' || vnProvRaw === 'openai' || vnProvRaw === 'grok')
+        ? vnProvRaw
+        : null;
 
-    const voiceNoteOpenAiModel = (voice_note_openai_model || '').trim() || null;
-    const voiceNoteVeniceModel = (voice_note_venice_model || '').trim() || null;
+    const voiceNoteOpenAiModel = strOrNull(voice_note_openai_model);
+    const voiceNoteVeniceModel = strOrNull(voice_note_venice_model);
 
     const sttEnabled = toBoolOrNull(openai_transcribe_enabled);
-
-    const sttModel =
-      (openai_transcribe_model !== undefined && openai_transcribe_model !== null)
-        ? String(openai_transcribe_model).trim()
-        : null;
-
-    const sttLang =
-      (openai_transcribe_language !== undefined && openai_transcribe_language !== null)
-        ? String(openai_transcribe_language).trim()
-        : null;
-
-    const sttPrompt =
-      (openai_transcribe_prompt !== undefined && openai_transcribe_prompt !== null)
-        ? String(openai_transcribe_prompt).trim()
-        : null;
-
+    const sttModel = (openai_transcribe_model !== undefined && openai_transcribe_model !== null) ? String(openai_transcribe_model).trim() : null;
+    const sttLang = (openai_transcribe_language !== undefined && openai_transcribe_language !== null) ? String(openai_transcribe_language).trim() : null;
+    const sttPrompt = (openai_transcribe_prompt !== undefined && openai_transcribe_prompt !== null) ? String(openai_transcribe_prompt).trim() : null;
     const sttTimeout = clampInt(toIntOrNull(openai_transcribe_timeout_ms), { min: 1000, max: 300000 });
 
-    const grokApiKey = (grok_api_key || '').trim() || null;
-    const grokModel = (grok_model || '').trim() || null;
-    const grokApiUrl = (grok_api_url || '').trim() || null;
-
+    const grokApiKey = strOrNull(grok_api_key);
+    const grokModel = strOrNull(grok_model);
+    const grokApiUrl = strOrNull(grok_api_url);
     const grokTemp = clampFloat(toFloatOrNull(grok_temperature), { min: 0, max: 2 });
     const grokMaxTokens = clampInt(toIntOrNull(grok_max_tokens), { min: 16, max: 4096 });
-
-    const voiceNoteGrokModel = (voice_note_grok_model || '').trim() || null;
+    const voiceNoteGrokModel = strOrNull(voice_note_grok_model);
 
     let autoAudioEnabled = toBoolOrNull(auto_audio_enabled);
     if (Array.isArray(payload.auto_audio_enabled)) {
       autoAudioEnabled = toBoolOrNull(payload.auto_audio_enabled[payload.auto_audio_enabled.length - 1]);
     }
 
-    const autoAudioAfterMsgs = clampInt(toIntOrNull(auto_audio_after_msgs), { min: 15, max: 1000 });
+    // CORREÇÃO: antes min=15 quebrava default=12 / não deixava setar valores menores
+    const autoAudioAfterMsgs = clampInt(toIntOrNull(auto_audio_after_msgs), { min: 1, max: 1000 });
 
-    const utmifyApiToken = (utmify_api_token || '').trim() || null;
+    const utmifyApiToken = strOrNull(utmify_api_token);
 
-    const metaAdsToken = (meta_ads_access_token || '').trim() || null;
-    const metaAdsAccount = (meta_ads_ad_account_id || '').trim() || null;
-    const metaAdsVersion = (meta_ads_api_version || '').trim() || null;
+    const metaAdsToken = strOrNull(meta_ads_access_token);
+    const metaAdsAccount = strOrNull(meta_ads_ad_account_id);
+    const metaAdsVersion = strOrNull(meta_ads_api_version);
     const metaAdsTimeout = clampInt(toIntOrNull(meta_ads_timeout_ms), { min: 1000, max: 120000 });
     const metaAdsCacheTtl = clampInt(toIntOrNull(meta_ads_cache_ttl_ms), { min: 0, max: 604800000 });
 
@@ -928,82 +988,82 @@ async function updateBotSettings(payload) {
              eleven_style = COALESCE($53, eleven_style),
              eleven_use_speaker_boost = COALESCE($54, eleven_use_speaker_boost),
 
-            voice_note_system_prompt = COALESCE($55, voice_note_system_prompt),
-            voice_note_user_prompt = COALESCE($56, voice_note_user_prompt),
-            voice_note_temperature = COALESCE($57, voice_note_temperature),
-            voice_note_max_tokens = COALESCE($58, voice_note_max_tokens),
-            voice_note_timeout_ms = COALESCE($59, voice_note_timeout_ms),
-            voice_note_history_max_items = COALESCE($60, voice_note_history_max_items),
-            voice_note_history_max_chars = COALESCE($61, voice_note_history_max_chars),
-            voice_note_script_max_chars = COALESCE($62, voice_note_script_max_chars),
-            voice_note_fallback_text = COALESCE($63, voice_note_fallback_text),
+             voice_note_system_prompt = COALESCE($55, voice_note_system_prompt),
+             voice_note_user_prompt = COALESCE($56, voice_note_user_prompt),
+             voice_note_temperature = COALESCE($57, voice_note_temperature),
+             voice_note_max_tokens = COALESCE($58, voice_note_max_tokens),
+             voice_note_timeout_ms = COALESCE($59, voice_note_timeout_ms),
+             voice_note_history_max_items = COALESCE($60, voice_note_history_max_items),
+             voice_note_history_max_chars = COALESCE($61, voice_note_history_max_chars),
+             voice_note_script_max_chars = COALESCE($62, voice_note_script_max_chars),
+             voice_note_fallback_text = COALESCE($63, voice_note_fallback_text),
 
-            veltrax_api_base_url = COALESCE($64, veltrax_api_base_url),
-            veltrax_client_id = COALESCE($65, veltrax_client_id),
-            veltrax_client_secret = COALESCE($66, veltrax_client_secret),
-            veltrax_callback_base_url = COALESCE($67, veltrax_callback_base_url),
-            veltrax_webhook_path = COALESCE($68, veltrax_webhook_path),
+             veltrax_api_base_url = COALESCE($64, veltrax_api_base_url),
+             veltrax_client_id = COALESCE($65, veltrax_client_id),
+             veltrax_client_secret = COALESCE($66, veltrax_client_secret),
+             veltrax_callback_base_url = COALESCE($67, veltrax_callback_base_url),
+             veltrax_webhook_path = COALESCE($68, veltrax_webhook_path),
 
-            ai_provider = COALESCE($69, ai_provider),
+             ai_provider = COALESCE($69, ai_provider),
 
-            openai_api_key = COALESCE($70, openai_api_key),
-            openai_model = COALESCE($71, openai_model),
-            openai_max_output_tokens = COALESCE($72, openai_max_output_tokens),
-            openai_reasoning_effort = COALESCE($73, openai_reasoning_effort),
+             openai_api_key = COALESCE($70, openai_api_key),
+             openai_model = COALESCE($71, openai_model),
+             openai_max_output_tokens = COALESCE($72, openai_max_output_tokens),
+             openai_reasoning_effort = COALESCE($73, openai_reasoning_effort),
 
-            openai_api_url = COALESCE($74, openai_api_url),
+             openai_api_url = COALESCE($74, openai_api_url),
 
-            voice_note_ai_provider = COALESCE($75, voice_note_ai_provider),
-            voice_note_openai_model = COALESCE($76, voice_note_openai_model),
-            voice_note_venice_model = COALESCE($77, voice_note_venice_model),
+             voice_note_ai_provider = COALESCE($75, voice_note_ai_provider),
+             voice_note_openai_model = COALESCE($76, voice_note_openai_model),
+             voice_note_venice_model = COALESCE($77, voice_note_venice_model),
 
-            openai_transcribe_enabled = COALESCE($78, openai_transcribe_enabled),
-            openai_transcribe_model = COALESCE($79, openai_transcribe_model),
-            openai_transcribe_language = COALESCE($80, openai_transcribe_language),
-            openai_transcribe_prompt = COALESCE($81, openai_transcribe_prompt),
-            openai_transcribe_timeout_ms = COALESCE($82, openai_transcribe_timeout_ms),
+             openai_transcribe_enabled = COALESCE($78, openai_transcribe_enabled),
+             openai_transcribe_model = COALESCE($79, openai_transcribe_model),
+             openai_transcribe_language = COALESCE($80, openai_transcribe_language),
+             openai_transcribe_prompt = COALESCE($81, openai_transcribe_prompt),
+             openai_transcribe_timeout_ms = COALESCE($82, openai_transcribe_timeout_ms),
 
-            pix_gateway_default = COALESCE($83, pix_gateway_default),
-            rapdyn_api_base_url = COALESCE($84, rapdyn_api_base_url),
-            rapdyn_api_key = COALESCE($85, rapdyn_api_key),
-            rapdyn_api_secret = COALESCE($86, rapdyn_api_secret),
-            rapdyn_create_path = COALESCE($87, rapdyn_create_path),
-            rapdyn_callback_base_url = COALESCE($88, rapdyn_callback_base_url),
-            rapdyn_webhook_path = COALESCE($89, rapdyn_webhook_path),
+             pix_gateway_default = COALESCE($83, pix_gateway_default),
+             rapdyn_api_base_url = COALESCE($84, rapdyn_api_base_url),
+             rapdyn_api_key = COALESCE($85, rapdyn_api_key),
+             rapdyn_api_secret = COALESCE($86, rapdyn_api_secret),
+             rapdyn_create_path = COALESCE($87, rapdyn_create_path),
+             rapdyn_callback_base_url = COALESCE($88, rapdyn_callback_base_url),
+             rapdyn_webhook_path = COALESCE($89, rapdyn_webhook_path),
 
-            grok_api_key = COALESCE($90, grok_api_key),
-            grok_model = COALESCE($91, grok_model),
-            grok_api_url = COALESCE($92, grok_api_url),
-            grok_temperature = COALESCE($93, grok_temperature),
-            grok_max_tokens = COALESCE($94, grok_max_tokens),
-            voice_note_grok_model = COALESCE($95, voice_note_grok_model),
+             grok_api_key = COALESCE($90, grok_api_key),
+             grok_model = COALESCE($91, grok_model),
+             grok_api_url = COALESCE($92, grok_api_url),
+             grok_temperature = COALESCE($93, grok_temperature),
+             grok_max_tokens = COALESCE($94, grok_max_tokens),
+             voice_note_grok_model = COALESCE($95, voice_note_grok_model),
 
-            zoompag_api_base_url = COALESCE($96, zoompag_api_base_url),
-            zoompag_api_key = COALESCE($97, zoompag_api_key),
-            zoompag_create_path = COALESCE($98, zoompag_create_path),
-            zoompag_callback_base_url = COALESCE($99, zoompag_callback_base_url),
-            zoompag_webhook_path = COALESCE($100, zoompag_webhook_path),
+             zoompag_api_base_url = COALESCE($96, zoompag_api_base_url),
+             zoompag_api_key = COALESCE($97, zoompag_api_key),
+             zoompag_create_path = COALESCE($98, zoompag_create_path),
+             zoompag_callback_base_url = COALESCE($99, zoompag_callback_base_url),
+             zoompag_webhook_path = COALESCE($100, zoompag_webhook_path),
 
-            auto_audio_enabled = COALESCE($101, auto_audio_enabled),
-            auto_audio_after_msgs = COALESCE($102, auto_audio_after_msgs),
+             auto_audio_enabled = COALESCE($101, auto_audio_enabled),
+             auto_audio_after_msgs = COALESCE($102, auto_audio_after_msgs),
 
-            utmify_api_token = COALESCE($103, utmify_api_token),
+             utmify_api_token = COALESCE($103, utmify_api_token),
 
-            meta_ads_access_token = COALESCE($104, meta_ads_access_token),
-            meta_ads_ad_account_id = COALESCE($105, meta_ads_ad_account_id),
-            meta_ads_api_version = COALESCE($106, meta_ads_api_version),
-            meta_ads_timeout_ms = COALESCE($107, meta_ads_timeout_ms),
-            meta_ads_cache_ttl_ms = COALESCE($108, meta_ads_cache_ttl_ms),
+             meta_ads_access_token = COALESCE($104, meta_ads_access_token),
+             meta_ads_ad_account_id = COALESCE($105, meta_ads_ad_account_id),
+             meta_ads_api_version = COALESCE($106, meta_ads_api_version),
+             meta_ads_timeout_ms = COALESCE($107, meta_ads_timeout_ms),
+             meta_ads_cache_ttl_ms = COALESCE($108, meta_ads_cache_ttl_ms),
 
-            updated_at = NOW()
+             updated_at = NOW()
        WHERE id = 1
       `,
       [
-        (graph_api_access_token || '').trim() || null,
-        (contact_token || '').trim() || null,
-        (venice_api_key || '').trim() || null,
-        (venice_model || '').trim() || null,
-        (system_prompt || '').trim() || null,
+        strOrNull(graph_api_access_token),
+        strOrNull(contact_token),
+        strOrNull(venice_api_key),
+        strOrNull(venice_model),
+        strOrNull(system_prompt),
 
         Number.isFinite(dMin) ? dMin : null,
         Number.isFinite(dMax) ? dMax : null,
@@ -1017,12 +1077,12 @@ async function updateBotSettings(payload) {
         Number.isFinite(leadLateJoin) ? leadLateJoin : null,
         Number.isFinite(leadPrevMax) ? leadPrevMax : null,
 
-        (venice_api_url || '').trim() || null,
+        strOrNull(venice_api_url),
         Number.isFinite(vTemp) ? vTemp : null,
         Number.isFinite(vMaxTokens) ? vMaxTokens : null,
         Number.isFinite(vTimeout) ? vTimeout : null,
         vStream,
-        (venice_user_message || '').trim() || null,
+        strOrNull(venice_user_message),
 
         webSearch,
         vIncSys,
@@ -1030,9 +1090,9 @@ async function updateBotSettings(payload) {
         vScraping,
 
         Number.isFinite(maxOut) ? maxOut : null,
-        (ai_error_msg_config || '').trim() || null,
-        (ai_error_msg_generic || '').trim() || null,
-        (ai_error_msg_parse || '').trim() || null,
+        strOrNull(ai_error_msg_config),
+        strOrNull(ai_error_msg_generic),
+        strOrNull(ai_error_msg_parse),
 
         Number.isFinite(inBaseMin) ? inBaseMin : null,
         Number.isFinite(inBaseMax) ? inBaseMax : null,
@@ -1064,8 +1124,8 @@ async function updateBotSettings(payload) {
         Number.isFinite(elevenStyle) ? elevenStyle : null,
         elevenSpeakerBoost,
 
-        (voice_note_system_prompt || '').trim() || null,
-        (voice_note_user_prompt || '').trim() || null,
+        strOrNull(voice_note_system_prompt),
+        strOrNull(voice_note_user_prompt),
 
         Number.isFinite(vnTemp) ? vnTemp : null,
         Number.isFinite(vnMaxTokens) ? vnMaxTokens : null,
@@ -1075,7 +1135,7 @@ async function updateBotSettings(payload) {
         Number.isFinite(vnHistChars) ? vnHistChars : null,
         Number.isFinite(vnScriptMaxChars) ? vnScriptMaxChars : null,
 
-        (voice_note_fallback_text || '').trim() || null,
+        strOrNull(voice_note_fallback_text),
 
         vtxApiBase,
         vtxClientId,
@@ -1089,7 +1149,9 @@ async function updateBotSettings(payload) {
         openaiModel,
         Number.isFinite(openaiMaxOut) ? openaiMaxOut : null,
         openaiEffort,
+
         openaiApiUrl,
+
         voiceNoteProvider,
         voiceNoteOpenAiModel,
         voiceNoteVeniceModel,
@@ -1131,7 +1193,6 @@ async function updateBotSettings(payload) {
         metaAdsVersion,
         Number.isFinite(metaAdsTimeout) ? metaAdsTimeout : null,
         Number.isFinite(metaAdsCacheTtl) ? metaAdsCacheTtl : null,
-
       ]
     );
 
@@ -1229,12 +1290,10 @@ async function updateVeltraxDepositFromWebhook(payload) {
 
   if (!transaction_id && !external_id) return null;
 
-  const amount = payload?.amount != null ? Number(payload.amount) : null;
   const fee = payload?.fee != null ? Number(payload.fee) : null;
-
   const net_amount =
     payload?.net_amount != null ? Number(payload.net_amount)
-      : (payload?.net_amout != null ? Number(payload.net_amout) : null); // docs tem typo
+      : (payload?.net_amout != null ? Number(payload.net_amout) : null);
 
   const end_to_end = payload?.end_to_end || payload?.endToEnd || null;
 
@@ -1300,6 +1359,9 @@ async function createPixDepositRow({
   payer_name, payer_email, payer_document, payer_phone,
   qrcode, raw_create_response,
 }) {
+  const prov = String(provider || '').trim();
+  if (!prov) throw new Error('createPixDepositRow: missing provider');
+
   const { rows } = await pool.query(
     `
     INSERT INTO pix_deposits
@@ -1310,7 +1372,7 @@ async function createPixDepositRow({
     RETURNING *
     `,
     [
-      String(provider || '').trim(),
+      prov,
       wa_id,
       offer_id || null,
       amount,
@@ -1333,6 +1395,9 @@ async function updatePixDepositFromWebhookNormalized({
   fee, net_amount, end_to_end, raw_webhook,
 }) {
   if (!transaction_id && !external_id) return null;
+
+  const prov = String(provider || '').trim();
+  if (!prov) return null;
 
   const { rows } = await pool.query(
     `
@@ -1359,7 +1424,7 @@ async function updatePixDepositFromWebhookNormalized({
       Number.isFinite(Number(net_amount)) ? Number(net_amount) : null,
       end_to_end || null,
       raw_webhook ? JSON.stringify(raw_webhook) : null,
-      String(provider || '').trim(),
+      prov,
     ]
   );
 
@@ -1412,6 +1477,108 @@ async function getLatestPendingPixDeposit(wa_id, offer_id, provider, maxAgeMs) {
   return row;
 }
 
+async function getFulfillmentOfferWithMedia(offer_id) {
+  const oid = String(offer_id || '').trim();
+  if (!oid) return null;
+
+  const { rows: offerRows } = await pool.query(
+    `SELECT * FROM fulfillment_offers WHERE offer_id = $1 LIMIT 1`,
+    [oid]
+  );
+  const offer = offerRows[0] || null;
+  if (!offer) return null;
+
+  const { rows: mediaRows } = await pool.query(
+    `
+    SELECT id, offer_id, pos, url, caption
+      FROM fulfillment_media
+     WHERE offer_id = $1
+       AND active = TRUE
+     ORDER BY pos ASC, id ASC
+    `,
+    [oid]
+  );
+
+  return { offer, media: mediaRows || [] };
+}
+
+// tenta “reservar” a entrega (idempotência via (provider, external_id))
+async function tryStartFulfillmentDelivery({ provider, external_id, transaction_id, wa_id, offer_id }) {
+  const prov = String(provider || '').trim();
+  if (!prov) return { ok: false, reason: 'missing-provider' };
+
+  const ext = String(external_id || '').trim();
+  if (!ext) return { ok: false, reason: 'missing-external_id' };
+
+  const { rows } = await pool.query(
+    `
+    INSERT INTO fulfillment_deliveries
+      (provider, external_id, transaction_id, wa_id, offer_id, status, attempts, started_at, updated_at)
+    VALUES
+      ($1,$2,$3,$4,$5,'STARTED',1, NOW(), NOW())
+    ON CONFLICT (provider, external_id) DO NOTHING
+    RETURNING *
+    `,
+    [
+      prov,
+      ext,
+      (transaction_id ? String(transaction_id).trim() : null),
+      String(wa_id || '').trim(),
+      (offer_id ? String(offer_id).trim() : null),
+    ]
+  );
+
+  if (!rows?.[0]) {
+    const { rows: existing } = await pool.query(
+      `SELECT * FROM fulfillment_deliveries WHERE provider = $1 AND external_id = $2 LIMIT 1`,
+      [prov, ext]
+    );
+    return { ok: false, reason: 'already-exists', row: existing?.[0] || null };
+  }
+
+  return { ok: true, row: rows[0] };
+}
+
+async function markFulfillmentDeliverySent(provider, external_id) {
+  const prov = String(provider || '').trim();
+  const ext = String(external_id || '').trim();
+  if (!prov || !ext) return null;
+
+  const { rows } = await pool.query(
+    `
+    UPDATE fulfillment_deliveries
+       SET status = 'SENT',
+           delivered_at = NOW(),
+           updated_at = NOW()
+     WHERE provider = $1 AND external_id = $2
+     RETURNING *
+    `,
+    [prov, ext]
+  );
+  return rows[0] || null;
+}
+
+async function markFulfillmentDeliveryFailed(provider, external_id, errMsg) {
+  const prov = String(provider || '').trim();
+  const ext = String(external_id || '').trim();
+  if (!prov || !ext) return null;
+
+  const msg = String(errMsg || '').slice(0, 1200) || 'failed';
+
+  const { rows } = await pool.query(
+    `
+    UPDATE fulfillment_deliveries
+       SET status = 'FAILED',
+           last_error = $3,
+           updated_at = NOW()
+     WHERE provider = $1 AND external_id = $2
+     RETURNING *
+    `,
+    [prov, ext, msg]
+  );
+  return rows[0] || null;
+}
+
 module.exports = {
   pool,
   initDatabase,
@@ -1432,4 +1599,8 @@ module.exports = {
   getPixDepositByTransactionId,
   countPixAttempts,
   getLatestPendingPixDeposit,
+  getFulfillmentOfferWithMedia,
+  tryStartFulfillmentDelivery,
+  markFulfillmentDeliverySent,
+  markFulfillmentDeliveryFailed,
 };

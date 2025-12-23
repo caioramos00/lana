@@ -5,7 +5,9 @@ const session = require('express-session');
 const path = require('path');
 
 const db = require('./db.js');
-const { rememberInboundMetaPhoneNumberId, sendMessage } = require('./senders');
+const senders = require('./senders');
+const { rememberInboundMetaPhoneNumberId } = senders;
+const { sendMessage } = senders;
 const { sseRouter } = require('./stream/sse-router');
 const { publishMessage, publishAck, publishState } = require('./stream/events-bus');
 const { createChatIndex } = require('./stream/chat-index');
@@ -182,8 +184,9 @@ function readLeadFromSettings(settings) {
     db,
     lead,
     publishState,
-    sendMessage,     // ✅ necessário pra disparar "pix caiu..." pelo payment-module
-    logger: console, // ✅ opcional (mas recomendo) pros warns do módulo
+    sendMessage,
+    senders,        // ✅ add
+    logger: console,
   });
 
   // ✅ injeta payments no AI (ai.js não cria outro)
