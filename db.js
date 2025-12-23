@@ -206,6 +206,8 @@ async function initDatabase() {
     await alter(`ALTER TABLE bot_settings ADD COLUMN IF NOT EXISTS meta_ads_timeout_ms INTEGER;`);
     await alter(`ALTER TABLE bot_settings ADD COLUMN IF NOT EXISTS meta_ads_cache_ttl_ms INTEGER;`);
 
+    await alter(`ALTER TABLE fulfillment_offers ADD COLUMN IF NOT EXISTS title TEXT;`);
+
     const delayCols = [
       'ai_in_delay_base_min_ms', 'ai_in_delay_base_max_ms', 'ai_in_delay_per_char_min_ms', 'ai_in_delay_per_char_max_ms',
       'ai_in_delay_cap_ms', 'ai_in_delay_jitter_min_ms', 'ai_in_delay_jitter_max_ms', 'ai_in_delay_total_min_ms', 'ai_in_delay_total_max_ms',
@@ -475,7 +477,7 @@ async function initDatabase() {
     await client.query('COMMIT');
     console.log('[DB] Tabelas OK.');
   } catch (err) {
-    await client.query('ROLLBACK').catch(() => {});
+    await client.query('ROLLBACK').catch(() => { });
     console.error('[DB][INIT][ERROR]', {
       code: err?.code,
       message: err?.message,
@@ -1477,26 +1479,49 @@ async function getLatestPendingPixDeposit(wa_id, offer_id, provider, maxAgeMs) {
   return row;
 }
 
-async function getFulfillmentOfferWithMedia(offer_id) {
-  const oid = String(offer_id || '').trim();
-  if (!oid) return null;
+async function getFulfillmentOfferWithMedia(idOrOfferId) {
+  const raw = String(idOrOfferId || '').trim();
+  if (!raw) return null;
 
-  const { rows: offerRows } = await pool.query(
-    `SELECT * FROM fulfillment_offers WHERE offer_id = $1 LIMIT 1`,
-    [oid]
-  );
-  const offer = offerRows[0] || null;
+  let offer = null;
+
+  // 1) tenta por ID numérico
+  if (/^\d+$/.test(raw)) {
+    const { rows } = await pool.query(
+      `SELECT * FROM fulfillment_offers WHERE id = $1 LIMIT 1`,
+      [Number(raw)]
+    );
+    offer = rows[0] || null;
+  }
+
+  // 2) fallback: tenta por offer_id
+  if (!offer) {
+    const { rows } = await pool.query(
+      `SELECT * FROM fulfillment_offers WHERE offer_id = $1 LIMIT 1`,
+      [raw]
+    );
+    offer = rows[0] || null;
+  }
+
   if (!offer) return null;
 
   const { rows: mediaRows } = await pool.query(
     `
-    SELECT id, offer_id, pos, url, caption
-      FROM fulfillment_media
-     WHERE offer_id = $1
-       AND active = TRUE
-     ORDER BY pos ASC, id ASC
+    SELECT
+      id,
+      offer_id,
+      pos AS sort_order,
+      url,
+      caption,
+      active,
+      created_at,
+      updated_at
+    FROM fulfillment_media
+    WHERE offer_id = $1
+      AND active = TRUE
+    ORDER BY pos ASC, id ASC
     `,
-    [oid]
+    [offer.offer_id]
   );
 
   return { offer, media: mediaRows || [] };
@@ -1507,6 +1532,7 @@ async function listFulfillmentOffers() {
     SELECT
       o.id,
       o.offer_id,
+      COALESCE(o.title, o.offer_id) AS title,
       o.kind,
       o.enabled,
       o.pre_text,
@@ -1606,6 +1632,268 @@ async function markFulfillmentDeliveryFailed(provider, external_id, errMsg) {
   return rows[0] || null;
 }
 
+function normalizeKindDb(k) {
+  const v = String(k || '').trim().toLowerCase();
+  if (v === 'fotos') return 'foto';
+  if (v === 'videos') return 'video';
+  return v;
+}
+function isValidKindDb(k) {
+  const v = normalizeKindDb(k);
+  return v === 'foto' || v === 'video';
+}
+function toBoolLoose(v, def = null) {
+  if (v === undefined || v === null) return def;
+  if (typeof v === 'boolean') return v;
+  const s = String(v).trim().toLowerCase();
+  if (['1', 'true', 'on', 'yes'].includes(s)) return true;
+  if (['0', 'false', 'off', 'no'].includes(s)) return false;
+  return def;
+}
+
+function slugifyBase(s) {
+  const out = String(s || '')
+    .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 42);
+  return out || 'offer';
+}
+
+async function resolveOfferRef(idOrOfferId) {
+  const raw = String(idOrOfferId || '').trim();
+  if (!raw) return null;
+
+  if (/^\d+$/.test(raw)) {
+    const { rows } = await pool.query(
+      `SELECT id, offer_id FROM fulfillment_offers WHERE id = $1 LIMIT 1`,
+      [Number(raw)]
+    );
+    return rows[0] || null;
+  }
+
+  const { rows } = await pool.query(
+    `SELECT id, offer_id FROM fulfillment_offers WHERE offer_id = $1 LIMIT 1`,
+    [raw]
+  );
+  return rows[0] || null;
+}
+
+async function createFulfillmentOffer(payload) {
+  const title = String(payload?.title || '').trim();
+  if (!title) throw new Error('Título é obrigatório');
+
+  const kind = normalizeKindDb(payload?.kind);
+  if (!isValidKindDb(kind)) throw new Error('Kind inválido (use foto|video)');
+
+  let enabled = toBoolLoose(payload?.enabled, true);
+
+  const pre_text = String(payload?.pre_text ?? '').trim() || null;
+  const post_text = String(payload?.post_text ?? '').trim() || null;
+
+  let delayMin = clampInt(toIntOrNull(payload?.delay_min_ms), { min: 0, max: 600000 }) ?? 30000;
+  let delayMax = clampInt(toIntOrNull(payload?.delay_max_ms), { min: 0, max: 600000 }) ?? 45000;
+  if (delayMin > delayMax) [delayMin, delayMax] = [delayMax, delayMin];
+
+  let betweenMin = clampInt(toIntOrNull(payload?.delay_between_min_ms), { min: 0, max: 60000 }) ?? 250;
+  let betweenMax = clampInt(toIntOrNull(payload?.delay_between_max_ms), { min: 0, max: 60000 }) ?? 900;
+  if (betweenMin > betweenMax) [betweenMin, betweenMax] = [betweenMax, betweenMin];
+
+  const base = slugifyBase(title);
+  let offer_id = String(payload?.offer_id || '').trim() || `${base}-${Date.now().toString(36)}`;
+
+  // tenta algumas vezes caso bata UNIQUE no offer_id
+  for (let i = 0; i < 5; i++) {
+    try {
+      const { rows } = await pool.query(
+        `
+        INSERT INTO fulfillment_offers
+          (offer_id, title, kind, enabled, pre_text, post_text,
+           delay_min_ms, delay_max_ms, delay_between_min_ms, delay_between_max_ms,
+           updated_at)
+        VALUES
+          ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10, NOW())
+        RETURNING *
+        `,
+        [
+          offer_id,
+          title,
+          kind,
+          !!enabled,
+          pre_text,
+          post_text,
+          delayMin,
+          delayMax,
+          betweenMin,
+          betweenMax,
+        ]
+      );
+      return rows[0] || null;
+    } catch (e) {
+      // 23505 = unique_violation
+      if (e?.code === '23505') {
+        offer_id = `${base}-${Math.random().toString(16).slice(2, 6)}`;
+        continue;
+      }
+      throw e;
+    }
+  }
+
+  throw new Error('Não foi possível criar offer_id único.');
+}
+
+async function updateFulfillmentOffer(idOrOfferId, payload) {
+  const ref = await resolveOfferRef(idOrOfferId);
+  if (!ref) throw new Error('Oferta não encontrada');
+
+  const title = String(payload?.title || '').trim();
+  if (!title) throw new Error('Título é obrigatório');
+
+  const kind = normalizeKindDb(payload?.kind);
+  if (!isValidKindDb(kind)) throw new Error('Kind inválido (use foto|video)');
+
+  const enabled = toBoolLoose(payload?.enabled, true);
+
+  const pre_text = String(payload?.pre_text ?? '').trim() || null;
+  const post_text = String(payload?.post_text ?? '').trim() || null;
+
+  let delayMin = clampInt(toIntOrNull(payload?.delay_min_ms), { min: 0, max: 600000 }) ?? 30000;
+  let delayMax = clampInt(toIntOrNull(payload?.delay_max_ms), { min: 0, max: 600000 }) ?? 45000;
+  if (delayMin > delayMax) [delayMin, delayMax] = [delayMax, delayMin];
+
+  let betweenMin = clampInt(toIntOrNull(payload?.delay_between_min_ms), { min: 0, max: 60000 }) ?? 250;
+  let betweenMax = clampInt(toIntOrNull(payload?.delay_between_max_ms), { min: 0, max: 60000 }) ?? 900;
+  if (betweenMin > betweenMax) [betweenMin, betweenMax] = [betweenMax, betweenMin];
+
+  const { rows } = await pool.query(
+    `
+    UPDATE fulfillment_offers
+       SET title = $2,
+           kind = $3,
+           enabled = $4,
+           pre_text = $5,
+           post_text = $6,
+           delay_min_ms = $7,
+           delay_max_ms = $8,
+           delay_between_min_ms = $9,
+           delay_between_max_ms = $10,
+           updated_at = NOW()
+     WHERE id = $1
+     RETURNING *
+    `,
+    [
+      ref.id,
+      title,
+      kind,
+      !!enabled,
+      pre_text,
+      post_text,
+      delayMin,
+      delayMax,
+      betweenMin,
+      betweenMax,
+    ]
+  );
+
+  return rows[0] || null;
+}
+
+async function deleteFulfillmentOffer(idOrOfferId) {
+  const ref = await resolveOfferRef(idOrOfferId);
+  if (!ref) return null;
+
+  const { rows } = await pool.query(
+    `DELETE FROM fulfillment_offers WHERE id = $1 RETURNING *`,
+    [ref.id]
+  );
+  return rows[0] || null;
+}
+
+async function createFulfillmentMedia({ offer_id, url, caption, sort_order }) {
+  const ref = await resolveOfferRef(offer_id);
+  if (!ref) throw new Error('Oferta não encontrada');
+
+  const u = String(url || '').trim();
+  if (!u) throw new Error('URL é obrigatória');
+
+  const pos = clampInt(toIntOrNull(sort_order), { min: -999999, max: 999999 }) ?? 0;
+  const cap = String(caption ?? '').trim() || null;
+
+  const { rows } = await pool.query(
+    `
+    INSERT INTO fulfillment_media
+      (offer_id, pos, url, caption, active, updated_at)
+    VALUES
+      ($1,$2,$3,$4, TRUE, NOW())
+    RETURNING id, offer_id, pos AS sort_order, url, caption, active, created_at, updated_at
+    `,
+    [ref.offer_id, pos, u, cap]
+  );
+
+  return rows[0] || null;
+}
+
+async function updateFulfillmentMedia(mid, { offer_id, url, caption, sort_order }) {
+  const id = String(mid || '').trim();
+  if (!id) throw new Error('mid inválido');
+
+  let offerKey = null;
+  if (offer_id !== undefined && offer_id !== null) {
+    const ref = await resolveOfferRef(offer_id);
+    if (!ref) throw new Error('Oferta não encontrada');
+    offerKey = ref.offer_id;
+  }
+
+  const u = String(url || '').trim();
+  if (!u) throw new Error('URL é obrigatória');
+
+  const pos = clampInt(toIntOrNull(sort_order), { min: -999999, max: 999999 }) ?? 0;
+  const cap = String(caption ?? '').trim() || null;
+
+  const { rows } = await pool.query(
+    `
+    UPDATE fulfillment_media
+       SET pos = $2,
+           url = $3,
+           caption = $4,
+           updated_at = NOW()
+     WHERE id = $1
+       AND ($5::text IS NULL OR offer_id = $5)
+     RETURNING id, offer_id, pos AS sort_order, url, caption, active, created_at, updated_at
+    `,
+    [Number(id), pos, u, cap, offerKey]
+  );
+
+  return rows[0] || null;
+}
+
+async function deleteFulfillmentMedia(mid, { offer_id } = {}) {
+  const id = String(mid || '').trim();
+  if (!id) throw new Error('mid inválido');
+
+  let offerKey = null;
+  if (offer_id !== undefined && offer_id !== null) {
+    const ref = await resolveOfferRef(offer_id);
+    if (!ref) throw new Error('Oferta não encontrada');
+    offerKey = ref.offer_id;
+  }
+
+  const { rows } = await pool.query(
+    `
+    UPDATE fulfillment_media
+       SET active = FALSE,
+           updated_at = NOW()
+     WHERE id = $1
+       AND ($2::text IS NULL OR offer_id = $2)
+     RETURNING id, offer_id, pos AS sort_order, url, caption, active, created_at, updated_at
+    `,
+    [Number(id), offerKey]
+  );
+
+  return rows[0] || null;
+}
+
 module.exports = {
   pool,
   initDatabase,
@@ -1631,4 +1919,10 @@ module.exports = {
   tryStartFulfillmentDelivery,
   markFulfillmentDeliverySent,
   markFulfillmentDeliveryFailed,
+  createFulfillmentOffer,
+  updateFulfillmentOffer,
+  deleteFulfillmentOffer,
+  createFulfillmentMedia,
+  updateFulfillmentMedia,
+  deleteFulfillmentMedia,
 };
