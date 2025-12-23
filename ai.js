@@ -1,4 +1,3 @@
-const axios = require('axios');
 const crypto = require('crypto');
 
 const { createActionRunner } = require('./actions');
@@ -8,33 +7,40 @@ const { publishState } = require('./stream/events-bus');
 const { CONFIG } = require('./actions/config');
 const { createPaymentsModule } = require('./payments/payment-module');
 
+const {
+  callVeniceChat,
+  callOpenAiResponses,
+  callGrokChat,
+  callVeniceText,
+  callOpenAiText,
+  callGrokText,
+} = require('./providers');
+
+const {
+  leadAskedForAudio,
+  readVoiceNoteRuntimeConfig,
+  renderVoiceNotePrompt,
+  makeAutoShortScriptFromText,
+  makeFreeScriptFromOutItems,
+  hardCut,
+} = require('./voicenote');
+
 function createAiEngine({ db = dbModule, sendMessage, aiLog = () => { }, payments: injectedPayments } = {}) {
   function sha256Of(text) {
     return crypto.createHash('sha256').update(String(text || ''), 'utf8').digest('hex');
   }
 
   const hasInjectedPayments = !!injectedPayments;
-
-  // ✅ caches por instância de leadStore (fallback quando NÃO houver injectedPayments)
   const _paymentsByLeadStore = new WeakMap();
   const _runnerByLeadStore = new WeakMap();
 
-  // ✅ runner singleton quando payments é singleton
   const _singletonRunner = hasInjectedPayments
-    ? createActionRunner({
-      db,
-      senders,
-      publishState,
-      payments: injectedPayments,
-      aiLog,
-    })
+    ? createActionRunner({ db, senders, publishState, payments: injectedPayments, aiLog })
     : null;
 
   function getPaymentsForLeadStore(leadStore) {
-    // ✅ prioridade total: payments singleton injetado
     if (hasInjectedPayments) return injectedPayments;
 
-    // fallback antigo (mantém)
     if (!leadStore || (typeof leadStore !== 'object' && typeof leadStore !== 'function')) {
       return createPaymentsModule({ db, lead: leadStore, publishState });
     }
@@ -48,10 +54,8 @@ function createAiEngine({ db = dbModule, sendMessage, aiLog = () => { }, payment
   }
 
   function getActionRunnerForLeadStore(leadStore) {
-    // ✅ prioridade total: runner singleton (amarrado ao payments singleton)
     if (hasInjectedPayments) return _singletonRunner;
 
-    // fallback antigo (mantém)
     if (!leadStore || (typeof leadStore !== 'object' && typeof leadStore !== 'function')) {
       return createActionRunner({
         db,
@@ -88,19 +92,15 @@ function createAiEngine({ db = dbModule, sendMessage, aiLog = () => { }, payment
   function stripSalesActions(agent, { keepShowOffers = true } = {}) {
     if (!agent || typeof agent !== 'object') return agent;
     if (!agent.acoes || typeof agent.acoes !== 'object') agent.acoes = {};
-
     if (!keepShowOffers) agent.acoes.mostrar_ofertas = false;
-
     agent.acoes.enviar_pix = false;
     agent.acoes.enviar_link_acesso = false;
-
     return agent;
   }
 
   function extractJsonObject(str) {
     const s = String(str || '').trim();
     if (s.startsWith('{') && s.endsWith('}')) return s;
-
     const first = s.indexOf('{');
     const last = s.lastIndexOf('}');
     if (first >= 0 && last > first) return s.slice(first, last + 1);
@@ -110,11 +110,10 @@ function createAiEngine({ db = dbModule, sendMessage, aiLog = () => { }, payment
   function safeParseAgentJson(raw) {
     const jsonStr = extractJsonObject(raw);
     if (!jsonStr) return { ok: false, data: null };
-
     try {
       const obj = JSON.parse(jsonStr);
       if (!obj || typeof obj !== 'object') return { ok: false, data: null };
-      if (!Array.isArray(obj.messages)) return { ok: false, data: obj };
+      if (!Array.isArray(obj.messages)) return { ok: true, data: obj };
       return { ok: true, data: obj };
     } catch {
       return { ok: false, data: null };
@@ -302,7 +301,6 @@ function createAiEngine({ db = dbModule, sendMessage, aiLog = () => { }, payment
 
     return {
       ai_provider,
-
       venice_api_url,
       temperature,
       max_tokens,
@@ -310,15 +308,12 @@ function createAiEngine({ db = dbModule, sendMessage, aiLog = () => { }, payment
       stream,
       venice_parameters,
       userMessage,
-
       openai_api_url,
       openai_max_output_tokens,
       openai_reasoning_effort,
-
       grok_api_url,
       grok_temperature: grokTemp,
       grok_max_tokens: grokMaxTokens,
-
       max_out_messages,
       msg_config_incomplete,
       msg_generic_error,
@@ -407,7 +402,6 @@ function createAiEngine({ db = dbModule, sendMessage, aiLog = () => { }, payment
       ja_comprou_vip: !!(st?.ja_comprou_vip || st?.payments_state?.last_paid && /vip/i.test(String(st?.payments_state?.last_paid?.offer_id || ''))),
       lead_pediu_pra_parar: false,
       meta_phone_number_id: inboundPhoneNumberId || st?.meta_phone_number_id || null,
-
       cooldown_ativo,
       cooldown_restante_ms,
       cooldown_msgs_desde_inicio: cd ? (cd.msgs_since_start || 0) : 0,
@@ -421,24 +415,22 @@ function createAiEngine({ db = dbModule, sendMessage, aiLog = () => { }, payment
         pix_provider: pending?.provider || null,
         pix_external_id: pending?.external_id || null,
         pix_transaction_id: pending?.transaction_id || null,
-
         pago: !!lastPaid,
         pago_offer_id: lastPaid?.offer_id || null,
         pago_valor: lastPaid?.amount ?? null,
         pago_provider: lastPaid?.provider || null,
         pago_ts_ms: lastPaid?.paid_ts_ms || null,
-
         vip_link_enviado: !!ps?.vip_link_sent,
       },
     };
   }
 
-  // ===== delay humano =====
   function randInt(min, max) {
     const lo = Math.min(min, max);
     const hi = Math.max(min, max);
     return Math.floor(lo + Math.random() * (hi - lo + 1));
   }
+
   function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 
   async function humanDelayForInboundText(userText, cfg) {
@@ -469,7 +461,6 @@ function createAiEngine({ db = dbModule, sendMessage, aiLog = () => { }, payment
     await sleep(total);
   }
 
-  // ===== LOG helpers =====
   function truncateForLog(s, max) {
     const t = String(s || '');
     if (t.length <= max) return t;
@@ -524,354 +515,6 @@ function createAiEngine({ db = dbModule, sendMessage, aiLog = () => { }, payment
     ], null, 2));
   }
 
-  // ===== Providers =====
-
-  async function callVeniceChat({ apiKey, model, systemPromptRendered, userId, cfg }) {
-    const url = cfg.venice_api_url;
-
-    const body = {
-      model,
-      messages: [
-        { role: 'system', content: systemPromptRendered },
-        { role: 'user', content: cfg.userMessage },
-      ],
-      temperature: cfg.temperature,
-      max_tokens: cfg.max_tokens,
-      response_format: { type: 'json_object' },
-      user: userId || undefined,
-      venice_parameters: cfg.venice_parameters,
-      stream: !!cfg.stream,
-    };
-
-    const r = await axios.post(url, body, {
-      headers: {
-        Authorization: `Bearer ${apiKey}`,
-        'Content-Type': 'application/json',
-      },
-      timeout: cfg.timeoutMs,
-      validateStatus: () => true,
-    });
-
-    aiLog(`[AI][RESPONSE][VENICE] http=${r.status}`);
-
-    const content = r.data?.choices?.[0]?.message?.content ?? '';
-    aiLog(`[AI][RESPONSE][VENICE][CONTENT]\n${content}`);
-
-    aiLog(JSON.stringify({
-      id: r.data?.id,
-      model: r.data?.model,
-      created: r.data?.created,
-      usage: r.data?.usage,
-      finish_reason: r.data?.choices?.[0]?.finish_reason,
-    }, null, 2));
-
-    return { status: r.status, content, data: r.data };
-  }
-
-  function extractOpenAiOutputText(data) {
-    if (typeof data?.output_text === 'string' && data.output_text.trim()) {
-      return data.output_text;
-    }
-
-    const out = data?.output;
-    if (Array.isArray(out)) {
-      const chunks = [];
-      for (const item of out) {
-        const parts = item?.content;
-        if (Array.isArray(parts)) {
-          for (const p of parts) {
-            if (typeof p?.text === 'string') chunks.push(p.text);
-            else if (typeof p?.content === 'string') chunks.push(p.content);
-          }
-        }
-        if (typeof item?.text === 'string') chunks.push(item.text);
-      }
-      const joined = chunks.join('').trim();
-      if (joined) return joined;
-    }
-
-    return '';
-  }
-
-  async function callOpenAiResponses({ apiKey, model, systemPromptRendered, userId, cfg }) {
-    const url = cfg.openai_api_url || 'https://api.openai.com/v1/responses';
-
-    const body = {
-      model,
-      input: [
-        { role: 'system', content: systemPromptRendered },
-        { role: 'user', content: cfg.userMessage },
-      ],
-      text: { format: { type: 'json_object' } },
-      ...(Number.isFinite(cfg.openai_max_output_tokens) ? { max_output_tokens: cfg.openai_max_output_tokens } : {}),
-      ...(cfg.openai_reasoning_effort ? { reasoning: { effort: cfg.openai_reasoning_effort } } : {}),
-      ...(userId ? { user: userId } : {}),
-    };
-
-    const r = await axios.post(url, body, {
-      headers: {
-        Authorization: `Bearer ${apiKey}`,
-        'Content-Type': 'application/json',
-      },
-      timeout: cfg.timeoutMs,
-      validateStatus: () => true,
-    });
-
-    aiLog(`[AI][RESPONSE][OPENAI] http=${r.status}`);
-
-    const content = extractOpenAiOutputText(r.data);
-    aiLog(`[AI][RESPONSE][OPENAI][CONTENT]\n${content}`);
-
-    aiLog(JSON.stringify({
-      id: r.data?.id,
-      model: r.data?.model,
-      created: r.data?.created,
-      usage: r.data?.usage,
-      status: r.data?.status,
-      error: r.data?.error,
-    }, null, 2));
-
-    return { status: r.status, content, data: r.data };
-  }
-
-  async function callGrokChat({ apiKey, model, systemPromptRendered, userId, cfg }) {
-    const url = cfg.grok_api_url;
-
-    const body1 = {
-      model,
-      messages: [
-        { role: 'system', content: systemPromptRendered },
-        { role: 'user', content: cfg.userMessage },
-      ],
-      temperature: cfg.grok_temperature,
-      max_tokens: cfg.grok_max_tokens,
-      response_format: { type: 'json_object' },
-      user: userId || undefined,
-      stream: false,
-    };
-
-    const headers = {
-      Authorization: `Bearer ${apiKey}`,
-      'Content-Type': 'application/json',
-      'X-API-Key': apiKey,
-    };
-
-    const post = async (body) => axios.post(url, body, {
-      headers,
-      timeout: cfg.timeoutMs,
-      validateStatus: () => true,
-    });
-
-    let r = await post(body1);
-
-    if (r.status >= 400) {
-      const errStr = JSON.stringify(r.data || {});
-      const looksLikeBadParam =
-        /response_format|json_object|invalid.*parameter|unknown.*field/i.test(errStr);
-
-      if (looksLikeBadParam) {
-        const body2 = { ...body1 };
-        delete body2.response_format;
-        r = await post(body2);
-      }
-    }
-
-    aiLog(`[AI][RESPONSE][GROK] http=${r.status}`);
-
-    const content = r.data?.choices?.[0]?.message?.content ?? '';
-    aiLog(`[AI][RESPONSE][GROK][CONTENT]\n${content}`);
-
-    aiLog(JSON.stringify({
-      id: r.data?.id,
-      model: r.data?.model,
-      created: r.data?.created,
-      usage: r.data?.usage,
-      finish_reason: r.data?.choices?.[0]?.finish_reason,
-      error: r.data?.error,
-    }, null, 2));
-
-    return { status: r.status, content, data: r.data };
-  }
-
-  function normalizeVoiceNoteProvider(x) {
-    const p = String(x || '').trim().toLowerCase();
-    if (p === 'inherit' || p === 'venice' || p === 'openai' || p === 'grok') return p;
-    return 'inherit';
-  }
-
-  function readVoiceNoteRuntimeConfig(settings, mainCfg) {
-    const s = settings || {};
-    const vnProv = normalizeVoiceNoteProvider(s.voice_note_ai_provider);
-    const provider = (vnProv === 'inherit') ? mainCfg.ai_provider : vnProv;
-
-    const model =
-      (provider === 'venice')
-        ? (String(s.voice_note_venice_model || '').trim() || String(s.venice_model || '').trim())
-        : (provider === 'openai')
-          ? (String(s.voice_note_openai_model || '').trim() || String(s.openai_model || '').trim())
-          : (String(s.voice_note_grok_model || '').trim() || String(s.grok_model || '').trim());
-
-    const temperature = clampNum(toNumberOrNull(s.voice_note_temperature), { min: 0, max: 2 }) ?? 0.85;
-    const maxTokens = clampInt(toNumberOrNull(s.voice_note_max_tokens), { min: 16, max: 4096 }) ?? 220;
-    const timeoutMs = clampInt(toNumberOrNull(s.voice_note_timeout_ms), { min: 1000, max: 180000 }) ?? 45000;
-
-    const histMaxChars = clampInt(toNumberOrNull(s.voice_note_history_max_chars), { min: 200, max: 8000 }) ?? 1600;
-    const scriptMaxChars = clampInt(toNumberOrNull(s.voice_note_script_max_chars), { min: 200, max: 4000 }) ?? 650;
-
-    const systemPrompt = String(s.voice_note_system_prompt || '').trim();
-    const userTpl = String(s.voice_note_user_prompt || '').trim();
-
-    return {
-      provider,
-      model,
-      temperature,
-      maxTokens,
-      timeoutMs,
-      histMaxChars,
-      scriptMaxChars,
-      systemPrompt,
-      userTpl,
-    };
-  }
-
-  function renderVoiceNotePrompt({ systemPrompt, userTpl, chatStr }) {
-    const tpl = userTpl || `HISTÓRICO:\n{{CHAT}}\n\nEscreva um roteiro curto e natural de áudio, no mesmo tom da conversa. Sem markdown.`;
-
-    const chat = String(chatStr || '').trim();
-    const u = tpl.replace(/\{\{CHAT\}\}/g, chat);
-    const s = (systemPrompt || '').replace(/\{\{CHAT\}\}/g, chat);
-
-    return { system: s, user: u };
-  }
-
-  async function callVeniceText({ apiKey, model, systemPrompt, userPrompt, userId, cfg }) {
-    const url = cfg.venice_api_url;
-
-    const body = {
-      model,
-      messages: [
-        { role: 'system', content: systemPrompt || '' },
-        { role: 'user', content: userPrompt || '' },
-      ],
-      temperature: cfg.temperature,
-      max_tokens: cfg.max_tokens,
-      user: userId || undefined,
-      venice_parameters: cfg.venice_parameters,
-      stream: false,
-    };
-
-    const r = await axios.post(url, body, {
-      headers: {
-        Authorization: `Bearer ${apiKey}`,
-        'Content-Type': 'application/json',
-      },
-      timeout: cfg.timeoutMs,
-      validateStatus: () => true,
-    });
-
-    aiLog(`[AI][VOICE_NOTE][VENICE] http=${r.status}`);
-
-    const content = r.data?.choices?.[0]?.message?.content ?? '';
-    return { status: r.status, content, data: r.data };
-  }
-
-  async function callOpenAiText({ apiKey, model, systemPrompt, userPrompt, userId, cfg }) {
-    const url = cfg.openai_api_url || 'https://api.openai.com/v1/responses';
-
-    const body = {
-      model,
-      input: [
-        { role: 'system', content: systemPrompt || '' },
-        { role: 'user', content: userPrompt || '' },
-      ],
-      ...(Number.isFinite(cfg.temperature) ? { temperature: cfg.temperature } : {}),
-      ...(Number.isFinite(cfg.max_output_tokens) ? { max_output_tokens: cfg.max_output_tokens } : {}),
-      ...(userId ? { user: userId } : {}),
-    };
-
-    const r = await axios.post(url, body, {
-      headers: {
-        Authorization: `Bearer ${apiKey}`,
-        'Content-Type': 'application/json',
-      },
-      timeout: cfg.timeoutMs,
-      validateStatus: () => true,
-    });
-
-    aiLog(`[AI][VOICE_NOTE][OPENAI] http=${r.status}`);
-
-    const content = extractOpenAiOutputText(r.data);
-    return { status: r.status, content, data: r.data };
-  }
-
-  async function callGrokText({ apiKey, model, systemPrompt, userPrompt, userId, cfg }) {
-    const url = cfg.grok_api_url;
-
-    const body = {
-      model,
-      messages: [
-        { role: 'system', content: systemPrompt || '' },
-        { role: 'user', content: userPrompt || '' },
-      ],
-      temperature: cfg.temperature,
-      max_tokens: cfg.max_tokens,
-      user: userId || undefined,
-      stream: false,
-    };
-
-    const r = await axios.post(url, body, {
-      headers: {
-        Authorization: `Bearer ${apiKey}`,
-        'Content-Type': 'application/json',
-        'X-API-Key': apiKey,
-      },
-      timeout: cfg.timeoutMs,
-      validateStatus: () => true,
-    });
-
-    aiLog(`[AI][VOICE_NOTE][GROK] http=${r.status}`);
-
-    const content = r.data?.choices?.[0]?.message?.content ?? '';
-    return { status: r.status, content, data: r.data };
-  }
-
-  function hardCut(s, maxChars) {
-    const t = String(s || '').trim();
-    if (!maxChars || t.length <= maxChars) return t;
-    return t.slice(0, maxChars).trim();
-  }
-
-  // ===== Audio helpers (mantém) =====
-  function leadAskedForAudio(userText) {
-    const t = String(userText || '').toLowerCase();
-    return /(\báudio\b|\baudio\b|\bmanda( um)? áudio\b|\bmanda( um)? audio\b|\bvoz\b|\bme manda.*(áudio|audio)\b|\bgrava\b)/i.test(t);
-  }
-
-  function stripUrls(text) {
-    return String(text || '').replace(/https?:\/\/\S+/gi, '').replace(/\s+/g, ' ').trim();
-  }
-
-  function makeAutoShortScriptFromText(text) {
-    const clean = stripUrls(text);
-    if (!clean) return 'tlg. é isso.';
-
-    const words = clean.split(/\s+/).filter(Boolean);
-    const cut = words.slice(0, 12).join(' ');
-    return (cut.endsWith('.') || cut.endsWith('!') || cut.endsWith('?')) ? cut : (cut + '.');
-  }
-
-  function makeFreeScriptFromOutItems(outItems) {
-    const texts = (Array.isArray(outItems) ? outItems : [])
-      .map(x => String(x?.text || '').trim())
-      .filter(Boolean);
-
-    const joined = stripUrls(texts.join(' ')).trim();
-    if (!joined) return 'fala aí.';
-
-    const maxChars = 4500;
-    return joined.length <= maxChars ? joined : joined.slice(0, maxChars);
-  }
-
   async function handleInboundBlock({
     wa_id,
     inboundPhoneNumberId,
@@ -889,7 +532,6 @@ function createAiEngine({ db = dbModule, sendMessage, aiLog = () => { }, payment
       return;
     }
 
-    // ✅ runner/payments ligados ao leadStore correto
     const actionRunner = getActionRunnerForLeadStore(leadStore);
 
     const st = leadStore.getLead(wa_id);
@@ -918,9 +560,7 @@ function createAiEngine({ db = dbModule, sendMessage, aiLog = () => { }, payment
           : (!grokApiKey || !grokModel));
 
     if (missingCore) {
-      await sendMessage(wa_id, cfg.msg_config_incomplete, {
-        meta_phone_number_id: inboundPhoneNumberId || null,
-      });
+      await sendMessage(wa_id, cfg.msg_config_incomplete, { meta_phone_number_id: inboundPhoneNumberId || null });
       return;
     }
 
@@ -944,7 +584,6 @@ function createAiEngine({ db = dbModule, sendMessage, aiLog = () => { }, payment
     await humanDelayForInboundText(bloco || atual, cfg.inboundDelay);
 
     const facts = buildFactsJson(st, inboundPhoneNumberId);
-
     facts.audio_policy = {
       lead_pediu_audio: !!askedAudio,
       auto_enabled: cfg.autoAudioEnabled,
@@ -996,33 +635,13 @@ function createAiEngine({ db = dbModule, sendMessage, aiLog = () => { }, payment
     });
 
     const resp = (provider === 'venice')
-      ? await callVeniceChat({
-        apiKey: veniceApiKey,
-        model: veniceModel,
-        systemPromptRendered: rendered,
-        userId: wa_id,
-        cfg,
-      })
+      ? await callVeniceChat({ apiKey: veniceApiKey, model: veniceModel, systemPromptRendered: rendered, userId: wa_id, cfg, aiLog })
       : (provider === 'openai')
-        ? await callOpenAiResponses({
-          apiKey: openaiApiKey,
-          model: openaiModel,
-          systemPromptRendered: rendered,
-          userId: wa_id,
-          cfg,
-        })
-        : await callGrokChat({
-          apiKey: grokApiKey,
-          model: grokModel,
-          systemPromptRendered: rendered,
-          userId: wa_id,
-          cfg,
-        });
+        ? await callOpenAiResponses({ apiKey: openaiApiKey, model: openaiModel, systemPromptRendered: rendered, userId: wa_id, cfg, aiLog })
+        : await callGrokChat({ apiKey: grokApiKey, model: grokModel, systemPromptRendered: rendered, userId: wa_id, cfg, aiLog });
 
     if (!resp || resp.status < 200 || resp.status >= 300) {
-      await sendMessage(wa_id, cfg.msg_generic_error, {
-        meta_phone_number_id: inboundPhoneNumberId || null,
-      });
+      await sendMessage(wa_id, cfg.msg_generic_error, { meta_phone_number_id: inboundPhoneNumberId || null });
       return;
     }
 
@@ -1030,34 +649,26 @@ function createAiEngine({ db = dbModule, sendMessage, aiLog = () => { }, payment
     const parsed = safeParseAgentJson(content);
 
     if (!parsed.ok) {
-      await sendMessage(wa_id, cfg.msg_parse_error, {
-        meta_phone_number_id: inboundPhoneNumberId || null,
-      });
+      await sendMessage(wa_id, cfg.msg_parse_error, { meta_phone_number_id: inboundPhoneNumberId || null });
       return;
     }
 
     const agent = parsed.data;
-
     const traceId = `${wa_id}-${Date.now().toString(16)}`;
 
     aiLog(`[PREVIEW][${traceId}] agent.intent=${agent.intent_detectada || ''} fase=${agent.proxima_fase || ''}`);
     aiLog(`[PREVIEW][${traceId}] acoes= ${JSON.stringify(agent.acoes || {}, null, 2)}`);
 
-    if (!agent.acoes || typeof agent.acoes !== 'object') agent.acoes = {};
-    agent.acoes.mostrar_ofertas = false;
-
     if (!agent || typeof agent !== 'object') {
-      await sendMessage(wa_id, cfg.msg_parse_error, {
-        meta_phone_number_id: inboundPhoneNumberId || null,
-      });
+      await sendMessage(wa_id, cfg.msg_parse_error, { meta_phone_number_id: inboundPhoneNumberId || null });
       return;
     }
 
-    const blockSales = shouldBlockSalesActions({ cooldownActive, breakCooldown });
+    if (!agent.acoes || typeof agent.acoes !== 'object') agent.acoes = {};
+    agent.acoes.mostrar_ofertas = false;
 
-    if (blockSales) {
-      stripSalesActions(agent, { keepShowOffers: true });
-    }
+    const blockSales = shouldBlockSalesActions({ cooldownActive, breakCooldown });
+    if (blockSales) stripSalesActions(agent, { keepShowOffers: true });
 
     const fallbackReplyToWamid = String(replyToWamid || '').trim() || null;
 
@@ -1067,7 +678,6 @@ function createAiEngine({ db = dbModule, sendMessage, aiLog = () => { }, payment
       maxOutMessages: cfg.max_out_messages,
     });
 
-    // ===== PRÉVIA (foto/vídeo) =====
     const wantsPreviewFoto =
       agent?.intent_detectada === 'PEDIDO_PREVIA_FOTO' || !!agent?.acoes?.enviar_imagem;
 
@@ -1076,14 +686,12 @@ function createAiEngine({ db = dbModule, sendMessage, aiLog = () => { }, payment
 
     const wantsAnyPreview = wantsPreviewFoto || wantsPreviewVideo;
 
-    // 1 por conversa (memória do lead)
     if (!st.preview_state || typeof st.preview_state !== 'object') {
       st.preview_state = { sent: false, kind: null, ts_ms: null };
     }
 
     const previewAlreadySent = !!st.preview_state.sent;
 
-    // resolve preview_id (você precisa de um id fixo por tipo)
     const previewId =
       wantsPreviewFoto
         ? String(settings?.preview_foto_id || 'PREVIA_FOTO').trim()
@@ -1091,21 +699,16 @@ function createAiEngine({ db = dbModule, sendMessage, aiLog = () => { }, payment
           ? String(settings?.preview_video_id || 'PREVIA_VIDEO').trim()
           : null;
 
-    // se você ainda NÃO tem preview_foto_id / preview_video_id no bot_settings,
-    // deixe hardcoded por enquanto: 'PREVIA_FOTO' e 'PREVIA_VIDEO'
-    // (e crie essas offers no DB com esses ids)
-
     const shouldSendPreviewNow = wantsAnyPreview && !previewAlreadySent && !!previewId;
 
-    // evita reprocessar em outros lugares (runner/actions etc.)
     if (agent?.acoes && typeof agent.acoes === 'object') {
       agent.acoes.enviar_imagem = false;
       agent.acoes.enviar_video = false;
     }
 
     const modelWantsAudio = !!agent?.acoes?.enviar_audio;
-
-    const autoDue = cfg.autoAudioEnabled && audioState && Number.isFinite(audioState.text_streak_count) && ((audioState.text_streak_count + outItems.length) >= cfg.autoAudioAfterMsgs);
+    const autoDue = cfg.autoAudioEnabled && audioState && Number.isFinite(audioState.text_streak_count)
+      && ((audioState.text_streak_count + outItems.length) >= cfg.autoAudioAfterMsgs);
 
     const shouldSendAudio = askedAudio || modelWantsAudio || autoDue;
     const suppressTexts = shouldSendAudio;
@@ -1202,60 +805,38 @@ function createAiEngine({ db = dbModule, sendMessage, aiLog = () => { }, payment
             chatStr,
           });
 
-          const provider = vn.provider;
-          const model = vn.model;
+          const vnProvider = vn.provider;
+          const vnModel = vn.model;
 
-          const veniceApiKey = (settingsNow?.venice_api_key || '').trim();
-          const openaiApiKey = (settingsNow?.openai_api_key || '').trim();
-          const grokApiKey = (settingsNow?.grok_api_key || '').trim();
+          const veniceKeyNow = (settingsNow?.venice_api_key || '').trim();
+          const openaiKeyNow = (settingsNow?.openai_api_key || '').trim();
+          const grokKeyNow = (settingsNow?.grok_api_key || '').trim();
 
           const missing =
-            !model ||
-            (provider === 'venice' ? !veniceApiKey
-              : provider === 'openai' ? !openaiApiKey
-                : !grokApiKey);
+            !vnModel ||
+            (vnProvider === 'venice' ? !veniceKeyNow
+              : vnProvider === 'openai' ? !openaiKeyNow
+                : !grokKeyNow);
 
           if (!missing) {
-            aiLog(`[AI][VOICE_NOTE] provider=${provider} model=${model} wa_id=${wa_id}`);
+            aiLog(`[AI][VOICE_NOTE] provider=${vnProvider} model=${vnModel} wa_id=${wa_id}`);
 
             const vnCfg = {
               venice_api_url: cfg.venice_api_url,
               openai_api_url: cfg.openai_api_url,
               grok_api_url: cfg.grok_api_url,
               venice_parameters: cfg.venice_parameters,
-
               temperature: vn.temperature,
               max_tokens: vn.maxTokens,
               max_output_tokens: vn.maxTokens,
               timeoutMs: vn.timeoutMs,
             };
 
-            const respVn = (provider === 'venice')
-              ? await callVeniceText({
-                apiKey: veniceApiKey,
-                model,
-                systemPrompt: system,
-                userPrompt: user,
-                userId: wa_id,
-                cfg: vnCfg,
-              })
-              : (provider === 'openai')
-                ? await callOpenAiText({
-                  apiKey: openaiApiKey,
-                  model,
-                  systemPrompt: system,
-                  userPrompt: user,
-                  userId: wa_id,
-                  cfg: vnCfg,
-                })
-                : await callGrokText({
-                  apiKey: grokApiKey,
-                  model,
-                  systemPrompt: system,
-                  userPrompt: user,
-                  userId: wa_id,
-                  cfg: vnCfg,
-                });
+            const respVn = (vnProvider === 'venice')
+              ? await callVeniceText({ apiKey: veniceKeyNow, model: vnModel, systemPrompt: system, userPrompt: user, userId: wa_id, cfg: vnCfg, aiLog })
+              : (vnProvider === 'openai')
+                ? await callOpenAiText({ apiKey: openaiKeyNow, model: vnModel, systemPrompt: system, userPrompt: user, userId: wa_id, cfg: vnCfg, aiLog })
+                : await callGrokText({ apiKey: grokKeyNow, model: vnModel, systemPrompt: system, userPrompt: user, userId: wa_id, cfg: vnCfg, aiLog });
 
             if (respVn && respVn.status >= 200 && respVn.status < 300) {
               script = String(respVn.content || '').trim();
@@ -1268,7 +849,7 @@ function createAiEngine({ db = dbModule, sendMessage, aiLog = () => { }, payment
           }
 
           script = hardCut(script, vn.scriptMaxChars || 650);
-        } catch (e) {
+        } catch {
           const fb = String(settings?.voice_note_fallback_text || '').trim();
           script = fb || makeFreeScriptFromOutItems(outItems);
         }
@@ -1320,7 +901,7 @@ function createAiEngine({ db = dbModule, sendMessage, aiLog = () => { }, payment
       agent,
       wa_id,
       inboundPhoneNumberId,
-      lead: leadStore, // ✅ passa o leadStore certo
+      lead: leadStore,
       replyToWamid: fallbackReplyToWamid,
       batch_items,
       settings,
