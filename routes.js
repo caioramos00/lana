@@ -795,6 +795,7 @@ function registerRoutes(app, {
       if (!isValidKind(kind)) return res.redirect('/admin/fulfillment/offers/new?err=' + encodeURIComponent('Kind inválido'));
 
       const payload = {
+        offer_id: cleanStr(req.body?.offer_id, 80),
         title,
         kind,
         enabled: toBool(req.body?.enabled) ? 1 : 0,
@@ -844,6 +845,7 @@ function registerRoutes(app, {
       if (!isValidKind(kind)) return res.redirect(`/admin/fulfillment/offers/${encodeURIComponent(id)}/edit?err=` + encodeURIComponent('Kind inválido'));
 
       const payload = {
+        offer_id: cleanStr(req.body?.offer_id, 80),
         title,
         kind,
         enabled: toBool(req.body?.enabled) ? 1 : 0,
@@ -855,8 +857,10 @@ function registerRoutes(app, {
         delay_between_max_ms: toInt(req.body?.delay_between_max_ms, 900, { min: 0, max: 60 * 1000 }),
       };
 
-      await db.updateFulfillmentOffer(id, payload);
-      return res.redirect(`/admin/fulfillment/offers/${encodeURIComponent(id)}/edit?ok=1`);
+      const updated = await db.updateFulfillmentOffer(id, payload);
+
+      const numericId = updated?.id || id;
+      return res.redirect(`/admin/fulfillment/offers/${encodeURIComponent(numericId)}/edit?ok=1`);
     } catch (e) {
       return res.redirect(`/admin/fulfillment/offers/${encodeURIComponent(id)}/edit?err=` + encodeURIComponent(e?.message || 'err'));
     }

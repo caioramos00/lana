@@ -427,6 +427,19 @@ async function initDatabase() {
       );
     `);
 
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_fulfillment_media_offer_pos ON fulfillment_media (offer_id, pos);`);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_fulfillment_media_offer_active ON fulfillment_media (offer_id, active);`);
+
+    await alter(`ALTER TABLE fulfillment_media DROP CONSTRAINT IF EXISTS fulfillment_media_offer_id_fkey;`);
+    await alter(`
+      ALTER TABLE fulfillment_media
+      ADD CONSTRAINT fulfillment_media_offer_id_fkey
+      FOREIGN KEY (offer_id)
+      REFERENCES fulfillment_offers(offer_id)
+      ON UPDATE CASCADE
+      ON DELETE CASCADE;
+    `);
+
     // migração: remove índice antigo por external_id e cria novo por (provider, external_id)
     await alter(`DROP INDEX IF EXISTS ux_fulfillment_deliveries_external_id;`);
     await alter(`CREATE UNIQUE INDEX IF NOT EXISTS ux_fulfillment_deliveries_provider_external_id ON fulfillment_deliveries (provider, external_id);`);
@@ -1661,6 +1674,24 @@ function slugifyBase(s) {
   return out || 'offer';
 }
 
+function normalizeOfferIdInput(v) {
+  const s = String(v ?? '').trim();
+  return s ? s.toLowerCase() : null;
+}
+
+function isValidOfferIdFormat(s) {
+  return /^[a-z0-9][a-z0-9_-]{0,79}$/i.test(String(s || ''));
+}
+
+function ensureValidOfferId(s) {
+  const v = String(s || '').trim().toLowerCase();
+  if (!v) throw new Error('offer_id é obrigatório');
+  if (!isValidOfferIdFormat(v)) {
+    throw new Error('offer_id inválido. Use apenas letras/números/_/-, até 80 chars (ex: pack-10-fotos).');
+  }
+  return v;
+}
+
 async function resolveOfferRef(idOrOfferId) {
   const raw = String(idOrOfferId || '').trim();
   if (!raw) return null;
@@ -1701,9 +1732,13 @@ async function createFulfillmentOffer(payload) {
   if (betweenMin > betweenMax) [betweenMin, betweenMax] = [betweenMax, betweenMin];
 
   const base = slugifyBase(title);
-  let offer_id = String(payload?.offer_id || '').trim() || `${base}-${Date.now().toString(36)}`;
 
-  // tenta algumas vezes caso bata UNIQUE no offer_id
+  const userOfferId = normalizeOfferIdInput(payload?.offer_id);
+  const userProvided = !!userOfferId;
+
+  let offer_id = userOfferId ? ensureValidOfferId(userOfferId) : `${base}-${Date.now().toString(36)}`;
+
+  // tenta algumas vezes caso bata UNIQUE no offer_id (só se NÃO foi o usuário que escolheu)
   for (let i = 0; i < 5; i++) {
     try {
       const { rows } = await pool.query(
@@ -1731,8 +1766,10 @@ async function createFulfillmentOffer(payload) {
       );
       return rows[0] || null;
     } catch (e) {
-      // 23505 = unique_violation
       if (e?.code === '23505') {
+        if (userProvided) {
+          throw new Error('offer_id já existe. Escolha outro.');
+        }
         offer_id = `${base}-${Math.random().toString(16).slice(2, 6)}`;
         continue;
       }
@@ -1746,6 +1783,13 @@ async function createFulfillmentOffer(payload) {
 async function updateFulfillmentOffer(idOrOfferId, payload) {
   const ref = await resolveOfferRef(idOrOfferId);
   if (!ref) throw new Error('Oferta não encontrada');
+
+  const { rows: curRows } = await pool.query(
+    `SELECT * FROM fulfillment_offers WHERE id = $1 LIMIT 1`,
+    [ref.id]
+  );
+  const current = curRows[0];
+  if (!current) throw new Error('Oferta não encontrada');
 
   const title = String(payload?.title || '').trim();
   if (!title) throw new Error('Título é obrigatório');
@@ -1766,37 +1810,95 @@ async function updateFulfillmentOffer(idOrOfferId, payload) {
   let betweenMax = clampInt(toIntOrNull(payload?.delay_between_max_ms), { min: 0, max: 60000 }) ?? 900;
   if (betweenMin > betweenMax) [betweenMin, betweenMax] = [betweenMax, betweenMin];
 
-  const { rows } = await pool.query(
-    `
-    UPDATE fulfillment_offers
-       SET title = $2,
-           kind = $3,
-           enabled = $4,
-           pre_text = $5,
-           post_text = $6,
-           delay_min_ms = $7,
-           delay_max_ms = $8,
-           delay_between_min_ms = $9,
-           delay_between_max_ms = $10,
-           updated_at = NOW()
-     WHERE id = $1
-     RETURNING *
-    `,
-    [
-      ref.id,
-      title,
-      kind,
-      !!enabled,
-      pre_text,
-      post_text,
-      delayMin,
-      delayMax,
-      betweenMin,
-      betweenMax,
-    ]
-  );
+  // ✅ novo offer_id (se vier)
+  let desiredOfferId = null;
+  if (payload?.offer_id !== undefined) {
+    const normalized = normalizeOfferIdInput(payload.offer_id);
+    if (normalized) desiredOfferId = ensureValidOfferId(normalized);
+  }
 
-  return rows[0] || null;
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+
+    const oldOfferId = String(current.offer_id || '').trim();
+    let finalOfferId = oldOfferId;
+
+    // ✅ renomeia offer_id (mídias vão junto por ON UPDATE CASCADE)
+    if (desiredOfferId && desiredOfferId !== oldOfferId) {
+      await client.query(
+        `UPDATE fulfillment_offers SET offer_id = $1, updated_at = NOW() WHERE id = $2`,
+        [desiredOfferId, ref.id]
+      );
+      finalOfferId = desiredOfferId;
+
+      // ✅ evita quebrar cobranças pendentes já criadas com offer_id antigo
+      await client.query(
+        `UPDATE pix_deposits
+            SET offer_id = $1, updated_at = NOW()
+          WHERE offer_id = $2
+            AND status IN ('PENDING','CREATED')`,
+        [finalOfferId, oldOfferId]
+      );
+
+      await client.query(
+        `UPDATE veltrax_deposits
+            SET offer_id = $1, updated_at = NOW()
+          WHERE offer_id = $2
+            AND status IN ('PENDING','CREATED')`,
+        [finalOfferId, oldOfferId]
+      );
+
+      await client.query(
+        `UPDATE fulfillment_deliveries
+            SET offer_id = $1, updated_at = NOW()
+          WHERE offer_id = $2
+            AND status IN ('STARTED')`,
+        [finalOfferId, oldOfferId]
+      );
+    }
+
+    const { rows } = await client.query(
+      `
+      UPDATE fulfillment_offers
+         SET title = $2,
+             kind = $3,
+             enabled = $4,
+             pre_text = $5,
+             post_text = $6,
+             delay_min_ms = $7,
+             delay_max_ms = $8,
+             delay_between_min_ms = $9,
+             delay_between_max_ms = $10,
+             updated_at = NOW()
+       WHERE id = $1
+       RETURNING *
+      `,
+      [
+        ref.id,
+        title,
+        kind,
+        !!enabled,
+        pre_text,
+        post_text,
+        delayMin,
+        delayMax,
+        betweenMin,
+        betweenMax,
+      ]
+    );
+
+    await client.query('COMMIT');
+    return rows[0] || null;
+  } catch (e) {
+    await client.query('ROLLBACK').catch(() => {});
+    if (e?.code === '23505') {
+      throw new Error('offer_id já existe. Escolha outro.');
+    }
+    throw e;
+  } finally {
+    client.release();
+  }
 }
 
 async function deleteFulfillmentOffer(idOrOfferId) {

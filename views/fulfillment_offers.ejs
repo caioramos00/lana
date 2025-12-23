@@ -57,9 +57,15 @@
                                                                 <div class="fw-semibold">
                                                                     <%= o.title || '(sem título)' %>
                                                                 </div>
-                                                                <div class="text-muted small">ID: <code>
-                                                                        <%= o.id %>
-                                                                    </code></div>
+
+                                                                <div class="text-muted small">
+                                                                    Offer ID: <code>
+                                                                        <%= o.offer_id %>
+                                                                    </code>
+                                                                    <span class="ms-2">DB ID: <code>
+                                                                            <%= o.id %>
+                                                                        </code></span>
+                                                                </div>
                                                             </td>
                                                             <td>
                                                                 <span class="badge text-bg-secondary">
