@@ -1,3 +1,5 @@
+const { createDebounceEngine } = require('./debounce');
+
 function createLeadStore({
   maxMsgs = 50,
   ttlMs = 7 * 24 * 60 * 60 * 1000,
@@ -25,12 +27,12 @@ function createLeadStore({
     lateJoinWindowMs,
     previewTextMaxLen,
     debugDebounce,
-
-    inboundDedupeTtlMs: 10 * 60 * 1000, // 10 min
-    inboundDedupeMax: 300,             // por lead
+    inboundDedupeTtlMs: 10 * 60 * 1000,
+    inboundDedupeMax: 300,
   };
 
   const _logFn = typeof debugLog === 'function' ? debugLog : console.log;
+
   function dlog(event, obj) {
     if (!cfg.debugDebounce) return;
     try {
@@ -39,74 +41,8 @@ function createLeadStore({
     } catch { }
   }
 
-  function now() { return Date.now(); }
-  function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
-
-  function getCooldownState(wa_id) {
-    const st = getLead(wa_id);
-    if (!st) return null;
-    if (!st.cooldown) {
-      st.cooldown = { active_until_ts: null, last_started_ts: null, last_reason: null, msgs_since_start: 0 };
-    }
-    return st.cooldown;
-  }
-
-  function isCooldownActive(wa_id) {
-    const cd = getCooldownState(wa_id);
-    if (!cd) return false;
-    const until = Number.isFinite(cd.active_until_ts) ? cd.active_until_ts : null;
-    if (!until) return false;
-    return now() < until;
-  }
-
-  function startCooldown(wa_id, { durationMs = 15 * 60 * 1000, reason = 'offer' } = {}) {
-    const cd = getCooldownState(wa_id);
-    if (!cd) return;
-
-    const t = now();
-    const dur = Number.isFinite(durationMs) ? Math.max(0, durationMs) : 0;
-
-    cd.last_started_ts = t;
-    cd.active_until_ts = t + dur;
-    cd.last_reason = reason;
-    cd.msgs_since_start = 0;
-
-    dlog('COOLDOWN_START', {
-      wa_id,
-      reason,
-      durationMs: dur,
-      until: cd.active_until_ts,
-    });
-  }
-
-  function stopCooldown(wa_id, { reason = 'manual' } = {}) {
-    const cd = getCooldownState(wa_id);
-    if (!cd) return;
-
-    cd.active_until_ts = null;
-    cd.last_reason = reason;
-
-    dlog('COOLDOWN_STOP', { wa_id, reason });
-  }
-
-  function bumpCooldownOnUserMsg(wa_id) {
-    const cd = getCooldownState(wa_id);
-    if (!cd) return;
-    cd.msgs_since_start = (cd.msgs_since_start || 0) + 1;
-
-    dlog('COOLDOWN_BUMP', {
-      wa_id,
-      msgs_since_start: cd.msgs_since_start,
-      active: isCooldownActive(wa_id),
-      until: cd.active_until_ts || null,
-    });
-  }
-
-  function previewText(s, max) {
-    const limit = Number.isFinite(Number(max)) ? Number(max) : cfg.previewTextMaxLen;
-    const t = String(s || '').replace(/\s+/g, ' ').trim();
-    if (t.length <= limit) return t;
-    return t.slice(0, limit) + `... (len=${t.length})`;
+  function now() {
+    return Date.now();
   }
 
   function toIntOrNull(v) {
@@ -180,41 +116,6 @@ function createLeadStore({
     });
   }
 
-  function randInt(min, max) {
-    const lo = Math.min(min, max);
-    const hi = Math.max(min, max);
-    return Math.floor(lo + Math.random() * (hi - lo + 1));
-  }
-
-  // ✅ FIX: essa função estava sendo chamada mas não existia
-  function computeDebounceMs(st) {
-    const minRaw = Number(cfg.inboundDebounceMinMs);
-    const maxRaw = Number(cfg.inboundDebounceMaxMs);
-
-    const min = Number.isFinite(minRaw) ? minRaw : 1800;
-    const max = Number.isFinite(maxRaw) ? maxRaw : 3200;
-
-    const lo = Math.min(min, max);
-    const hi = Math.max(min, max);
-
-    let ms = randInt(lo, hi);
-
-    // Opcional: se já tem burst rolando, evita agendar debounce maior que o tempo restante do maxWait
-    const maxWaitRaw = Number(cfg.inboundMaxWaitMs);
-    const maxWait = Number.isFinite(maxWaitRaw) ? maxWaitRaw : 12000;
-
-    if (st && Number.isFinite(st.pending_first_ts) && maxWait > 0) {
-      const elapsed = now() - st.pending_first_ts;
-      const remaining = maxWait - elapsed;
-      if (Number.isFinite(remaining) && remaining > 50) {
-        ms = Math.min(ms, remaining);
-      }
-    }
-
-    if (!Number.isFinite(ms) || ms < 0) ms = lo;
-    return ms;
-  }
-
   function ensureAudioState(st) {
     if (!st) return null;
 
@@ -254,78 +155,20 @@ function createLeadStore({
     );
   }
 
-  function markPixCreated(wa_id, info = {}) {
-    const st = getLead(wa_id);
-    if (!st) return { ok: false };
-
-    const ps = ensurePaymentsState(st);
-
-    ps.pending = {
-      provider: info.provider || null,
-      external_id: info.external_id || null,
-      transaction_id: info.transaction_id || null,
-      status: info.status || 'PENDING',
-      offer_id: info.offer_id || null,
-      amount: Number(info.amount || 0) || 0,
-      created_ts_ms: Number(info.created_ts_ms || Date.now()),
-    };
-
-    return { ok: true };
-  }
-
-  function markPaymentCompleted(wa_id, info = {}) {
-    const st = getLead(wa_id);
-    if (!st) return { ok: false };
-
-    const ps = ensurePaymentsState(st);
-
-    ps.last_paid = {
-      provider: info.provider || null,
-      external_id: info.external_id || null,
-      transaction_id: info.transaction_id || null,
-      status: info.status || 'PAID',
-      offer_id: info.offer_id || null,
-      amount: Number(info.amount || 0) || 0,
-      paid_ts_ms: Number(info.paid_ts_ms || Date.now()),
-      end_to_end: info.end_to_end || null,
-    };
-
-    ps.pending = null;
-
-    if (isVipOffer(info.offer_id)) {
-      st.ja_comprou_vip = true;
-    }
-
-    return { ok: true };
-  }
-
-  function markVipLinkSent(wa_id) {
-    const st = getLead(wa_id);
-    if (!st) return { ok: false };
-    const ps = ensurePaymentsState(st);
-    ps.vip_link_sent = true;
-    return { ok: true };
-  }
-
-  function getAudioState(wa_id) {
-    const st = getLead(wa_id);
-    if (!st) return null;
-    return ensureAudioState(st);
-  }
-
   function getLead(wa_id) {
     const key = String(wa_id || '').trim();
     if (!key) return null;
 
     let st = leadStore.get(key);
     if (!st) {
+      const t = now();
       st = {
         wa_id: key,
         history: [],
-        expiresAt: now() + cfg.ttlMs,
+        expiresAt: t + cfg.ttlMs,
         meta_phone_number_id: null,
         last_user_ts: null,
-        created_at: now(),
+        created_at: t,
 
         first_inbound_payload: null,
         first_inbound_captured_ts: null,
@@ -339,6 +182,7 @@ function createLeadStore({
 
         pending_burst_id: 0,
         flushing: false,
+
         cooldown: {
           active_until_ts: null,
           last_started_ts: null,
@@ -353,6 +197,7 @@ function createLeadStore({
         },
 
         __seen_in_wamids: new Map(),
+
         ja_comprou_vip: false,
         payments_state: {
           pending: null,
@@ -367,53 +212,64 @@ function createLeadStore({
     return st;
   }
 
-  function clearLeadTimers(st) {
-    if (!st) return;
-    if (st.pending_timer) {
-      clearTimeout(st.pending_timer);
-      st.pending_timer = null;
+  function getCooldownState(wa_id) {
+    const st = getLead(wa_id);
+    if (!st) return null;
+    if (!st.cooldown) {
+      st.cooldown = { active_until_ts: null, last_started_ts: null, last_reason: null, msgs_since_start: 0 };
     }
-    if (st.pending_max_timer) {
-      clearTimeout(st.pending_max_timer);
-      st.pending_max_timer = null;
-    }
+    return st.cooldown;
   }
 
-  // ✅ DEDUPE helpers
-  function _cleanupSeenInbound(st) {
-    const m = st?.__seen_in_wamids;
-    if (!(m instanceof Map)) return;
+  function isCooldownActive(wa_id) {
+    const cd = getCooldownState(wa_id);
+    if (!cd) return false;
+    const until = Number.isFinite(cd.active_until_ts) ? cd.active_until_ts : null;
+    if (!until) return false;
+    return now() < until;
+  }
+
+  function startCooldown(wa_id, { durationMs = 15 * 60 * 1000, reason = 'offer' } = {}) {
+    const cd = getCooldownState(wa_id);
+    if (!cd) return;
 
     const t = now();
-    for (const [k, v] of m.entries()) {
-      if (!v || (t - v) > cfg.inboundDedupeTtlMs) m.delete(k);
-    }
+    const dur = Number.isFinite(durationMs) ? Math.max(0, durationMs) : 0;
 
-    // limita tamanho
-    const max = cfg.inboundDedupeMax;
-    if (m.size > max) {
-      const arr = Array.from(m.entries()).sort((a, b) => (a[1] || 0) - (b[1] || 0));
-      const drop = m.size - max;
-      for (let i = 0; i < drop; i++) m.delete(arr[i][0]);
-    }
+    cd.last_started_ts = t;
+    cd.active_until_ts = t + dur;
+    cd.last_reason = reason;
+    cd.msgs_since_start = 0;
+
+    dlog('COOLDOWN_START', {
+      wa_id,
+      reason,
+      durationMs: dur,
+      until: cd.active_until_ts,
+    });
   }
 
-  function markInboundWamidSeen(wa_id, wamid) {
-    const st = getLead(wa_id);
-    if (!st) return { ok: false, duplicate: false };
+  function stopCooldown(wa_id, { reason = 'manual' } = {}) {
+    const cd = getCooldownState(wa_id);
+    if (!cd) return;
 
-    const w = String(wamid || '').trim();
-    if (!w) return { ok: false, duplicate: false };
+    cd.active_until_ts = null;
+    cd.last_reason = reason;
 
-    if (!(st.__seen_in_wamids instanceof Map)) st.__seen_in_wamids = new Map();
-    _cleanupSeenInbound(st);
+    dlog('COOLDOWN_STOP', { wa_id, reason });
+  }
 
-    if (st.__seen_in_wamids.has(w)) {
-      return { ok: true, duplicate: true };
-    }
+  function bumpCooldownOnUserMsg(wa_id) {
+    const cd = getCooldownState(wa_id);
+    if (!cd) return;
+    cd.msgs_since_start = (cd.msgs_since_start || 0) + 1;
 
-    st.__seen_in_wamids.set(w, now());
-    return { ok: true, duplicate: false };
+    dlog('COOLDOWN_BUMP', {
+      wa_id,
+      msgs_since_start: cd.msgs_since_start,
+      active: isCooldownActive(wa_id),
+      until: cd.active_until_ts || null,
+    });
   }
 
   function pushHistory(wa_id, role, text, extra = {}) {
@@ -477,261 +333,81 @@ function createLeadStore({
       .join('\n');
   }
 
-  async function flushLead(wa_id, meta = {}) {
+  function getAudioState(wa_id) {
     const st = getLead(wa_id);
-    if (!st) return;
-
-    const reason = meta?.reason || 'manual';
-    const burstId = meta?.burstId || st.pending_burst_id || 0;
-    const t0 = now();
-
-    if (st.processing) {
-      st.flushRequested = true;
-      dlog('FLUSH_SKIPPED_PROCESSING', {
-        wa_id,
-        reason,
-        burstId,
-        pendingLen: st.pending_inbound?.length || 0,
-      });
-      return;
-    }
-
-    if (st.flushing) {
-      st.flushRequested = true;
-      dlog('FLUSH_SKIPPED_FLUSHING', {
-        wa_id,
-        reason,
-        burstId,
-        pendingLen: st.pending_inbound?.length || 0,
-      });
-      return;
-    }
-
-    st.flushing = true;
-    try {
-      if (!st.pending_inbound || st.pending_inbound.length === 0) {
-        clearLeadTimers(st);
-        st.pending_first_ts = null;
-        dlog('FLUSH_EMPTY', { wa_id, reason, burstId });
-        return;
-      }
-
-      const pendingLenBefore = st.pending_inbound.length;
-      const firstTs = st.pending_first_ts || null;
-      const lastItemBefore = st.pending_inbound[pendingLenBefore - 1] || null;
-      const lastTsBefore = lastItemBefore?.ts || null;
-
-      dlog('FLUSH_BEGIN', {
-        wa_id,
-        reason,
-        burstId,
-        pendingLenBefore,
-        sinceFirstMs: firstTs ? (t0 - firstTs) : null,
-        sinceLastMs: lastTsBefore ? (t0 - lastTsBefore) : null,
-        lastPreview: lastItemBefore ? previewText(lastItemBefore.text) : null,
-      });
-
-      if (reason === 'debounce' || reason === 'maxWait') {
-        const w = Number.isFinite(cfg.lateJoinWindowMs) ? cfg.lateJoinWindowMs : 350;
-        if (w > 0) await sleep(w);
-      }
-
-      if (!st.pending_inbound || st.pending_inbound.length === 0) {
-        clearLeadTimers(st);
-        st.pending_first_ts = null;
-        dlog('FLUSH_EMPTY_AFTER_LATEJOIN', { wa_id, reason, burstId });
-        return;
-      }
-
-      const batch = st.pending_inbound.splice(0, st.pending_inbound.length);
-
-      const batch_items = batch
-        .map((b) => ({
-          wamid: String(b?.wamid || '').trim(),
-          text: String(b?.text || '').trim(),
-          ts_ms: Number.isFinite(b?.ts) ? b.ts : null,
-        }))
-        .filter((x) => x.wamid && x.text);
-
-      clearLeadTimers(st);
-      st.pending_first_ts = null;
-
-      const mergedText = batch.map(b => b.text).join('\n').trim();
-      if (!mergedText) {
-        dlog('FLUSH_ABORT_EMPTY_MERGED', { wa_id, reason, burstId, batchCount: batch.length });
-        return;
-      }
-
-      const lastMsg = batch[batch.length - 1] || null;
-      const replyToWamid = String(lastMsg?.wamid || '').trim();
-      const mensagemAtualBloco = String(lastMsg?.text || '').trim();
-
-      const excludeWamids = new Set(batch.map(b => b.wamid).filter(Boolean));
-
-      const lastInboundPhoneNumberId =
-        batch.map(b => b.inboundPhoneNumberId).filter(Boolean).slice(-1)[0] ||
-        st.meta_phone_number_id ||
-        null;
-
-      const historyMaxTsMs = Number.isFinite(lastMsg?.ts) ? lastMsg.ts : t0;
-
-      const historicoStrSnapshot = buildHistoryString(st, {
-        excludeWamids,
-        maxTsMs: historyMaxTsMs,
-      });
-
-      dlog('FLUSH_BATCH_READY', {
-        wa_id,
-        reason,
-        burstId,
-        batchCount: batch.length,
-        mergedLen: mergedText.length,
-        mensagemAtualBlocoPreview: previewText(mensagemAtualBloco),
-        excludeWamidsCount: excludeWamids.size,
-        inboundPhoneNumberId: lastInboundPhoneNumberId,
-        historyMaxTsMs,
-      });
-
-      st.processing = true;
-      st.flushRequested = false;
-
-      try {
-        if (typeof onFlushBlock === 'function') {
-          await onFlushBlock({
-            wa_id,
-            inboundPhoneNumberId: lastInboundPhoneNumberId,
-            blocoText: mergedText,
-            mensagemAtualBloco,
-            excludeWamids,
-            replyToWamid,
-            batch_items,
-            historicoStrSnapshot,
-            historyMaxTsMs,
-            __debounce_debug: {
-              reason,
-              burstId,
-              firstTs,
-              lastTsBefore,
-              flushAt: t0,
-              pendingLenBefore,
-              batchCount: batch.length,
-              historyMaxTsMs,
-            },
-          });
-        }
-      } finally {
-        st.processing = false;
-        dlog('FLUSH_END', {
-          wa_id,
-          reason,
-          burstId,
-          tookMs: now() - t0,
-          pendingLenAfter: st.pending_inbound?.length || 0,
-          flushRequested: !!st.flushRequested,
-        });
-      }
-
-      if ((st.pending_inbound && st.pending_inbound.length > 0) || st.flushRequested) {
-        st.flushRequested = false;
-
-        if (!st.pending_first_ts && st.pending_inbound.length > 0) {
-          st.pending_first_ts = now();
-          st.pending_burst_id = (st.pending_burst_id || 0) + 1;
-
-          const maxWaitMs = cfg.inboundMaxWaitMs;
-          clearTimeout(st.pending_max_timer);
-          st.pending_max_timer = setTimeout(() => {
-            flushLead(wa_id, { reason: 'maxWait', burstId: st.pending_burst_id }).catch(() => { });
-          }, maxWaitMs);
-
-          dlog('MAXWAIT_SCHEDULED_AFTER_FLUSH', {
-            wa_id,
-            burstId: st.pending_burst_id,
-            inMs: maxWaitMs,
-          });
-        }
-
-        const debounceMs = computeDebounceMs(st); // ✅ aqui
-        clearTimeout(st.pending_timer);
-        st.pending_timer = setTimeout(() => {
-          flushLead(wa_id, { reason: 'debounce', burstId: st.pending_burst_id }).catch(() => { });
-        }, debounceMs);
-
-        dlog('DEBOUNCE_RESCHEDULED_AFTER_FLUSH', {
-          wa_id,
-          burstId: st.pending_burst_id,
-          inMs: debounceMs,
-          pendingLen: st.pending_inbound.length,
-        });
-      }
-    } finally {
-      st.flushing = false;
-    }
+    if (!st) return null;
+    return ensureAudioState(st);
   }
 
-  function enqueueInboundText({ wa_id, inboundPhoneNumberId, text, wamid }) {
+  function markPixCreated(wa_id, info = {}) {
     const st = getLead(wa_id);
-    if (!st) return;
+    if (!st) return { ok: false };
 
-    const cleanText = String(text || '').trim();
-    if (!cleanText) return;
+    const ps = ensurePaymentsState(st);
 
-    const t = now();
-    bumpCooldownOnUserMsg(wa_id);
+    ps.pending = {
+      provider: info.provider || null,
+      external_id: info.external_id || null,
+      transaction_id: info.transaction_id || null,
+      status: info.status || 'PENDING',
+      offer_id: info.offer_id || null,
+      amount: Number(info.amount || 0) || 0,
+      created_ts_ms: Number(info.created_ts_ms || Date.now()),
+    };
 
-    st.pending_inbound.push({
-      text: cleanText,
-      wamid: wamid || '',
-      inboundPhoneNumberId: inboundPhoneNumberId || null,
-      ts: t,
-    });
+    return { ok: true };
+  }
 
-    let startedBurst = false;
-    if (!st.pending_first_ts) {
-      startedBurst = true;
-      st.pending_first_ts = t;
-      st.pending_burst_id = (st.pending_burst_id || 0) + 1;
+  function markPaymentCompleted(wa_id, info = {}) {
+    const st = getLead(wa_id);
+    if (!st) return { ok: false };
 
-      const maxWaitMs = cfg.inboundMaxWaitMs;
+    const ps = ensurePaymentsState(st);
 
-      clearTimeout(st.pending_max_timer);
-      st.pending_max_timer = setTimeout(() => {
-        flushLead(wa_id, { reason: 'maxWait', burstId: st.pending_burst_id }).catch(() => { });
-      }, maxWaitMs);
+    ps.last_paid = {
+      provider: info.provider || null,
+      external_id: info.external_id || null,
+      transaction_id: info.transaction_id || null,
+      status: info.status || 'PAID',
+      offer_id: info.offer_id || null,
+      amount: Number(info.amount || 0) || 0,
+      paid_ts_ms: Number(info.paid_ts_ms || Date.now()),
+      end_to_end: info.end_to_end || null,
+    };
 
-      dlog('MAXWAIT_SCHEDULED', {
-        wa_id,
-        burstId: st.pending_burst_id,
-        inMs: maxWaitMs,
-      });
+    ps.pending = null;
+
+    if (isVipOffer(info.offer_id)) {
+      st.ja_comprou_vip = true;
     }
 
-    const debounceMs = computeDebounceMs(st); // ✅ aqui
-    clearTimeout(st.pending_timer);
-    st.pending_timer = setTimeout(() => {
-      flushLead(wa_id, { reason: 'debounce', burstId: st.pending_burst_id }).catch(() => { });
-    }, debounceMs);
-
-    dlog('ENQUEUE', {
-      wa_id,
-      burstId: st.pending_burst_id,
-      startedBurst,
-      processing: !!st.processing,
-      flushing: !!st.flushing,
-      pendingLen: st.pending_inbound.length,
-      sinceFirstMs: st.pending_first_ts ? (t - st.pending_first_ts) : null,
-      debounceInMs: debounceMs,
-      textPreview: previewText(cleanText),
-      wamid: wamid || '',
-      inboundPhoneNumberId: inboundPhoneNumberId || null,
-    });
+    return { ok: true };
   }
+
+  function markVipLinkSent(wa_id) {
+    const st = getLead(wa_id);
+    if (!st) return { ok: false };
+    const ps = ensurePaymentsState(st);
+    ps.vip_link_sent = true;
+    return { ok: true };
+  }
+
+  const debounce = createDebounceEngine({
+    cfg,
+    leadStore,
+    getLead,
+    buildHistoryString,
+    onFlushBlock,
+    dlog,
+    now,
+    bumpCooldownOnUserMsg,
+  });
 
   setInterval(() => {
     const t = now();
     for (const [k, v] of leadStore.entries()) {
       if (!v?.expiresAt || v.expiresAt <= t) {
-        try { clearLeadTimers(v); } catch { }
+        try { debounce.clearLeadTimers(v); } catch { }
         leadStore.delete(k);
       }
     }
@@ -741,16 +417,16 @@ function createLeadStore({
     getLead,
     pushHistory,
     buildHistoryString,
-    enqueueInboundText,
+    enqueueInboundText: debounce.enqueueInboundText,
     updateConfig,
-    flushLead,
+    flushLead: debounce.flushLead,
     getCooldownState,
     isCooldownActive,
     startCooldown,
     stopCooldown,
     bumpCooldownOnUserMsg,
     getAudioState,
-    markInboundWamidSeen,
+    markInboundWamidSeen: debounce.markInboundWamidSeen,
     markPixCreated,
     markPaymentCompleted,
     markVipLinkSent,
