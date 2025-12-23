@@ -1,3 +1,5 @@
+'use strict';
+
 function createSettings({ pool, helpers, cache }) {
   const {
     strOrNull,

@@ -107,6 +107,10 @@ function createInit({ pool }) {
         `ALTER TABLE bot_settings ADD COLUMN IF NOT EXISTS meta_ads_api_version TEXT;`,
         `ALTER TABLE bot_settings ADD COLUMN IF NOT EXISTS meta_ads_timeout_ms INTEGER;`,
         `ALTER TABLE bot_settings ADD COLUMN IF NOT EXISTS meta_ads_cache_ttl_ms INTEGER;`,
+        `ALTER TABLE bot_settings ADD COLUMN IF NOT EXISTS audio_rl_enabled BOOLEAN;`,
+        `ALTER TABLE bot_settings ADD COLUMN IF NOT EXISTS audio_rl_max INTEGER;`,
+        `ALTER TABLE bot_settings ADD COLUMN IF NOT EXISTS audio_rl_window_ms INTEGER;`,
+        `ALTER TABLE bot_settings ADD COLUMN IF NOT EXISTS audio_rl_notice_text TEXT;`,
       ];
       for (const s of botSettingsCols) await alter(s);
 
@@ -202,6 +206,10 @@ function createInit({ pool }) {
                meta_ads_api_version = COALESCE(meta_ads_api_version, 'v23.0'),
                meta_ads_timeout_ms = COALESCE(meta_ads_timeout_ms, 15000),
                meta_ads_cache_ttl_ms = COALESCE(meta_ads_cache_ttl_ms, 3600000),
+               audio_rl_enabled = COALESCE(audio_rl_enabled, FALSE),
+               audio_rl_max = COALESCE(audio_rl_max, 30),
+               audio_rl_window_ms = COALESCE(audio_rl_window_ms, 3600000),
+               audio_rl_notice_text = COALESCE(audio_rl_notice_text, ''),
                updated_at = NOW()
          WHERE id = 1;
       `);
@@ -385,7 +393,7 @@ function createInit({ pool }) {
       await client.query('COMMIT');
       console.log('[DB] Tabelas OK.');
     } catch (err) {
-      await client.query('ROLLBACK').catch(() => {});
+      await client.query('ROLLBACK').catch(() => { });
       console.error('[DB][INIT][ERROR]', { code: err?.code, message: err?.message, detail: err?.detail, where: err?.where });
       throw err;
     } finally {

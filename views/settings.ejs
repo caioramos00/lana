@@ -733,6 +733,51 @@
               <hr class="my-3" />
 
               <div class="col-12">
+                <h3 class="mt-3">Limite Global de Áudio (TTS)</h3>
+                <div class="form-text">
+                  Limita quantos áudios o bot pode enviar dentro de uma janela de tempo (global).
+                  Se estourar e o lead pedir áudio, o bot responde por texto (sem suprimir).
+                </div>
+              </div>
+
+              <div class="col-12">
+                <div class="form-check">
+                  <input type="hidden" name="audio_rl_enabled" value="0" />
+                  <input class="form-check-input" type="checkbox" name="audio_rl_enabled" value="1"
+                    id="audio_rl_enabled" <%=((s.audio_rl_enabled===undefined || s.audio_rl_enabled===null) ? false :
+                    !!s.audio_rl_enabled) ? 'checked' : '' %> />
+                  <label class="form-check-label" for="audio_rl_enabled">
+                    Ativar limite global de áudios
+                  </label>
+                </div>
+              </div>
+
+              <div class="col-md-4">
+                <label class="form-label">Máximo de áudios na janela</label>
+                <input type="number" class="form-control" name="audio_rl_max"
+                  value="<%= (s.audio_rl_max !== undefined && s.audio_rl_max !== null) ? s.audio_rl_max : 30 %>" min="1"
+                  max="100000" step="1">
+              </div>
+
+              <div class="col-md-4">
+                <label class="form-label">Janela (ms)</label>
+                <input type="number" class="form-control" name="audio_rl_window_ms"
+                  value="<%= (s.audio_rl_window_ms !== undefined && s.audio_rl_window_ms !== null) ? s.audio_rl_window_ms : 3600000 %>"
+                  min="1000" max="2147000000" step="1000">
+                <div class="form-text">Ex.: 3600000 = 1h, 600000 = 10min</div>
+              </div>
+
+              <div class="col-md-4">
+                <label class="form-label">Aviso quando estourar (opcional)</label>
+                <input type="text" class="form-control" name="audio_rl_notice_text"
+                  value="<%= (s.audio_rl_notice_text !== undefined && s.audio_rl_notice_text !== null) ? s.audio_rl_notice_text : '' %>"
+                  placeholder="Ex.: Tô no limite agora — respondo por texto 👇 (aguarde {{WAIT}})">
+                <div class="form-text">Use <code>{{WAIT}}</code> pra mostrar o tempo estimado até liberar.</div>
+              </div>
+
+              <hr class="my-3" />
+
+              <div class="col-12">
                 <h3 class="mt-3">Voice Note (enviar_audio.js) • Geração do script</h3>
                 <% const vnProvRaw=String(s.voice_note_ai_provider || 'inherit' ).trim().toLowerCase(); const
                   vnProv=(vnProvRaw==='openai' || vnProvRaw==='venice' ) ? vnProvRaw : 'inherit' ; %>

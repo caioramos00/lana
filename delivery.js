@@ -16,6 +16,70 @@ const {
 
 const { humanDelayForOutboundText } = require('./runtime');
 
+// ==== Audio rate limit (global, in-memory) ====
+// Conta "slots" de áudio numa janela de tempo (rolling window).
+// Observação: é global por instância do Node (se você rodar múltiplas réplicas, cada réplica terá seu próprio limite).
+const _globalAudioRate = { ts: [] };
+
+function _boolLoose(v, def = false) {
+  if (v === undefined || v === null) return def;
+  if (typeof v === 'boolean') return v;
+  const s = String(v).trim().toLowerCase();
+  if (['1', 'true', 'on', 'yes'].includes(s)) return true;
+  if (['0', 'false', 'off', 'no'].includes(s)) return false;
+  return def;
+}
+
+function _intLoose(v, def = null) {
+  const n = Number(v);
+  return Number.isFinite(n) ? Math.trunc(n) : def;
+}
+
+function _readAudioRateLimitSettings(settings) {
+  const enabled = _boolLoose(settings?.audio_rl_enabled, false);
+
+  // defaults "bons" caso habilite e o cara esqueça valores
+  let max = _intLoose(settings?.audio_rl_max, 30);
+  let windowMs = _intLoose(settings?.audio_rl_window_ms, 3600000);
+
+  if (!Number.isFinite(max) || max < 1) max = 30;
+  if (!Number.isFinite(windowMs) || windowMs < 1000) windowMs = 3600000;
+
+  // texto opcional no aviso
+  const noticeText =
+    settings?.audio_rl_notice_text !== undefined && settings?.audio_rl_notice_text !== null
+      ? String(settings.audio_rl_notice_text)
+      : '';
+
+  return { enabled, max, windowMs, noticeText };
+}
+
+function _formatWaitMs(ms) {
+  const x = Math.max(0, Math.trunc(ms));
+  const s = Math.ceil(x / 1000);
+  if (s < 60) return `${s}s`;
+  const m = Math.floor(s / 60);
+  const r = s % 60;
+  return r ? `${m}m${r}s` : `${m}m`;
+}
+
+function takeGlobalAudioSlot({ max, windowMs, nowMs = Date.now() }) {
+  const cutoff = nowMs - windowMs;
+  const ts = _globalAudioRate.ts;
+
+  // purge
+  while (ts.length && ts[0] <= cutoff) ts.shift();
+
+  if (ts.length >= max) {
+    const oldest = ts[0] || nowMs;
+    const retryMs = Math.max(0, (oldest + windowMs) - nowMs);
+    return { allowed: false, retryMs, used: ts.length, max, windowMs };
+  }
+
+  ts.push(nowMs);
+  return { allowed: true, retryMs: 0, used: ts.length, max, windowMs };
+}
+
 async function dispatchAssistantOutputs({
   agent,
   wa_id,
@@ -75,7 +139,29 @@ async function dispatchAssistantOutputs({
     && Number.isFinite(cfg.autoAudioAfterMsgs)
     && ((streak + outItems.length) >= cfg.autoAudioAfterMsgs);
 
-  const shouldSendAudio = !!(askedAudio || modelWantsAudio || autoDue);
+  const desiredAudio = !!(askedAudio || modelWantsAudio || autoDue);
+
+  let shouldSendAudio = desiredAudio;
+  let audioLimit = null;
+
+  let settingsNow = settings || global.botSettings || null;
+  if (!settingsNow && db?.getBotSettings) {
+    try { settingsNow = await db.getBotSettings(); } catch { settingsNow = null; }
+  }
+
+  if (desiredAudio && settingsNow) {
+    const rl = _readAudioRateLimitSettings(settingsNow);
+    if (rl.enabled) {
+      audioLimit = takeGlobalAudioSlot({ max: rl.max, windowMs: rl.windowMs });
+      if (!audioLimit.allowed) {
+        shouldSendAudio = false;
+        aiLog(`[AI][AUDIO_RL][${wa_id}] BLOCK used=${audioLimit.used}/${audioLimit.max} retry_in=${_formatWaitMs(audioLimit.retryMs)}`);
+      } else {
+        aiLog(`[AI][AUDIO_RL][${wa_id}] OK used=${audioLimit.used}/${audioLimit.max}`);
+      }
+    }
+  }
+
   const suppressTexts = shouldSendAudio;
 
   if (suppressTexts) {
@@ -84,6 +170,38 @@ async function dispatchAssistantOutputs({
     else if (modelWantsAudio) reason = 'MODEL';
     aiLog(`[AI][AUDIO_ONLY][${wa_id}] reason=${reason} -> suprimindo ${outItems.length} msg(s) de texto`);
   } else {
+    if (desiredAudio && !shouldSendAudio && (askedAudio || modelWantsAudio)) {
+      const rl = settingsNow ? _readAudioRateLimitSettings(settingsNow) : { noticeText: '' };
+      let notice = String(rl.noticeText || '').trim();
+
+      if (!notice && askedAudio) {
+        notice = 'não consigo mandar áudio agora amor, vou responder por texto';
+      }
+
+      if (notice) {
+        // opcional: permite {{WAIT}} no texto do painel
+        if (audioLimit && !audioLimit.allowed) {
+          notice = notice.replaceAll('{{WAIT}}', _formatWaitMs(audioLimit.retryMs));
+        }
+
+        const rNotice = await sendMessage(wa_id, notice, {
+          meta_phone_number_id: inboundPhoneNumberId || null,
+        });
+
+        if (rNotice?.ok) {
+          leadStore.pushHistory(wa_id, 'assistant', notice, {
+            kind: 'text',
+            wamid: rNotice.wamid || '',
+            phone_number_id: rNotice.phone_number_id || inboundPhoneNumberId || null,
+            ts_ms: Date.now(),
+            reply_to_wamid: null,
+            meta: { audio_rate_limited: true },
+          });
+        } else {
+          aiLog(`[AI][AUDIO_RL_NOTICE][${wa_id}] FAIL`, rNotice);
+        }
+      }
+    }
     for (let i = 0; i < outItems.length; i++) {
       const { text: msg, reply_to_wamid } = outItems[i];
       if (i > 0) await humanDelayForOutboundText(msg, cfg.outboundDelay);
