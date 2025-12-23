@@ -1502,6 +1502,33 @@ async function getFulfillmentOfferWithMedia(offer_id) {
   return { offer, media: mediaRows || [] };
 }
 
+async function listFulfillmentOffers() {
+  const { rows } = await pool.query(`
+    SELECT
+      o.id,
+      o.offer_id,
+      o.kind,
+      o.enabled,
+      o.pre_text,
+      o.post_text,
+      o.delay_min_ms,
+      o.delay_max_ms,
+      o.delay_between_min_ms,
+      o.delay_between_max_ms,
+      o.created_at,
+      o.updated_at,
+      COUNT(m.id)::int AS media_count
+    FROM fulfillment_offers o
+    LEFT JOIN fulfillment_media m
+      ON m.offer_id = o.offer_id
+     AND m.active = TRUE
+    GROUP BY o.id
+    ORDER BY o.id DESC
+  `);
+
+  return rows || [];
+}
+
 // tenta “reservar” a entrega (idempotência via (provider, external_id))
 async function tryStartFulfillmentDelivery({ provider, external_id, transaction_id, wa_id, offer_id }) {
   const prov = String(provider || '').trim();
@@ -1600,6 +1627,7 @@ module.exports = {
   countPixAttempts,
   getLatestPendingPixDeposit,
   getFulfillmentOfferWithMedia,
+  listFulfillmentOffers,
   tryStartFulfillmentDelivery,
   markFulfillmentDeliverySent,
   markFulfillmentDeliveryFailed,
