@@ -32,6 +32,27 @@ function _intLoose(v, def = null) {
   return Number.isFinite(n) ? Math.trunc(n) : def;
 }
 
+function stripElevenTags(text) {
+  let t = String(text || '');
+
+  t = t.replace(/\s*\[[^\]]+?\]\s*/g, ' ');
+
+  t = t.replace(/\s+/g, ' ').replace(/\s+([,.!?;:])/g, '$1');
+
+  return t.trim();
+}
+
+function normalizeForWhatsappText(text) {
+  const noTags = stripElevenTags(text);
+  return noTags.toLowerCase();
+}
+
+function maybeNormalizeOutgoingText(text) {
+  const s = String(text || '');
+  if (/\[[^\]]+?\]/.test(s)) return normalizeForWhatsappText(s);
+  return s;
+}
+
 function _readAudioRateLimitSettings(settings) {
   const enabled = _boolLoose(settings?.audio_rl_enabled, false);
 
@@ -181,9 +202,12 @@ async function dispatchAssistantOutputs({
   } else {
     for (let i = 0; i < outItems.length; i++) {
       const { text: msg, reply_to_wamid } = outItems[i];
-      if (i > 0) await humanDelayForOutboundText(msg, cfg.outboundDelay);
 
-      const r = await sendMessage(wa_id, msg, {
+      const msgOut = maybeNormalizeOutgoingText(msg);
+
+      if (i > 0) await humanDelayForOutboundText(msgOut, cfg.outboundDelay);
+
+      const r = await sendMessage(wa_id, msgOut, {
         meta_phone_number_id: inboundPhoneNumberId || null,
         ...(reply_to_wamid ? { reply_to_wamid } : {}),
       });
@@ -191,7 +215,7 @@ async function dispatchAssistantOutputs({
       if (!r?.ok) aiLog(`[AI][SEND][${wa_id}] FAIL`, r);
 
       if (r?.ok) {
-        leadStore.pushHistory(wa_id, 'assistant', msg, {
+        leadStore.pushHistory(wa_id, 'assistant', msgOut, {
           kind: 'text',
           wamid: r.wamid || '',
           phone_number_id: r.phone_number_id || inboundPhoneNumberId || null,
