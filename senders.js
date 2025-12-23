@@ -126,9 +126,7 @@ const OGG_CRC_TABLE = (() => {
   return table;
 })();
 
-const MEDIA_ROOT = process.env.MEDIA_ROOT
-  ? path.resolve(process.env.MEDIA_ROOT)
-  : path.join(__dirname, 'media');
+const MEDIA_ROOT = path.join(process.cwd(), 'media');
 
 function resolveLocalMediaPath(ref) {
   let s = String(ref || '').trim();
@@ -369,135 +367,79 @@ async function sendMessage(contato, texto, opts = {}) {
 }
 
 async function sendImage(contato, urlOrItems, captionOrOpts, opts = {}) {
+  const isPlainObject = (v) => v && typeof v === "object" && !Array.isArray(v);
 
-  const isPlainObject = (v) =>
-    v && typeof v === "object" && !Array.isArray(v);
-
+  // ✅ se vier objeto no 3º arg, pode ter caption dentro
   if (isPlainObject(captionOrOpts)) {
     opts = captionOrOpts;
-    captionOrOpts = undefined;
+    captionOrOpts = opts.caption ?? undefined;
   }
-  if (!isPlainObject(opts)) opts = {};
 
   const to = String(contato || "").trim();
   if (!to) return { ok: false, reason: "missing-to" };
 
   const isArrayInput = Array.isArray(urlOrItems);
-
-  let items;
-  if (isArrayInput) {
-    items = urlOrItems.map((it) => {
-      if (typeof it === "string") return { url: it, caption: "" };
-      if (isPlainObject(it)) return { url: it.url, caption: it.caption };
-      return { url: it, caption: "" };
-    });
-  } else if (isPlainObject(urlOrItems)) {
-    items = [{
-      url: urlOrItems.url,
-      caption: urlOrItems.caption ?? captionOrOpts,
-    }];
-  } else {
-    items = [{ url: urlOrItems, caption: captionOrOpts }];
-  }
-
-  const delayBetweenMs = (() => {
-    const v = opts.delayBetweenMs ?? [250, 900];
-    if (Array.isArray(v) && v.length >= 2) {
-      const a = Number(v[0]);
-      const b = Number(v[1]);
-      return [
-        Number.isFinite(a) ? a : 250,
-        Number.isFinite(b) ? b : 900,
-      ];
-    }
-    const n = Number(v);
-    return Number.isFinite(n) ? [n, n] : [250, 900];
-  })();
+  const items = isArrayInput
+    ? urlOrItems.map((it) => (typeof it === "string" ? { url: it } : it))
+    : [{ url: urlOrItems, caption: captionOrOpts }];
 
   try {
     const settings = await getSettings();
-    const { phoneNumberId, token } = await resolveMetaCredentialsForContato(
-      to,
-      settings,
-      opts
-    );
-
+    const { phoneNumberId, token } = await resolveMetaCredentialsForContato(to, settings, opts);
     if (!phoneNumberId || !token) {
-      return {
-        ok: false,
-        reason: "missing-meta-credentials",
-        phone_number_id: phoneNumberId || null,
-      };
+      return { ok: false, reason: "missing-meta-credentials", phone_number_id: phoneNumberId || null };
     }
 
     const results = [];
 
     for (let i = 0; i < items.length; i++) {
-      const rawUrl = items[i]?.url;
-      const url = String(rawUrl || "").trim();
+      const ref = String(items[i]?.url || "").trim();
+      const caption = String(items[i]?.caption ?? "").trim();
+      if (!ref) { results.push({ ok: false, reason: "missing-url" }); continue; }
 
-      // keep caption optional; avoid forcing "undefined" to string
-      const rawCaption = items[i]?.caption;
-      const caption =
-        rawCaption === undefined || rawCaption === null
-          ? ""
-          : String(rawCaption).trim();
+      const isUrl = /^https?:\/\//i.test(ref);
 
-      if (!url) {
-        results.push({ ok: false, reason: "missing-url" });
-      } else if (!/^https?:\/\//i.test(url)) {
-        results.push({ ok: false, reason: "invalid-url", url });
+      let imageObj;
+      if (isUrl) {
+        imageObj = caption ? { link: ref, caption: caption.slice(0, 1024) } : { link: ref };
       } else {
-        const cappedCaption = caption ? caption.slice(0, 1024) : ""; // safe cap
-        const payload = {
-          messaging_product: "whatsapp",
-          to,
-          type: "image",
-          image: cappedCaption ? { link: url, caption: cappedCaption } : { link: url },
-        };
-
-        try {
-          const data = await metaPostMessage({
-            phoneNumberId,
-            token,
-            version: settings?.meta_api_version || "v24.0",
-            payload,
-          });
-
-          try {
-            publishMessage({
-              dir: "out",
-              wa_id: to,
-              wamid:
-                data?.messages && data.messages[0]?.id
-                  ? String(data.messages[0].id)
-                  : "",
-              kind: "image",
-              text: cappedCaption || "",
-              media: { type: "image", link: url },
-              ts: Date.now(),
-            });
-          } catch { }
-
-          results.push({ ok: true, wamid: data?.messages?.[0]?.id || "" });
-        } catch (e) {
-          results.push({
-            ok: false,
-            reason: "meta-send-failed",
-            error: e?.message || String(e),
-          });
+        const absPath = resolveLocalMediaPath(ref); // aceita local:...
+        if (!absPath || !fs.existsSync(absPath)) {
+          results.push({ ok: false, reason: "file-not-found", ref, resolved: absPath || null });
+          continue;
         }
+
+        const up = await metaUploadMediaFromPath({
+          phoneNumberId,
+          token,
+          version: settings?.meta_api_version || "v24.0",
+          filePath: absPath,
+          mimeType: guessMime(absPath),
+          filename: path.basename(absPath),
+        });
+
+        imageObj = caption ? { id: up.id, caption: caption.slice(0, 1024) } : { id: up.id };
       }
 
-      if (i < items.length - 1) {
-        await delayBetween(delayBetweenMs);
+      const payload = { messaging_product: "whatsapp", to, type: "image", image: imageObj };
+
+      try {
+        const data = await metaPostMessage({
+          phoneNumberId,
+          token,
+          version: settings?.meta_api_version || "v24.0",
+          payload,
+        });
+
+        results.push({ ok: true, wamid: data?.messages?.[0]?.id || "" });
+      } catch (e) {
+        results.push({ ok: false, reason: "meta-send-failed", error: e?.message || String(e), ref });
       }
+
+      if (i < items.length - 1) await delayBetween(opts.delayBetweenMs || [250, 900]);
     }
 
-    const okAll = results.every((r) => r?.ok);
-    return isArrayInput
-      ? { ok: okAll, results, provider: "meta", phone_number_id: phoneNumberId }
-      : results[0];
+    return isArrayInput ? { ok: results.every(r => r.ok), results } : results[0];
   } catch (e) {
     return { ok: false, error: e?.message || String(e) };
   }
@@ -506,7 +448,7 @@ async function sendImage(contato, urlOrItems, captionOrOpts, opts = {}) {
 async function sendVideo(contato, urlOrItems, captionOrOpts, opts = {}) {
   if (typeof captionOrOpts === 'object' && captionOrOpts) {
     opts = captionOrOpts;
-    captionOrOpts = undefined;
+    captionOrOpts = opts.caption ?? undefined;
   }
 
   const to = String(contato || '').trim();

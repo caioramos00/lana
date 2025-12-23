@@ -68,15 +68,14 @@ module.exports = async function enviar_videos(ctx, payload) {
     const url = String(list[i]?.url || '').trim();
     const caption = String(list[i]?.caption || '').trim() || defaultCaption;
 
-    if (!/^https?:\/\//i.test(url)) {
-      results.push({ ok: false, reason: 'invalid-url', url });
+    if (!url) {
+      results.push({ ok: false, reason: 'missing-ref' });
       continue;
     }
-
-    const r = await ctx.senders.sendVideo(ctx.wa_id, url, {
+    // deixa o senders resolver (http/https ou local:)
+    const r = await ctx.senders.sendImage(ctx.wa_id, url, {
       caption,
       meta_phone_number_id: ctx.inboundPhoneNumberId || null,
-      ...(ctx.replyToWamid ? { reply_to_wamid: ctx.replyToWamid } : {}),
     });
 
     results.push(r);
