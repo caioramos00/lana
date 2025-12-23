@@ -125,6 +125,10 @@ function createSettings({ pool, helpers, cache }) {
         meta_ads_api_version,
         meta_ads_timeout_ms,
         meta_ads_cache_ttl_ms,
+        audio_rl_enabled,
+        audio_rl_max,
+        audio_rl_window_ms,
+        audio_rl_notice_text,
         updated_at
       FROM bot_settings
       WHERE id = 1
@@ -250,6 +254,10 @@ function createSettings({ pool, helpers, cache }) {
         meta_ads_api_version,
         meta_ads_timeout_ms,
         meta_ads_cache_ttl_ms,
+        audio_rl_enabled,
+        audio_rl_max,
+        audio_rl_window_ms,
+        audio_rl_notice_text,
       } = payload;
 
       let dMin = clampInt(toIntOrNull(inbound_debounce_min_ms), { min: 200, max: 15000 });
@@ -347,7 +355,10 @@ function createSettings({ pool, helpers, cache }) {
       const zWebhookPath = strOrNull(zoompag_webhook_path);
 
       const aiProviderRaw = String(ai_provider || '').trim().toLowerCase();
-      const aiProvider = (aiProviderRaw === 'venice' || aiProviderRaw === 'openai' || aiProviderRaw === 'grok') ? aiProviderRaw : null;
+      const aiProvider =
+        (aiProviderRaw === 'venice' || aiProviderRaw === 'openai' || aiProviderRaw === 'grok')
+          ? aiProviderRaw
+          : null;
 
       const openaiApiKey = strOrNull(openai_api_key);
       const openaiModel = strOrNull(openai_model);
@@ -366,9 +377,15 @@ function createSettings({ pool, helpers, cache }) {
       const voiceNoteVeniceModel = strOrNull(voice_note_venice_model);
 
       const sttEnabled = toBoolOrNull(openai_transcribe_enabled);
-      const sttModel = (openai_transcribe_model !== undefined && openai_transcribe_model !== null) ? String(openai_transcribe_model).trim() : null;
-      const sttLang = (openai_transcribe_language !== undefined && openai_transcribe_language !== null) ? String(openai_transcribe_language).trim() : null;
-      const sttPrompt = (openai_transcribe_prompt !== undefined && openai_transcribe_prompt !== null) ? String(openai_transcribe_prompt).trim() : null;
+      const sttModel = (openai_transcribe_model !== undefined && openai_transcribe_model !== null)
+        ? String(openai_transcribe_model).trim()
+        : null;
+      const sttLang = (openai_transcribe_language !== undefined && openai_transcribe_language !== null)
+        ? String(openai_transcribe_language).trim()
+        : null;
+      const sttPrompt = (openai_transcribe_prompt !== undefined && openai_transcribe_prompt !== null)
+        ? String(openai_transcribe_prompt).trim()
+        : null;
       const sttTimeout = clampInt(toIntOrNull(openai_transcribe_timeout_ms), { min: 1000, max: 300000 });
 
       const grokApiKey = strOrNull(grok_api_key);
@@ -382,7 +399,6 @@ function createSettings({ pool, helpers, cache }) {
       if (Array.isArray(payload.auto_audio_enabled)) {
         autoAudioEnabled = toBoolOrNull(payload.auto_audio_enabled[payload.auto_audio_enabled.length - 1]);
       }
-
       const autoAudioAfterMsgs = clampInt(toIntOrNull(auto_audio_after_msgs), { min: 1, max: 1000 });
 
       const utmifyApiToken = strOrNull(utmify_api_token);
@@ -392,6 +408,15 @@ function createSettings({ pool, helpers, cache }) {
       const metaAdsVersion = strOrNull(meta_ads_api_version);
       const metaAdsTimeout = clampInt(toIntOrNull(meta_ads_timeout_ms), { min: 1000, max: 120000 });
       const metaAdsCacheTtl = clampInt(toIntOrNull(meta_ads_cache_ttl_ms), { min: 0, max: 604800000 });
+
+      // ======= Áudio RL (Limite Global) =======
+      let audioRlEnabled = toBoolOrNull(audio_rl_enabled);
+      if (Array.isArray(payload.audio_rl_enabled)) {
+        audioRlEnabled = toBoolOrNull(payload.audio_rl_enabled[payload.audio_rl_enabled.length - 1]);
+      }
+      const audioRlMax = clampInt(toIntOrNull(audio_rl_max), { min: 1, max: 100000 });
+      const audioRlWindowMs = clampInt(toIntOrNull(audio_rl_window_ms), { min: 1000, max: 2147000000 });
+      const audioRlNoticeText = strOrNull(audio_rl_notice_text);
 
       await client.query(
         `
@@ -504,6 +529,10 @@ function createSettings({ pool, helpers, cache }) {
                meta_ads_api_version = COALESCE($106, meta_ads_api_version),
                meta_ads_timeout_ms = COALESCE($107, meta_ads_timeout_ms),
                meta_ads_cache_ttl_ms = COALESCE($108, meta_ads_cache_ttl_ms),
+               audio_rl_enabled = COALESCE($109, audio_rl_enabled),
+               audio_rl_max = COALESCE($110, audio_rl_max),
+               audio_rl_window_ms = COALESCE($111, audio_rl_window_ms),
+               audio_rl_notice_text = COALESCE($112, audio_rl_notice_text),
                updated_at = NOW()
          WHERE id = 1
         `,
@@ -616,6 +645,10 @@ function createSettings({ pool, helpers, cache }) {
           metaAdsVersion,
           Number.isFinite(metaAdsTimeout) ? metaAdsTimeout : null,
           Number.isFinite(metaAdsCacheTtl) ? metaAdsCacheTtl : null,
+          audioRlEnabled,
+          Number.isFinite(audioRlMax) ? audioRlMax : null,
+          Number.isFinite(audioRlWindowMs) ? audioRlWindowMs : null,
+          audioRlNoticeText,
         ]
       );
 
