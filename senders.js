@@ -862,8 +862,14 @@ async function sendTtsVoiceNote(contato, text, opts = {}) {
 }
 
 // ======= SEND PREVIEW (foto/vídeo) =======
-async function sendPreviewToLead({ wa_id, preview_id, inboundPhoneNumberId, db }) {
+async function sendPreviewToLead({ wa_id, preview_id, inboundPhoneNumberId, db: dbInjected } = {}) {
   const traceId = `${wa_id}-${Date.now().toString(16)}`;
+
+  const dbx = dbInjected || db;
+  if (!dbx || typeof dbx.getPreviewOfferWithMedia !== 'function') {
+    console.log(`[PREVIEW][${traceId}] abort: db-not-available`);
+    return { ok: false, reason: 'db-not-available' };
+  }
 
   const rawId = String(preview_id ?? '').trim();
   const pid = rawId.toLowerCase();
@@ -878,7 +884,7 @@ async function sendPreviewToLead({ wa_id, preview_id, inboundPhoneNumberId, db }
   }
 
   try {
-    const cfg = await db.getPreviewOfferWithMedia(pid);
+    const cfg = await dbx.getPreviewOfferWithMedia(pid);
 
     console.log(`[PREVIEW][${traceId}] db.cfg?`, !!cfg);
     console.log(`[PREVIEW][${traceId}] db.cfg.offer=`, cfg?.offer || null);
