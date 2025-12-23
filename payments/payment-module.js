@@ -176,7 +176,7 @@ function createPaymentsModule({
       const out = await handler(ctx, payload);
 
       if (out?.ok) {
-        await db.markFulfillmentDeliverySent(external_id);
+        await db.markFulfillmentDeliverySent(provider, external_id);
 
         const postText = String(cfg.offer.post_text || '').trim();
         if (postText && typeof sendMessage === 'function') {
@@ -186,10 +186,15 @@ function createPaymentsModule({
         return { ok: true };
       }
 
-      await db.markFulfillmentDeliveryFailed(external_id, `handler-failed: ${JSON.stringify(out || {}).slice(0, 600)}`);
+      await db.markFulfillmentDeliveryFailed(
+        provider,
+        external_id,
+        `handler-failed: ${JSON.stringify(out || {}).slice(0, 600)}`
+      );
+
       return { ok: false, reason: 'handler-failed', out };
     } catch (e) {
-      try { await db.markFulfillmentDeliveryFailed(external_id, e?.message || String(e)); } catch { }
+      try { await db.markFulfillmentDeliveryFailed(provider, external_id, e?.message || String(e)); } catch { }
       return { ok: false, error: e?.message || String(e) };
     }
   }
