@@ -585,10 +585,9 @@ function createPaymentsModule({
         payer_phone,
         payer_document,
         offer_id: row?.offer_id || null,
-        offer_title: 'Pagamento',
+        offer_title: 'Lany',
         createdAt: row?.created_at?.getTime?.() || Date.now(),
 
-        // ✅ anexado para virar trackingParameters no utmify.js
         meta_ads,
       });
     } catch (e) {
