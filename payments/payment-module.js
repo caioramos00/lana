@@ -224,39 +224,22 @@ function createPaymentsModule({
     const p = normalizeProvider(provider) || getDefaultProviderFromSettings(settings);
 
     const map = {
-      veltrax: {
-        baseKey: 'veltrax_callback_base_url',
-        pathKey: 'veltrax_webhook_path',
-        defPath: '/webhook/veltrax',
-      },
-      rapdyn: {
-        baseKey: 'rapdyn_callback_base_url',
-        pathKey: 'rapdyn_webhook_path',
-        defPath: '/webhook/rapdyn',
-      },
-      zoompag: {
-        baseKey: 'zoompag_callback_base_url',
-        pathKey: 'zoompag_webhook_path',
-        defPath: '/webhook/zoompag',
-      },
-      safepix: {
-        baseKey: 'safepix_callback_base_url',
-        pathKey: 'safepix_webhook_path',
-        defPath: '/webhook/safepix',
-      },
+      veltrax: { baseKey: 'veltrax_callback_base_url', pathKey: 'veltrax_webhook_path', defPath: '/webhook/veltrax' },
+      rapdyn: { baseKey: 'rapdyn_callback_base_url', pathKey: 'rapdyn_webhook_path', defPath: '/webhook/rapdyn' },
+      zoompag: { baseKey: 'zoompag_callback_base_url', pathKey: 'zoompag_webhook_path', defPath: '/webhook/zoompag' },
+      safepix: { baseKey: 'safepix_callback_base_url', pathKey: 'safepix_webhook_path', defPath: '/webhook/safepix' },
     };
 
     const cfg = map[p];
     if (!cfg) return null;
 
-    const base = String(settings?.[cfg.baseKey] || '')
-      .trim()
-      .replace(/\/+$/, '');
+    const path = String(settings?.[cfg.pathKey] || cfg.defPath).trim() || cfg.defPath;
 
-    const path = String(settings?.[cfg.pathKey] || cfg.defPath)
-      .trim() || cfg.defPath;
+    if (/^https?:\/\//i.test(path)) return path;
 
+    const base = String(settings?.[cfg.baseKey] || '').trim().replace(/\/+$/, '');
     if (!base) return null;
+
     return `${base}${path.startsWith('/') ? '' : '/'}${path}`;
   }
 
