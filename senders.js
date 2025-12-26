@@ -1,3 +1,11 @@
+// senders.js (META-only + SSE publish)
+// - NÃO depende de ./utils.js, ./optout.js, ./stateManager.js
+// - Guarda em memória o phone_number_id do inbound por lead (pra responder sempre pelo mesmo)
+// - Resolve credenciais via bot_meta_numbers (token por número) e fallback em bot_settings.graph_api_access_token
+// - Publica no SSE via publishMessage
+//
+// + Definitivo: gera TTS (ElevenLabs) em OGG/Opus e envia como áudio (voice note)
+
 const axios = require('axios');
 const fs = require('fs');
 const path = require('path');
@@ -7,11 +15,14 @@ const crypto = require('crypto');
 const db = require('./db');
 const { publishMessage } = require('./stream/events-bus');
 
+// Dependência recomendada p/ multipart/form-data no Node + axios
 let FormData = null;
 try { FormData = require('form-data'); } catch { /* ok */ }
 
+// wa_id -> { phone_number_id, ts }
 const inboundMetaMap = new Map();
 
+// limpeza leve (não é “histórico”, é só pra não acumular lixo)
 const INBOUND_MAP_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 setInterval(() => {
   const t = Date.now();
@@ -47,6 +58,7 @@ async function delayBetween(range) {
 }
 
 async function getSettings() {
+  // prioridade: global.botSettings (bootstrap do index.js)
   if (global.botSettings) return global.botSettings;
   return await db.getBotSettings();
 }
@@ -54,11 +66,13 @@ async function getSettings() {
 async function resolveMetaCredentialsForContato(wa_id, settings, opts = {}) {
   const key = String(wa_id || '').trim();
 
+  // 1) obrigatório pelo requisito: se tiver o inbound phone_number_id, usar ele
   const fromOpts = String(opts.meta_phone_number_id || '').trim() || null;
   const fromMap = inboundMetaMap.get(key)?.phone_number_id || null;
 
   const candidatePhoneNumberId = fromOpts || fromMap || null;
 
+  // tenta credenciais por phone_number_id (tabela bot_meta_numbers)
   if (candidatePhoneNumberId) {
     const row = await db.getMetaNumberByPhoneNumberId(candidatePhoneNumberId);
     if (row && row.active !== false) {
@@ -69,6 +83,7 @@ async function resolveMetaCredentialsForContato(wa_id, settings, opts = {}) {
     }
   }
 
+  // fallback: primeiro número ativo cadastrado
   const def = await db.getDefaultMetaNumber();
   if (def && def.active !== false) {
     return {
@@ -77,6 +92,7 @@ async function resolveMetaCredentialsForContato(wa_id, settings, opts = {}) {
     };
   }
 
+  // último fallback: token global (se você insistir em usar)
   return {
     phoneNumberId: candidatePhoneNumberId,
     token: (settings?.graph_api_access_token || '').trim() || null,
@@ -104,6 +120,7 @@ function resolveLocalMediaPath(ref) {
 
   if (/^local:/i.test(s)) s = s.replace(/^local:/i, '').trim();
 
+  // bloqueia absolutos e traversal
   if (s.includes('..')) return null;
 
   const abs = path.isAbsolute(s) ? s : path.join(MEDIA_ROOT, s);
@@ -111,6 +128,7 @@ function resolveLocalMediaPath(ref) {
   const normAbs = path.normalize(abs);
   const normRoot = path.normalize(MEDIA_ROOT + path.sep);
 
+  // garante que está dentro de /media/
   if (!normAbs.startsWith(normRoot)) return null;
 
   return normAbs;
@@ -137,6 +155,7 @@ async function metaPostMessage({ phoneNumberId, token, version, payload }) {
   return r.data || {};
 }
 
+// +++ add: pega URL e mime do media_id
 async function metaGetMediaInfo({ mediaId, token, version }) {
   const apiVersion = version || 'v24.0';
   const url = `https://graph.facebook.com/${apiVersion}/${mediaId}`;
@@ -173,28 +192,7 @@ function guessExtFromMime(mime) {
   return '.bin';
 }
 
-function _clipStr(v, max = 240) {
-  const s = String(v ?? '');
-  if (s.length <= max) return s;
-  return s.slice(0, max) + '…';
-}
-
-function _pickHeaders(h = {}) {
-  const headers = h || {};
-  const pick = (k) => headers[k] ?? headers[String(k).toLowerCase()];
-  return {
-    'content-type': pick('content-type'),
-    'content-length': pick('content-length'),
-    'x-request-id': pick('x-request-id') || pick('xi-request-id'),
-    'date': pick('date'),
-  };
-}
-
-function _logEleven(traceId, ...args) {
-  const tid = traceId ? String(traceId) : '-';
-  console.log(`[ELEVEN][${tid}]`, ...args);
-}
-
+// +++ add: baixa o media_id pra um arquivo temp e retorna path+mimetype
 async function downloadMetaMediaToTempFile(contato, mediaId, opts = {}) {
   const to = String(contato || '').trim();
   const mid = String(mediaId || '').trim();
@@ -216,6 +214,7 @@ async function downloadMetaMediaToTempFile(contato, mediaId, opts = {}) {
 
   if (!info.url) throw new Error('downloadMetaMediaToTempFile: media url missing');
 
+  // baixa binário (a URL retornada exige Authorization também)
   const r = await axios.get(info.url, {
     headers: { Authorization: `Bearer ${token}` },
     responseType: 'arraybuffer',
@@ -761,20 +760,6 @@ async function elevenTtsToTempFile(text, settings, opts = {}) {
   if (use_speaker_boost != null) voice_settings.use_speaker_boost = !!use_speaker_boost;
   if (Object.keys(voice_settings).length) body.voice_settings = voice_settings;
 
-  const traceId = String(opts.trace_id || opts.traceId || `tts-${Date.now().toString(16)}-${crypto.randomUUID()}`);
-  const debug = !!(opts.debug_tts || opts.debugTts || process.env.DEBUG_TTS === '1');
-  const startedAt = Date.now();
-
-  _logEleven(traceId, 'REQUEST', {
-    url,
-    voice_id: voiceId,
-    model_id: modelId,
-    output_format: outputFormat,
-    text_len: t.length,
-    text_preview: debug ? _clipStr(t, 160) : undefined,
-    voice_settings: body.voice_settings || undefined,
-  });
-
   const r = await axios.post(url, body, {
     headers: {
       'Content-Type': 'application/json',
@@ -786,32 +771,17 @@ async function elevenTtsToTempFile(text, settings, opts = {}) {
     validateStatus: () => true,
   });
 
-  const ms = Date.now() - startedAt;
-  _logEleven(traceId, 'RESPONSE_META', {
-    status: r.status,
-    took_ms: ms,
-    headers: debug ? (r.headers || {}) : _pickHeaders(r.headers || {}),
-  });
-
-
   if (r.status < 200 || r.status >= 300) {
     let msg = '';
     try { msg = Buffer.from(r.data || []).toString('utf8'); } catch { }
-    _logEleven(traceId, 'ERROR_BODY', _clipStr(msg, 900));
     throw new Error(`ElevenLabs HTTP ${r.status} ${msg.slice(0, 800)}`);
   }
 
   const buf = Buffer.from(r.data);
-  _logEleven(traceId, 'AUDIO_BYTES', {
-    bytes: buf.length,
-    head_hex: debug ? buf.subarray(0, 24).toString('hex') : buf.subarray(0, 12).toString('hex'),
-  });
-
   const name = `tts_${Date.now()}_${crypto.randomUUID()}.ogg`;
   const outPath = path.join(os.tmpdir(), name);
 
   fs.writeFileSync(outPath, buf);
-  _logEleven(traceId, 'SAVED', { outPath });
   return outPath;
 }
 
@@ -857,18 +827,9 @@ async function sendTtsVoiceNote(contato, text, opts = {}) {
 
     tmpFile = await elevenTtsToTempFile(finalText, settings, opts);
 
-    if (opts.debug_tts || opts.debugTts || process.env.DEBUG_TTS === '1') {
-      try {
-        const st = fs.statSync(tmpFile);
-        console.log(`[TTS][${to}] tmpFile=${tmpFile} size=${st.size}`);
-      } catch { }
-    }
-
     const up = await uploadVoiceFile(tmpFile, 'voice.ogg');
-    console.log(`[TTS][${to}] uploaded_media_id=${up?.id || ''}`);
 
     const rSend = await sendAudio(to, up.id, { ...opts, voice_note: true });
-    console.log(`[TTS][${to}] sendAudio result=`, rSend);
 
     const cfg = resolveElevenConfig(settings, opts);
     return {
