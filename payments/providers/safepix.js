@@ -1,22 +1,5 @@
 'use strict';
 
-function maskSecret(v, keep = 4) {
-    const s = String(v || '');
-    if (!s) return null;
-    if (s.length <= keep) return '*'.repeat(s.length);
-    return `${'*'.repeat(Math.max(0, s.length - keep))}${s.slice(-keep)}`;
-}
-
-function safeJsonSnippet(v, max = 1200) {
-    try {
-        const s = typeof v === 'string' ? v : JSON.stringify(v);
-        if (!s) return null;
-        return s.length > max ? s.slice(0, max) + '…' : s;
-    } catch {
-        return '[unserializable]';
-    }
-}
-
 function pick(obj, path) {
     if (!obj) return null;
 
@@ -149,18 +132,6 @@ module.exports = function createSafepixProvider({ axios, logger = console } = {}
                 secretKey = legacy;
             }
 
-            logger.log('[SAFEPIX][CREATE][CFG]', {
-                baseUrl,
-                createPath,
-                url,
-                hasPublicKey: !!publicKey,
-                secretKeyMasked: maskSecret(secretKey),
-                callbackUrl: callbackUrl || null,
-                external_id,
-                wa_id: meta?.wa_id || null,
-                offer_id: meta?.offer_id || null,
-            });
-
             if (!publicKey || !secretKey) {
                 const e = new Error('SafePix config missing (public_key / secret_key).');
                 e.code = 'SAFEPIX_CFG';
@@ -214,16 +185,6 @@ module.exports = function createSafepixProvider({ axios, logger = console } = {}
                 },
             };
 
-            logger.log('[SAFEPIX][CREATE][REQ]', {
-                method: 'POST',
-                url,
-                amount,
-                amountInCents,
-                external_id,
-                postback_url: payload.postback_url || null,
-                payloadSnippet: safeJsonSnippet(payload, 1000),
-            });
-
             const url = `${baseUrl}${createPath}`;
 
             try {
@@ -233,13 +194,6 @@ module.exports = function createSafepixProvider({ axios, logger = console } = {}
                         'Authorization': buildBasicAuth(publicKey, secretKey),
                     },
                     timeout: 60000,
-                });
-
-                logger.log('[SAFEPIX][CREATE][RESP]', {
-                    http_status: resp?.status,
-                    url,
-                    external_id,
-                    respSnippet: safeJsonSnippet(resp?.data, 1200),
                 });
 
                 const respData = resp?.data || {};
@@ -270,24 +224,7 @@ module.exports = function createSafepixProvider({ axios, logger = console } = {}
                     raw: respData,
                 };
             } catch (err) {
-                const status = err?.response?.status || null;
-                const statusText = err?.response?.statusText || null;
-                const axiosUrl = err?.config?.url || null;
-                const axiosMethod = err?.config?.method || null;
-
-                logger.error('[SAFEPIX][CREATE][ERR]', {
-                    url,
-                    axiosUrl,
-                    axiosMethod,
-                    http_status: status,
-                    statusText,
-                    responseHeaders: err?.response?.headers || null,
-                    responseDataSnippet: safeJsonSnippet(err?.response?.data, 1600),
-                    message: err?.message || null,
-                    external_id,
-                });
-
-                throw toSafepixError(err, { step: 'createPix', url, baseUrl, createPath });
+                throw toSafepixError(err, { step: 'createPix', url });
             }
         },
 
