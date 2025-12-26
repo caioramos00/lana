@@ -31,20 +31,6 @@ setInterval(() => {
   }
 }, 6 * 60 * 60 * 1000);
 
-function patchOpusHeadInputSampleRate(filePath, targetHz = 24000) {
-  const buf = fs.readFileSync(filePath);
-  const idx = buf.indexOf(Buffer.from('OpusHead'));
-  if (idx < 0) return false;
-
-  // OpusHead(8) + version(1) + channels(1) + preskip(2) = 12 bytes
-  const rateOff = idx + 12;
-  if (rateOff + 4 > buf.length) return false;
-
-  buf.writeUInt32LE(Number(targetHz) >>> 0, rateOff);
-  fs.writeFileSync(filePath, buf);
-  return true;
-}
-
 function rememberInboundMetaPhoneNumberId(wa_id, phone_number_id) {
   const key = String(wa_id || '').trim();
   const pnid = String(phone_number_id || '').trim();
@@ -204,6 +190,28 @@ function guessExtFromMime(mime) {
   if (m.includes('wav')) return '.wav';
   if (m.includes('amr')) return '.amr';
   return '.bin';
+}
+
+function _clipStr(v, max = 240) {
+  const s = String(v ?? '');
+  if (s.length <= max) return s;
+  return s.slice(0, max) + '…';
+}
+
+function _pickHeaders(h = {}) {
+  const headers = h || {};
+  const pick = (k) => headers[k] ?? headers[String(k).toLowerCase()];
+  return {
+    'content-type': pick('content-type'),
+    'content-length': pick('content-length'),
+    'x-request-id': pick('x-request-id') || pick('xi-request-id'),
+    'date': pick('date'),
+  };
+}
+
+function _logEleven(traceId, ...args) {
+  const tid = traceId ? String(traceId) : '-';
+  console.log(`[ELEVEN][${tid}]`, ...args);
 }
 
 // +++ add: baixa o media_id pra um arquivo temp e retorna path+mimetype
@@ -774,6 +782,20 @@ async function elevenTtsToTempFile(text, settings, opts = {}) {
   if (use_speaker_boost != null) voice_settings.use_speaker_boost = !!use_speaker_boost;
   if (Object.keys(voice_settings).length) body.voice_settings = voice_settings;
 
+  const traceId = String(opts.trace_id || opts.traceId || `tts-${Date.now().toString(16)}-${crypto.randomUUID()}`);
+  const debug = !!(opts.debug_tts || opts.debugTts || process.env.DEBUG_TTS === '1');
+  const startedAt = Date.now();
+
+  _logEleven(traceId, 'REQUEST', {
+    url,
+    voice_id: voiceId,
+    model_id: modelId,
+    output_format: outputFormat,
+    text_len: t.length,
+    text_preview: debug ? _clipStr(t, 160) : undefined,
+    voice_settings: body.voice_settings || undefined,
+  });
+
   const r = await axios.post(url, body, {
     headers: {
       'Content-Type': 'application/json',
@@ -785,17 +807,32 @@ async function elevenTtsToTempFile(text, settings, opts = {}) {
     validateStatus: () => true,
   });
 
+  const ms = Date.now() - startedAt;
+  _logEleven(traceId, 'RESPONSE_META', {
+    status: r.status,
+    took_ms: ms,
+    headers: debug ? (r.headers || {}) : _pickHeaders(r.headers || {}),
+  });
+
+
   if (r.status < 200 || r.status >= 300) {
     let msg = '';
     try { msg = Buffer.from(r.data || []).toString('utf8'); } catch { }
+    _logEleven(traceId, 'ERROR_BODY', _clipStr(msg, 900));
     throw new Error(`ElevenLabs HTTP ${r.status} ${msg.slice(0, 800)}`);
   }
 
   const buf = Buffer.from(r.data);
+  _logEleven(traceId, 'AUDIO_BYTES', {
+    bytes: buf.length,
+    head_hex: debug ? buf.subarray(0, 24).toString('hex') : buf.subarray(0, 12).toString('hex'),
+  });
+
   const name = `tts_${Date.now()}_${crypto.randomUUID()}.ogg`;
   const outPath = path.join(os.tmpdir(), name);
 
   fs.writeFileSync(outPath, buf);
+  _logEleven(traceId, 'SAVED', { outPath });
   return outPath;
 }
 
@@ -841,9 +878,18 @@ async function sendTtsVoiceNote(contato, text, opts = {}) {
 
     tmpFile = await elevenTtsToTempFile(finalText, settings, opts);
 
+    if (opts.debug_tts || opts.debugTts || process.env.DEBUG_TTS === '1') {
+      try {
+        const st = fs.statSync(tmpFile);
+        console.log(`[TTS][${to}] tmpFile=${tmpFile} size=${st.size}`);
+      } catch { }
+    }
+
     const up = await uploadVoiceFile(tmpFile, 'voice.ogg');
+    console.log(`[TTS][${to}] uploaded_media_id=${up?.id || ''}`);
 
     const rSend = await sendAudio(to, up.id, { ...opts, voice_note: true });
+    console.log(`[TTS][${to}] sendAudio result=`, rSend);
 
     const cfg = resolveElevenConfig(settings, opts);
     return {
