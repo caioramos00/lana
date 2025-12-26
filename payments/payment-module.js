@@ -438,8 +438,6 @@ function createPaymentsModule({
         offer_id: offer_id || null,
         offer_title: offer_title || meta?.offer_title || 'Pagamento',
         createdAt: row?.created_at?.getTime?.() || Date.now(),
-
-        // ✅ anexado para virar trackingParameters no utmify.js
         meta_ads,
       });
     } catch (e) {
