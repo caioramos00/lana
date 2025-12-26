@@ -135,6 +135,7 @@
                   <option value="veltrax" <%=(pg==='veltrax' ? 'selected' : '' ) %>>Veltrax</option>
                   <option value="rapdyn" <%=(pg==='rapdyn' ? 'selected' : '' ) %>>Rapdyn</option>
                   <option value="zoompag" <%=(pg==='zoompag' ? 'selected' : '' ) %>>Zoompag</option>
+                  <option value="safepix" <%=(pg==='safepix' ? 'selected' : '' ) %>>SafePix</option>
                 </select>
                 <div class="form-text">O painel salva configs de todos os gateways, mas exibe só o selecionado.</div>
               </div>
@@ -277,6 +278,49 @@
                         <label class="form-label">Webhook Path</label>
                         <input type="text" class="form-control" name="zoompag_webhook_path"
                           value="<%= (s.zoompag_webhook_path !== undefined && s.zoompag_webhook_path !== null) ? s.zoompag_webhook_path : '/webhook/zoompag' %>">
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <!-- SAFEPIX BOX -->
+              <div class="col-12 pay-gateway-box" id="pay_gateway_safepix">
+                <div class="card border-0 bg-light mt-2">
+                  <div class="card-body">
+                    <h5 class="mb-2">Configurações • SafePix</h5>
+                    <div class="form-text mb-3">Config do gateway SafePix (base URL, token, path do create e webhook).
+                    </div>
+
+                    <div class="row g-3">
+                      <div class="col-12">
+                        <label class="form-label">SafePix API Base URL</label>
+                        <input type="text" class="form-control" name="safepix_api_base_url"
+                          value="<%= (s.safepix_api_base_url !== undefined && s.safepix_api_base_url !== null) ? s.safepix_api_base_url : 'https://api.safepix.com' %>">
+                      </div>
+
+                      <div class="col-md-6">
+                        <label class="form-label">SafePix Public Key</label>
+                        <input type="text" class="form-control" name="safepix_public_key"
+                          value="<%= (s.safepix_public_key || '') %>" placeholder="pk_live_...">
+                      </div>
+
+                      <div class="col-md-6">
+                        <label class="form-label">SafePix Secret Key</label>
+                        <input type="text" class="form-control" name="safepix_secret_key"
+                          value="<%= (s.safepix_secret_key || '') %>" placeholder="sk_live_...">
+                      </div>
+
+                      <div class="col-md-6">
+                        <label class="form-label">SafePix Create Path</label>
+                        <input type="text" class="form-control" name="safepix_create_path"
+                          value="<%= (s.safepix_create_path !== undefined && s.safepix_create_path !== null) ? s.safepix_create_path : '/v1/pix' %>">
+                      </div>
+
+                      <div class="col-md-6">
+                        <label class="form-label">Webhook Path</label>
+                        <input type="text" class="form-control" name="safepix_webhook_path"
+                          value="<%= (s.safepix_webhook_path !== undefined && s.safepix_webhook_path !== null) ? s.safepix_webhook_path : '/webhook/safepix' %>">
                       </div>
                     </div>
                   </div>

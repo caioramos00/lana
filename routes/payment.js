@@ -22,6 +22,11 @@ function getZoompagWebhookPaths() {
   return [...new Set(['/webhook/zoompag', p])];
 }
 
+function getSafepixWebhookPaths() {
+  const p = String(global.safepixConfig?.webhook_path || global.botSettings?.safepix_webhook_path || '/webhook/safepix').trim() || '/webhook/safepix';
+  return [...new Set(['/webhook/safepix', p])];
+}
+
 function registerPaymentRoutes(app, { payments } = {}) {
   assertPaymentsInjected(payments);
 
@@ -33,6 +38,9 @@ function registerPaymentRoutes(app, { payments } = {}) {
   }
   for (const webhookPath of getZoompagWebhookPaths()) {
     app.post(webhookPath, payments.makeExpressWebhookHandler('zoompag'));
+  }
+  for (const webhookPath of getSafepixWebhookPaths()) {
+    app.post(webhookPath, payments.makeExpressWebhookHandler('safepix'));
   }
 }
 

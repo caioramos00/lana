@@ -112,6 +112,11 @@ function createSettings({ pool, helpers, cache }) {
         zoompag_create_path,
         zoompag_callback_base_url,
         zoompag_webhook_path,
+        safepix_api_base_url,
+        safepix_public_key,
+        safepix_secret_key,
+        safepix_create_path,
+        safepix_webhook_path,
         openai_transcribe_enabled,
         openai_transcribe_model,
         openai_transcribe_language,
@@ -241,6 +246,11 @@ function createSettings({ pool, helpers, cache }) {
         zoompag_create_path,
         zoompag_callback_base_url,
         zoompag_webhook_path,
+        safepix_api_base_url,
+        safepix_public_key,
+        safepix_secret_key,
+        safepix_create_path,
+        safepix_webhook_path,
         openai_transcribe_enabled,
         openai_transcribe_model,
         openai_transcribe_language,
@@ -331,7 +341,7 @@ function createSettings({ pool, helpers, cache }) {
 
       const pixGatewayDefaultRaw = String(pix_gateway_default || '').trim().toLowerCase();
       const pixGatewayDefault =
-        (pixGatewayDefaultRaw === 'veltrax' || pixGatewayDefaultRaw === 'rapdyn' || pixGatewayDefaultRaw === 'zoompag')
+        (pixGatewayDefaultRaw === 'veltrax' || pixGatewayDefaultRaw === 'rapdyn' || pixGatewayDefaultRaw === 'zoompag' || pixGatewayDefaultRaw === 'safepix')
           ? pixGatewayDefaultRaw
           : null;
 
@@ -353,6 +363,12 @@ function createSettings({ pool, helpers, cache }) {
       const zCreatePath = strOrNull(zoompag_create_path);
       const zCbBase = strOrNull(zoompag_callback_base_url);
       const zWebhookPath = strOrNull(zoompag_webhook_path);
+
+      const sApiBase = strOrNull(safepix_api_base_url);
+      const sPub = strOrNull(safepix_public_key);
+      const sSecret = strOrNull(safepix_secret_key);
+      const sCreatePath = strOrNull(safepix_create_path);
+      const sWebhookPath = strOrNull(safepix_webhook_path);
 
       const aiProviderRaw = String(ai_provider || '').trim().toLowerCase();
       const aiProvider =
@@ -533,6 +549,11 @@ function createSettings({ pool, helpers, cache }) {
                audio_rl_max = COALESCE($110, audio_rl_max),
                audio_rl_window_ms = COALESCE($111, audio_rl_window_ms),
                audio_rl_notice_text = COALESCE($112, audio_rl_notice_text),
+               safepix_api_base_url = COALESCE($113, safepix_api_base_url),
+               safepix_public_key = COALESCE($114, safepix_public_key),
+               safepix_secret_key = COALESCE($115, safepix_secret_key),
+               safepix_create_path = COALESCE($116, safepix_create_path),
+               safepix_webhook_path = COALESCE($117, safepix_webhook_path),
                updated_at = NOW()
          WHERE id = 1
         `,
@@ -649,6 +670,11 @@ function createSettings({ pool, helpers, cache }) {
           Number.isFinite(audioRlMax) ? audioRlMax : null,
           Number.isFinite(audioRlWindowMs) ? audioRlWindowMs : null,
           audioRlNoticeText,
+          sApiBase,
+          sPub,
+          sSecret,
+          sCreatePath,
+          sWebhookPath,
         ]
       );
 

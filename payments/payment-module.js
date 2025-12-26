@@ -1,4 +1,3 @@
-// payments/payment-module.js
 'use strict';
 
 const crypto = require('crypto');
@@ -239,6 +238,11 @@ function createPaymentsModule({
         baseKey: 'zoompag_callback_base_url',
         pathKey: 'zoompag_webhook_path',
         defPath: '/webhook/zoompag',
+      },
+      safepix: {
+        baseKey: 'safepix_callback_base_url',
+        pathKey: 'safepix_webhook_path',
+        defPath: '/webhook/safepix',
       },
     };
 
